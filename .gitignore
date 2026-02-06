@@ -1,3 +1,6 @@
+.env
+.venv/
+
 # weights and biases
 .wandb/ 
 wandb_api_key.txt

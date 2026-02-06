@@ -171,7 +171,7 @@ def load_darcy_flow_small(
     train_loader = DataLoader(
         dataset.train_db,
         batch_size=batch_size,
-        num_workers=1,
+        num_workers=0,
         pin_memory=True,
         persistent_workers=False,
     )
@@ -182,7 +182,7 @@ def load_darcy_flow_small(
             dataset.test_dbs[res],
             batch_size=test_bsize,
             shuffle=False,
-            num_workers=1,
+            num_workers=0,
             pin_memory=True,
             persistent_workers=False,
         )
