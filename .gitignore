@@ -20,9 +20,9 @@ __pycache__/
 *.swp
 
 # Sphinx doc
-doc/_build/
-doc/source/auto_examples/
-doc/source/modules/generated/
+legacy/doc/_build/
+legacy/doc/source/auto_examples/
+legacy/doc/source/modules/generated/
 
 # Distribution / packaging
 .Python
