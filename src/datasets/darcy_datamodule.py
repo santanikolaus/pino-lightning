@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple, Union
 
-import pytorch_lightning as L
+import lightning as L
 from torch.utils.data import DataLoader
 
 #TODO implement this locally

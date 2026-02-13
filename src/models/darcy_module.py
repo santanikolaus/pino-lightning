@@ -52,7 +52,7 @@ class DarcyLitModule(L.LightningModule):
             data["y"] = data["y"].to(self.device)
         return data
 
-    def _shared_step(self, batch: Dict[str, Any], stage: str) -> torch.Tensor:
+    def _shared_step(self, batch: Dict[str, Any], stage: str, suffix: Optional[str] = None) -> torch.Tensor:
         train_mode = stage == "train"
         data = self._prepare_batch(batch, train_mode)
         preds = self(data["x"])
@@ -62,8 +62,9 @@ class DarcyLitModule(L.LightningModule):
         sync_dist = bool(
             self.trainer and getattr(self.trainer, "world_size", 1) > 1
         )
+        metric = f"{stage}_lp_loss" if suffix is None else f"{suffix}_lp_loss"
         self.log(
-            f"{stage}_lp_loss",
+            metric,
             loss,
             on_step=train_mode,
             on_epoch=True,
@@ -75,11 +76,11 @@ class DarcyLitModule(L.LightningModule):
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
         return self._shared_step(batch, "train")
 
-    def validation_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "val")
+    def validation_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int) -> torch.Tensor:
+        return self._shared_step(batch, "val", f"val_{dataloader_idx}")
 
-    def test_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "test")
+    def test_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int) -> torch.Tensor:
+        return self._shared_step(batch, "test", f"val_{dataloader_idx}")
 
     def configure_optimizers(self):
         return AdamW(
