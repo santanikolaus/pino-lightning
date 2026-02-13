@@ -5,7 +5,7 @@ import lightning as L
 from torch.utils.data import DataLoader
 
 #TODO implement this locally
-from legacy.neuralop.data.datasets import load_darcy_flow_small
+from src.datasets.darcy_dataset import load_darcy_flow_small
 from legacy.neuralop.data.transforms.data_processors import DataProcessor
 
 
