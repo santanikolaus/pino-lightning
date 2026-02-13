@@ -35,14 +35,14 @@ class ModelConfig:
     projection_channel_ratio: int = 2
     n_layers: int = 4
     domain_padding: float = 0.0
-    norm: str = "None"
+    norm = None
     fno_skip: str = "linear"
     implementation: str = "factorized"
     use_channel_mlp: bool = True
     channel_mlp_expansion: float = 0.5
     channel_mlp_dropout: float = 0.0
     separable: bool = False
-    factorization: str = "None"
+    factorization = None
     rank: float = 1.0
     fixed_rank_modes: bool = False
     stabilizer: str = "None"
@@ -71,7 +71,7 @@ class TrainerConfig:
     accelerator: str = "cpu"
     devices: int = 1
     enable_checkpointing: bool = False
-    logger: bool = False
+    logger: bool = True
     enable_model_summary: bool = False
 
 
