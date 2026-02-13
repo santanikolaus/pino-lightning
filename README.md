@@ -27,7 +27,7 @@ OK      - src/datasets/darcy_datamodule.py – wrap the existing DarcyDataset/lo
 OK      - src/models/darcy_module.py – simple LightningModule using legacy.neuralop.get_model, computing LpLoss,
   logging it, and configuring AdamW.
       - src/train.py – Hydra entry that instantiates the new DataModule/Module and runs a 1‑epoch/2‑batch sanity
-OK  check. Only move on once this runs.
+OK  check. Only move on once this runs. check
   - Step 2 (Data surface parity) – still in src/datasets/: port normalization, patching, and resolution handling out
   of legacy glue so DarcyDataModule owns all preprocessing. Keep the model import legacy if that helps; the win is
   having data behavior centralized.
