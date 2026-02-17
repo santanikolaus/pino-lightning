@@ -4,9 +4,9 @@ from typing import List, Union
 
 from torch.utils.data import DataLoader
 
-from legacy.neuralop.data.datasets.pt_dataset import PTDataset
-from legacy.neuralop.data.datasets.web_utils import download_from_zenodo_record
-from legacy.neuralop.utils import get_project_root
+from src.datasets.pt_datasets import PTDataset
+from src.datasets.web_utils import download_from_zenodo_record
+from src.utils.utils import get_project_root
 
 logger = logging.getLogger(__name__)
 
