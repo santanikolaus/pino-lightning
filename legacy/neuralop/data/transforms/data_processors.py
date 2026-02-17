@@ -1,8 +1,6 @@
 from abc import ABCMeta, abstractmethod
 
 import torch
-
-import torch
 from legacy.neuralop.training.patching import MultigridPatching2D
 
 
