@@ -108,21 +108,16 @@ class PTDataset:
         if channels_squeezed:
             x_train = x_train.unsqueeze(channel_dim)
 
-        # optionally subsample along data indices
-        ## Input subsampling
-        input_data_dims = data["x"].ndim - 2  # batch and channels
-        # convert None and 0 to 1
+        # Input subsampling: count only the spatial axes actually present
+        input_data_dims = x_train.ndim - 2
         if not input_subsampling_rate:
             input_subsampling_rate = 1
         if not isinstance(input_subsampling_rate, list):
-            # expand subsampling rate along dims if one per dim is not provided
             input_subsampling_rate = [input_subsampling_rate] * input_data_dims
-        # make sure there is one subsampling rate per data dim
-        assert (
-            len(input_subsampling_rate) == input_data_dims
-        ), f"Error: length mismatch between input_subsampling_rate and dimensions of data.\
-                input_subsampling_rate must be one int shared across all dims, or an iterable of\
-                    length {len(input_data_dims)}, got {input_subsampling_rate}"
+        assert len(input_subsampling_rate) == input_data_dims, (
+            "Error: length mismatch between input_subsampling_rate and data dims. "
+            f"Expected {input_data_dims}, got {input_subsampling_rate}"
+        )
         # Construct full indices along which to grab X
         train_input_indices = [slice(0, n_train, None)] + [slice(None, None, rate) for rate in input_subsampling_rate]
         train_input_indices.insert(channel_dim, slice(None))
@@ -133,20 +128,21 @@ class PTDataset:
         if channels_squeezed:
             y_train = y_train.unsqueeze(channel_dim)
 
-        ## Output subsampling
-        output_data_dims = data["y"].ndim - 2
+        # TODO(patching): If a dataset ever passes channels_squeezed=False, switch
+        # this indexing logic to build full slices explicitly instead of inserting
+        # channel_dim—otherwise tensors that already have C in place can misalign.
+
+        # Output subsampling
+        output_data_dims = y_train.ndim - 2
         # convert None and 0 to 1
-        if not input_subsampling_rate:
+        if not output_subsampling_rate:
             output_subsampling_rate = 1
         if not isinstance(output_subsampling_rate, list):
-            # expand subsampling rate along dims if one per dim is not provided
             output_subsampling_rate = [output_subsampling_rate] * output_data_dims
-        # make sure there is one subsampling rate per data dim
-        assert (
-            len(output_subsampling_rate) == output_data_dims
-        ), f"Error: length mismatch between output_subsampling_rate and dimensions of data.\
-                input_subsampling_rate must be one int shared across all dims, or an iterable of\
-                    length {len(output_data_dims)}, got {output_subsampling_rate}"
+        assert len(output_subsampling_rate) == output_data_dims, (  # NEW
+            "Error: length mismatch between output_subsampling_rate and data dims. "
+            f"Expected {output_data_dims}, got {output_subsampling_rate}"
+        )
 
         # Construct full indices along which to grab Y
         train_output_indices = [slice(0, n_train, None)] + [slice(None, None, rate) for rate in output_subsampling_rate]
