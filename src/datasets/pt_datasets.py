@@ -3,9 +3,8 @@ from typing import List, Union
 import torch
 
 from src.datasets.tensor_dataset import TensorDataset
-#TODO: migrate in milestone 2
-from legacy.neuralop.data.transforms.data_processors import DefaultDataProcessor
-from legacy.neuralop.data.transforms.normalizers import UnitGaussianNormalizer
+from src.datasets.transforms.data_processors import DefaultDataProcessor
+from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 
 
 class PTDataset:
