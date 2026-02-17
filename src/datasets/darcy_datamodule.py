@@ -5,8 +5,7 @@ import lightning as L
 from torch.utils.data import DataLoader
 
 from src.datasets.darcy_dataset import load_darcy_flow_small
-#TODO migrate in milestone 2
-from legacy.neuralop.data.transforms.data_processors import DataProcessor
+from src.datasets.transforms.data_processors import DataProcessor
 
 
 class DarcyDataModule(L.LightningDataModule):

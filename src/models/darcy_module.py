@@ -3,8 +3,8 @@ from typing import Any, Dict, Mapping, MutableMapping, Optional
 import lightning as L
 import torch
 
-#TODO: migrate in milestone 2
-from legacy.neuralop.data.transforms.data_processors import DataProcessor
+from src.datasets.transforms.data_processors import DataProcessor
+
 #TODO: migrate in step4 rmd
 from legacy.neuralop import LpLoss, get_model
 from legacy.neuralop.training import AdamW
