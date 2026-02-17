@@ -32,7 +32,7 @@ DATA_CONFIG = dict(
     download=False,
 )
 
-CONFIG_VARIANTS = (  # NEW
+CONFIG_VARIANTS = (
     {},
     {
         "train_resolution": 32,
@@ -53,101 +53,110 @@ def _have_local_darcy_pt_files(
 
 
 def _build_loaders_from_dataset(dataset_cls, config):
-    dataset = dataset_cls(**config)
-    train_loader = DataLoader(
-        dataset.train_db,
-        batch_size=config["batch_size"],
-        num_workers=0,
-        pin_memory=True,
-        persistent_workers=False,
-    )
-    test_loaders = {}
-    for res, test_bsize in zip(
-        config["test_resolutions"], config["test_batch_sizes"]
-    ):
-        test_loaders[res] = DataLoader(
-            dataset.test_dbs[res],
-            batch_size=test_bsize,
-            shuffle=False,
-            num_workers=0,
-            pin_memory=True,
-            persistent_workers=False,
-        )
-
-    return train_loader, test_loaders, dataset.data_processor
+    ds = dataset_cls(**config)
+    train_loader = DataLoader(ds.train_db, batch_size=config["batch_size"], shuffle=False)
+    test_loaders = {
+        res: DataLoader(ds.test_dbs[res], batch_size=bs, shuffle=False)
+        for res, bs in zip(config["test_resolutions"], config["test_batch_sizes"])
+    }
+    return train_loader, test_loaders, ds.data_processor
 
 
-@pytest.mark.parametrize(  # NEW
-    "config_overrides",
-    CONFIG_VARIANTS,
-    ids=["default", "nondefault"],
-)
+def _subsample_2d(t: torch.Tensor, rate: int) -> torch.Tensor:
+    if rate == 1:
+        return t
+    return t[..., ::rate, ::rate]
+
+
+@pytest.mark.parametrize("config_overrides", CONFIG_VARIANTS, ids=["default", "nondefault"])
 def test_darcy_dataset_matches_legacy(config_overrides):
     config = DATA_CONFIG.copy()
     config.update(config_overrides)
 
     root = Path(config["root_dir"])
-    if not _have_local_darcy_pt_files(
-        root, config["train_resolution"], config["test_resolutions"]
-    ):
-        pytest.skip(
-            f"Darcy .pt files not present under {root}; skipping to avoid network download"
-        )
+    if not _have_local_darcy_pt_files(root, config["train_resolution"], config["test_resolutions"]):
+        pytest.skip(f"Darcy .pt files not present under {root}; skipping to avoid network download")
 
-    legacy_ds = LegacyDarcyDataset(**config)
+    sub = config["subsampling_rate"] or 1
+
     new_ds = NewDarcyDataset(**config)
 
-    assert len(legacy_ds.train_db) == len(new_ds.train_db)
+    # Always assert intended bugfixed semantics on the new dataset
+    x = new_ds.train_db[0]["x"]
+    h, w = x.shape[-2:]
+    expected = config["train_resolution"] // sub
+    assert (h, w) == (expected, expected)
 
-    legacy_sample = legacy_ds.train_db[0]
-    new_sample = new_ds.train_db[0]
-    assert torch.equal(legacy_sample["x"], new_sample["x"])
-    assert torch.equal(legacy_sample["y"], new_sample["y"])
+    if sub == 1:
+        legacy_ds = LegacyDarcyDataset(**config)
 
-    for res in config["test_resolutions"]:
-        assert len(legacy_ds.test_dbs[res]) == len(new_ds.test_dbs[res])
-        legacy_test_sample = legacy_ds.test_dbs[res][0]
-        new_test_sample = new_ds.test_dbs[res][0]
-        assert torch.equal(legacy_test_sample["x"], new_test_sample["x"])
-        assert torch.equal(legacy_test_sample["y"], new_test_sample["y"])
+        assert len(legacy_ds.train_db) == len(new_ds.train_db)
 
-    legacy_proc = legacy_ds.data_processor
-    new_proc = new_ds.data_processor
+        legacy_sample = legacy_ds.train_db[0]
+        new_sample = new_ds.train_db[0]
+        assert torch.equal(legacy_sample["x"], new_sample["x"])
+        assert torch.equal(legacy_sample["y"], new_sample["y"])
 
-    for attr in ("in_normalizer", "out_normalizer"):
-        legacy_norm = getattr(legacy_proc, attr)
-        new_norm = getattr(new_proc, attr)
-        if legacy_norm is None or new_norm is None:
-            assert legacy_norm is None and new_norm is None
-            continue
-        assert torch.allclose(legacy_norm.mean, new_norm.mean)
-        assert torch.allclose(legacy_norm.std, new_norm.std)
+        for res in config["test_resolutions"]:
+            assert len(legacy_ds.test_dbs[res]) == len(new_ds.test_dbs[res])
+            legacy_test_sample = legacy_ds.test_dbs[res][0]
+            new_test_sample = new_ds.test_dbs[res][0]
+            assert torch.equal(legacy_test_sample["x"], new_test_sample["x"])
+            assert torch.equal(legacy_test_sample["y"], new_test_sample["y"])
 
-    subsample = config["subsampling_rate"] or 1
-    new_example = new_ds.train_db[0]["x"]
-    new_height, new_width = new_example.shape[-2:]
-    assert (new_height, new_width) == (
-        config["train_resolution"] // subsample,
-        config["train_resolution"] // subsample,
-    )
+        # strict normalizer parity only when semantics match legacy
+        legacy_proc = legacy_ds.data_processor
+        new_proc = new_ds.data_processor
+        for attr in ("in_normalizer", "out_normalizer"):
+            legacy_norm = getattr(legacy_proc, attr)
+            new_norm = getattr(new_proc, attr)
+            if legacy_norm is None or new_norm is None:
+                assert legacy_norm is None and new_norm is None
+                continue
+            assert torch.allclose(legacy_norm.mean, new_norm.mean)
+            assert torch.allclose(legacy_norm.std, new_norm.std)
+
+    else:
+        # Canonicalized parity: legacy raw grid -> intended (2D) subsampling == new
+        base = config.copy()
+        base["subsampling_rate"] = None
+        legacy_base = LegacyDarcyDataset(**base)
+
+        legacy_x = _subsample_2d(legacy_base.train_db[0]["x"], sub)
+        legacy_y = _subsample_2d(legacy_base.train_db[0]["y"], sub)
+        new_x = new_ds.train_db[0]["x"]
+        new_y = new_ds.train_db[0]["y"]
+        assert torch.equal(legacy_x, new_x)
+        assert torch.equal(legacy_y, new_y)
+
+        for res in config["test_resolutions"]:
+            legacy_tx = _subsample_2d(legacy_base.test_dbs[res][0]["x"], sub)
+            legacy_ty = _subsample_2d(legacy_base.test_dbs[res][0]["y"], sub)
+            new_tx = new_ds.test_dbs[res][0]["x"]
+            new_ty = new_ds.test_dbs[res][0]["y"]
+            assert torch.equal(legacy_tx, new_tx)
+            assert torch.equal(legacy_ty, new_ty)
+
+        # normalizers are fit on different tensors than legacy (legacy bug), so just sanity check
+        new_proc = new_ds.data_processor
+        for attr in ("in_normalizer", "out_normalizer"):
+            norm = getattr(new_proc, attr)
+            if norm is None:
+                continue
+            assert torch.isfinite(norm.mean).all()
+            assert torch.isfinite(norm.std).all()
 
 
-@pytest.mark.parametrize(  # NEW
-    "config_overrides",
-    CONFIG_VARIANTS,
-    ids=["default", "nondefault"],
-)
+@pytest.mark.parametrize("config_overrides", CONFIG_VARIANTS, ids=["default", "nondefault"])
 def test_load_darcy_flow_small_loaders_equivalent(config_overrides):
     config = DATA_CONFIG.copy()
     config.update(config_overrides)
 
     root = Path(config["root_dir"])
-    if not _have_local_darcy_pt_files(
-        root, config["train_resolution"], config["test_resolutions"]
-    ):
-        pytest.skip(
-            f"Darcy .pt files not present under {root}; skipping to avoid network download"
-        )
+    if not _have_local_darcy_pt_files(root, config["train_resolution"], config["test_resolutions"]):
+        pytest.skip(f"Darcy .pt files not present under {root}; skipping to avoid network download")
+
+    sub = config["subsampling_rate"] or 1
 
     if config_overrides == {}:
         legacy_train_loader, legacy_test_loaders, legacy_proc = legacy_load_darcy_flow_small(
@@ -163,11 +172,11 @@ def test_load_darcy_flow_small_loaders_equivalent(config_overrides):
             channel_dim=config["channel_dim"],
         )
     else:
-        (
-            legacy_train_loader,
-            legacy_test_loaders,
-            legacy_proc,
-        ) = _build_loaders_from_dataset(LegacyDarcyDataset, config)
+        base = config.copy()
+        base["subsampling_rate"] = None
+        legacy_train_loader, legacy_test_loaders, legacy_proc = _build_loaders_from_dataset(
+            LegacyDarcyDataset, base
+        )
 
     new_train_loader, new_test_loaders, new_proc = new_load_darcy_flow_small(
         config["n_train"],
@@ -185,25 +194,50 @@ def test_load_darcy_flow_small_loaders_equivalent(config_overrides):
     )
 
     assert len(legacy_train_loader) == len(new_train_loader)
+
     legacy_batch = next(iter(legacy_train_loader))
     new_batch = next(iter(new_train_loader))
-    assert torch.equal(legacy_batch["x"], new_batch["x"])
-    assert torch.equal(legacy_batch["y"], new_batch["y"])
+
+    legacy_x = legacy_batch["x"]
+    legacy_y = legacy_batch["y"]
+    if sub != 1 and config_overrides != {}:
+        legacy_x = _subsample_2d(legacy_x, sub)
+        legacy_y = _subsample_2d(legacy_y, sub)
+
+    assert torch.equal(legacy_x, new_batch["x"])
+    assert torch.equal(legacy_y, new_batch["y"])
 
     for res in config["test_resolutions"]:
         legacy_loader = legacy_test_loaders[res]
         new_loader = new_test_loaders[res]
         assert len(legacy_loader) == len(new_loader)
+
         legacy_batch = next(iter(legacy_loader))
         new_batch = next(iter(new_loader))
-        assert torch.equal(legacy_batch["x"], new_batch["x"])
-        assert torch.equal(legacy_batch["y"], new_batch["y"])
 
-    for attr in ("in_normalizer", "out_normalizer"):
-        legacy_norm = getattr(legacy_proc, attr)
-        new_norm = getattr(new_proc, attr)
-        if legacy_norm is None or new_norm is None:
-            assert legacy_norm is None and new_norm is None
-            continue
-        assert torch.allclose(legacy_norm.mean, new_norm.mean)
-        assert torch.allclose(legacy_norm.std, new_norm.std)
+        legacy_x = legacy_batch["x"]
+        legacy_y = legacy_batch["y"]
+        if sub != 1 and config_overrides != {}:
+            legacy_x = _subsample_2d(legacy_x, sub)
+            legacy_y = _subsample_2d(legacy_y, sub)
+
+        assert torch.equal(legacy_x, new_batch["x"])
+        assert torch.equal(legacy_y, new_batch["y"])
+
+    # strict normalizer parity only for default semantics
+    if config_overrides == {}:
+        for attr in ("in_normalizer", "out_normalizer"):
+            legacy_norm = getattr(legacy_proc, attr)
+            new_norm = getattr(new_proc, attr)
+            if legacy_norm is None or new_norm is None:
+                assert legacy_norm is None and new_norm is None
+                continue
+            assert torch.allclose(legacy_norm.mean, new_norm.mean)
+            assert torch.allclose(legacy_norm.std, new_norm.std)
+    else:
+        for attr in ("in_normalizer", "out_normalizer"):
+            norm = getattr(new_proc, attr)
+            if norm is None:
+                continue
+            assert torch.isfinite(norm.mean).all()
+            assert torch.isfinite(norm.std).all()
