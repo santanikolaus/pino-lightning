@@ -2,8 +2,8 @@ from pathlib import Path
 from typing import List, Union
 import torch
 
+from src.datasets.tensor_dataset import TensorDataset
 #TODO: migrate in milestone 2
-from legacy.neuralop.data.datasets.tensor_dataset import TensorDataset
 from legacy.neuralop.data.transforms.data_processors import DefaultDataProcessor
 from legacy.neuralop.data.transforms.normalizers import UnitGaussianNormalizer
 
