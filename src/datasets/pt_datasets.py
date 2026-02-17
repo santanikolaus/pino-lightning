@@ -1,11 +1,13 @@
 from pathlib import Path
 from typing import List, Union
 import torch
+import logging
 
 from src.datasets.tensor_dataset import TensorDataset
 from src.datasets.transforms.data_processors import DefaultDataProcessor
 from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 
+logger = logging.getLogger(__name__)
 
 class PTDataset:
     """PTDataset is a base Dataset class for our library.
@@ -194,7 +196,7 @@ class PTDataset:
         # load test data
         self._test_dbs = {}
         for res, n_test in zip(test_resolutions, n_tests):
-            print(f"Loading test db for resolution {res} with {n_test} samples ")
+            logger.info("Loading test db for resolution %s with %s samples", res, n_test)
             data = torch.load(Path(root_dir).joinpath(f"{dataset_name}_test_{res}.pt").as_posix())
 
             x_test = data["x"].type(torch.float32).clone()
