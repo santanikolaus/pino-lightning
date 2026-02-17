@@ -4,8 +4,8 @@ from typing import Dict, Optional, Sequence, Tuple, Union
 import lightning as L
 from torch.utils.data import DataLoader
 
-#TODO implement this locally
 from src.datasets.darcy_dataset import load_darcy_flow_small
+#TODO migrate in milestone 2
 from legacy.neuralop.data.transforms.data_processors import DataProcessor
 
 
