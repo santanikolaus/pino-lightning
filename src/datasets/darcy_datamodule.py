@@ -4,13 +4,12 @@ from typing import Dict, Optional, Sequence, Tuple, Union
 import lightning as L
 from torch.utils.data import DataLoader
 
-#TODO implement this locally
 from src.datasets.darcy_dataset import load_darcy_flow_small
-from legacy.neuralop.data.transforms.data_processors import DataProcessor
+from src.datasets.transforms.data_processors import DataProcessor
 
 
 class DarcyDataModule(L.LightningDataModule):
-    """Thin wrapper that exposes the legacy Darcy loaders to Lightning."""
+    """wrapper that exposes the legacy Darcy loaders to Lightning."""
 
     def __init__(
         self,
@@ -25,6 +24,10 @@ class DarcyDataModule(L.LightningDataModule):
         encode_output: bool = True,
         encoding: str = "channel-wise",
         channel_dim: int = 1,
+        train_resolution: int = 16,
+        subsampling_rate: Optional[int] = None,
+        download: bool = False,
+
     ) -> None:
         super().__init__()
         self.n_train = n_train
@@ -37,6 +40,9 @@ class DarcyDataModule(L.LightningDataModule):
         self.encode_output = encode_output
         self.encoding = encoding
         self.channel_dim = channel_dim
+        self.train_resolution = train_resolution
+        self.subsampling_rate = subsampling_rate
+        self.download = download
 
         if len(self.n_tests) != len(self.test_resolutions):
             raise ValueError(
@@ -51,6 +57,7 @@ class DarcyDataModule(L.LightningDataModule):
         self._test_loaders: Optional[Dict[int, DataLoader]] = None
         self.data_processor: Optional[DataProcessor] = None
 
+    #TODO: reintroduce MultigridPatching2D, MGPatchingDataProcessor once we port the legacy helper
     def setup(self, stage: Optional[str] = None) -> None:
         if self._train_loader is not None and self._test_loaders is not None:
             return
@@ -65,6 +72,9 @@ class DarcyDataModule(L.LightningDataModule):
             encode_output=self.encode_output,
             encoding=self.encoding,
             channel_dim=self.channel_dim,
+            train_resolution=self.train_resolution,
+            subsampling_rate=self.subsampling_rate,
+            download=self.download,
         )
         if self.data_root is not None:
             load_kwargs["data_root"] = self.data_root

@@ -1,12 +1,12 @@
 import logging
 from pathlib import Path
-from typing import List, Union
+from typing import List, Union, Optional
 
 from torch.utils.data import DataLoader
 
-from legacy.neuralop.data.datasets.pt_dataset import PTDataset
-from legacy.neuralop.data.datasets.web_utils import download_from_zenodo_record
-from legacy.neuralop.utils import get_project_root
+from src.datasets.pt_datasets import PTDataset
+from src.datasets.web_utils import download_from_zenodo_record
+from src.utils.utils import get_project_root
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,9 @@ def load_darcy_flow_small(
     encode_output=True,
     encoding="channel-wise",
     channel_dim=1,
+    train_resolution: int = 16,
+    subsampling_rate: Optional[int] = None,
+    download: bool = True
 ):
     if data_root is None:
         data_root = example_data_root
@@ -100,13 +103,14 @@ def load_darcy_flow_small(
         n_tests=n_tests,
         batch_size=batch_size,
         test_batch_sizes=test_batch_sizes,
-        train_resolution=16,
+        train_resolution=train_resolution,
         test_resolutions=test_resolutions,
         encode_input=encode_input,
         encode_output=encode_output,
         channel_dim=channel_dim,
         encoding=encoding,
-        download=True,
+        subsampling_rate=subsampling_rate,
+        download=download,
     )
 
     train_loader = DataLoader(
@@ -130,7 +134,7 @@ def load_darcy_flow_small(
 
     return train_loader, test_loaders, dataset.data_processor
 
-
+# todo. legacy entrypoint, migrate worker option in fnct above and delete
 def load_darcy_pt(
     n_train,
     n_tests,
