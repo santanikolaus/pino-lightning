@@ -158,5 +158,5 @@ class DefaultDataProcessor(DataProcessor):
         """
         data_dict = self.preprocess(data_dict)
         output = self.model(data_dict["x"])
-        output = self.postprocess(output)
+        output, data_dict = self.postprocess(output, data_dict)
         return output, data_dict
