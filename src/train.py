@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, List, Optional
 
 import hydra
 import lightning as L
@@ -22,6 +22,9 @@ class DataConfig:
     encode_output: bool = False
     encoding: str = "channel-wise"
     channel_dim: int = 1
+    train_resolution: int = 16
+    subsampling_rate: Optional[int] = None
+    download: bool = True
 
 
 @dataclass
@@ -126,6 +129,9 @@ def main(cfg: DictConfig) -> None:
         encode_output=data_cfg.encode_output,
         encoding=data_cfg.encoding,
         channel_dim=data_cfg.channel_dim,
+        train_resolution=data_cfg.train_resolution,
+        subsampling_rate=data_cfg.subsampling_rate,
+        download=data_cfg.download,
     )
     data_module.setup(stage="fit")
 
