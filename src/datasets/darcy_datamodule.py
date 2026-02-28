@@ -1,16 +1,14 @@
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple, Union
+from typing import Dict, Optional, Sequence, Union
 
 import lightning as L
 from torch.utils.data import DataLoader
 
-from src.datasets.darcy_dataset import load_darcy_flow_small
+from src.datasets.darcy_dataset import load_darcy
 from src.datasets.transforms.data_processors import DataProcessor
 
 
 class DarcyDataModule(L.LightningDataModule):
-    """wrapper that exposes the legacy Darcy loaders to Lightning."""
-
     def __init__(
         self,
         *,
@@ -65,8 +63,6 @@ class DarcyDataModule(L.LightningDataModule):
         load_kwargs = dict(
             n_train=self.n_train,
             n_tests=list(self.n_tests),
-            batch_size=self.batch_size,
-            test_batch_sizes=list(self.test_batch_sizes),
             test_resolutions=list(self.test_resolutions),
             encode_input=self.encode_input,
             encode_output=self.encode_output,
@@ -79,34 +75,32 @@ class DarcyDataModule(L.LightningDataModule):
         if self.data_root is not None:
             load_kwargs["data_root"] = self.data_root
 
-        train_loader, test_loaders, data_processor = load_darcy_flow_small(
-            **load_kwargs
+        dataset = load_darcy(**load_kwargs)
+        self._train_loader = DataLoader(
+            dataset.train_db,
+            batch_size=self.batch_size,
+            num_workers=0,
+            pin_memory=True,
+            persistent_workers=False,
         )
-        self._train_loader = train_loader
-        self._test_loaders = test_loaders
-        self.data_processor = data_processor
-
-    @property
-    def train_loader(self) -> DataLoader:
-        if self._train_loader is None:
-            raise RuntimeError("setup must be called before accessing the train loader")
-        return self._train_loader
-
-    @property
-    def test_loaders(self) -> Dict[int, DataLoader]:
-        if self._test_loaders is None:
-            raise RuntimeError("setup must be called before accessing test loaders")
-        return self._test_loaders
+        self._test_loaders = {
+            res: DataLoader(
+                dataset.test_dbs[res],
+                batch_size=bs,
+                shuffle=False,
+                num_workers=0,
+                pin_memory=True,
+                persistent_workers=False,
+            )
+            for res, bs in zip(self.test_resolutions, self.test_batch_sizes)
+        }
+        self.data_processor = dataset.data_processor
 
     def train_dataloader(self) -> DataLoader:
-        return self.train_loader
+        return self._train_loader
 
     def val_dataloader(self):
-        return [self.test_loaders[res] for res in self.test_resolutions]
+        return [self._test_loaders[res] for res in self.test_resolutions]
 
     def test_dataloader(self):
-        return [self.test_loaders[res] for res in self.test_resolutions]
-
-    def legacy_loaders(self) -> Tuple[DataLoader, Dict[int, DataLoader], Optional[DataProcessor]]:
-        """Return the tuple produced by ``load_darcy_flow_small`` for debugging."""
-        return self.train_loader, self.test_loaders, self.data_processor
+        return [self._test_loaders[res] for res in self.test_resolutions]
