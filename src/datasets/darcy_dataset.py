@@ -2,11 +2,8 @@ import logging
 from pathlib import Path
 from typing import List, Union, Optional
 
-from torch.utils.data import DataLoader
-
 from src.datasets.pt_datasets import PTDataset
 from src.datasets.web_utils import download_from_zenodo_record
-from src.utils.utils import get_project_root
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +14,6 @@ class DarcyDataset(PTDataset):
         root_dir: Union[Path, str],
         n_train: int,
         n_tests: List[int],
-        batch_size: int,
-        test_batch_sizes: List[int],
         train_resolution: int,
         test_resolutions: List[int] = [16, 32],
         encode_input: bool = False,
@@ -28,11 +23,6 @@ class DarcyDataset(PTDataset):
         subsampling_rate=None,
         download: bool = True,
     ):
-        """Initialize the DarcyDataset.
-
-        See class docstring for detailed parameter descriptions.
-        """
-
         if isinstance(root_dir, str):
             root_dir = Path(root_dir)
         if not root_dir.exists():
@@ -42,9 +32,9 @@ class DarcyDataset(PTDataset):
         resolutions = set(test_resolutions + [train_resolution])
         available_resolutions = [16, 32, 64, 128, 421]
         for res in resolutions:
-            assert (
-                res in available_resolutions
-            ), f"Error: resolution {res} not available"
+            assert res in available_resolutions, (
+                f"Error: resolution {res} not available"
+            )
 
         if download:
             files_to_download = []
@@ -66,8 +56,6 @@ class DarcyDataset(PTDataset):
             dataset_name="darcy",
             n_train=n_train,
             n_tests=n_tests,
-            batch_size=batch_size,
-            test_batch_sizes=test_batch_sizes,
             train_resolution=train_resolution,
             test_resolutions=test_resolutions,
             encode_input=encode_input,
@@ -79,11 +67,9 @@ class DarcyDataset(PTDataset):
         )
 
 
-def load_darcy_flow_small(
+def load_darcy(
     n_train,
     n_tests,
-    batch_size,
-    test_batch_sizes,
     data_root=None,
     test_resolutions=[16, 32],
     encode_input=False,
@@ -92,17 +78,13 @@ def load_darcy_flow_small(
     channel_dim=1,
     train_resolution: int = 16,
     subsampling_rate: Optional[int] = None,
-    download: bool = True
+    download: bool = True,
 ):
-    if data_root is None:
-        data_root = example_data_root
 
-    dataset = DarcyDataset(
+    return DarcyDataset(
         root_dir=data_root,
         n_train=n_train,
         n_tests=n_tests,
-        batch_size=batch_size,
-        test_batch_sizes=test_batch_sizes,
         train_resolution=train_resolution,
         test_resolutions=test_resolutions,
         encode_input=encode_input,
@@ -112,78 +94,3 @@ def load_darcy_flow_small(
         subsampling_rate=subsampling_rate,
         download=download,
     )
-
-    train_loader = DataLoader(
-        dataset.train_db,
-        batch_size=batch_size,
-        num_workers=0,
-        pin_memory=True,
-        persistent_workers=False,
-    )
-
-    test_loaders = {}
-    for res, test_bsize in zip(test_resolutions, test_batch_sizes):
-        test_loaders[res] = DataLoader(
-            dataset.test_dbs[res],
-            batch_size=test_bsize,
-            shuffle=False,
-            num_workers=0,
-            pin_memory=True,
-            persistent_workers=False,
-        )
-
-    return train_loader, test_loaders, dataset.data_processor
-
-# todo. legacy entrypoint, migrate worker option in fnct above and delete
-def load_darcy_pt(
-    n_train,
-    n_tests,
-    batch_size,
-    test_batch_sizes,
-    data_root="./neuralop/data/datasets/data",
-    train_resolution=16,
-    test_resolutions=[16, 32],
-    encode_input=False,
-    encode_output=True,
-    encoding="channel-wise",
-    channel_dim=1,
-    num_workers=1,
-):
-    dataset = DarcyDataset(
-        root_dir=data_root,
-        n_train=n_train,
-        n_tests=n_tests,
-        batch_size=batch_size,
-        test_batch_sizes=test_batch_sizes,
-        train_resolution=train_resolution,
-        test_resolutions=test_resolutions,
-        encode_input=encode_input,
-        encode_output=encode_output,
-        encoding=encoding,
-        channel_dim=channel_dim,
-        download=False,
-    )
-
-    train_loader = DataLoader(
-        dataset.train_db,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        pin_memory=True,
-        persistent_workers=False,
-    )
-
-    test_loaders = {}
-    for res, test_bsize in zip(test_resolutions, test_batch_sizes):
-        test_loaders[res] = DataLoader(
-            dataset.test_dbs[res],
-            batch_size=test_bsize,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=False,
-        )
-
-    return train_loader, test_loaders, dataset.data_processor
-
-
-example_data_root = get_project_root() / "neuralop/data/datasets/data"
