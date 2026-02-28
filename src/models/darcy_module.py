@@ -19,7 +19,6 @@ def _get(config: Any, key: str, default: Any = None) -> Any:
 
 
 class DarcyLitModule(L.LightningModule):
-    """LightningModule that defers model construction to ``legacy.neuralop``."""
 
     def __init__(
         self,

@@ -14,7 +14,7 @@ from legacy.neuralop.data.datasets.darcy import (
 
 darcy_dataset_module = importlib.import_module("src.datasets.darcy_dataset")
 NewDarcyDataset = getattr(darcy_dataset_module, "DarcyDataset")
-new_load_darcy_flow_small = getattr(darcy_dataset_module, "load_darcy_flow_small")
+new_load_darcy = getattr(darcy_dataset_module, "load_darcy")
 
 DATA_CONFIG = dict(
     root_dir=example_data_root,
@@ -62,6 +62,14 @@ def _build_loaders_from_dataset(dataset_cls, config):
     return train_loader, test_loaders, ds.data_processor
 
 
+_NEW_DATASET_EXCLUDES = {"batch_size", "test_batch_sizes"}
+
+
+def _new_dataset_config(config: dict) -> dict:
+    """Strip keys not accepted by the new DarcyDataset."""
+    return {k: v for k, v in config.items() if k not in _NEW_DATASET_EXCLUDES}
+
+
 def _subsample_2d(t: torch.Tensor, rate: int) -> torch.Tensor:
     if rate == 1:
         return t
@@ -79,7 +87,7 @@ def test_darcy_dataset_matches_legacy(config_overrides):
 
     sub = config["subsampling_rate"] or 1
 
-    new_ds = NewDarcyDataset(**config)
+    new_ds = NewDarcyDataset(**_new_dataset_config(config))
 
     # Always assert intended bugfixed semantics on the new dataset
     x = new_ds.train_db[0]["x"]
@@ -148,7 +156,7 @@ def test_darcy_dataset_matches_legacy(config_overrides):
 
 
 @pytest.mark.parametrize("config_overrides", CONFIG_VARIANTS, ids=["default", "nondefault"])
-def test_load_darcy_flow_small_loaders_equivalent(config_overrides):
+def test_load_darcy_loaders_equivalent(config_overrides):
     config = DATA_CONFIG.copy()
     config.update(config_overrides)
 
@@ -178,11 +186,9 @@ def test_load_darcy_flow_small_loaders_equivalent(config_overrides):
             LegacyDarcyDataset, base
         )
 
-    new_train_loader, new_test_loaders, new_proc = new_load_darcy_flow_small(
-        config["n_train"],
-        config["n_tests"],
-        config["batch_size"],
-        config["test_batch_sizes"],
+    new_ds = new_load_darcy(
+        n_train=config["n_train"],
+        n_tests=config["n_tests"],
         data_root=config["root_dir"],
         test_resolutions=config["test_resolutions"],
         encode_input=config["encode_input"],
@@ -191,7 +197,14 @@ def test_load_darcy_flow_small_loaders_equivalent(config_overrides):
         channel_dim=config["channel_dim"],
         train_resolution=config["train_resolution"],
         subsampling_rate=config["subsampling_rate"],
+        download=False,
     )
+    new_train_loader = DataLoader(new_ds.train_db, batch_size=config["batch_size"], shuffle=False)
+    new_test_loaders = {
+        res: DataLoader(new_ds.test_dbs[res], batch_size=bs, shuffle=False)
+        for res, bs in zip(config["test_resolutions"], config["test_batch_sizes"])
+    }
+    new_proc = new_ds.data_processor
 
     assert len(legacy_train_loader) == len(new_train_loader)
 

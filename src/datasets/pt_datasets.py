@@ -10,62 +10,6 @@ from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 logger = logging.getLogger(__name__)
 
 class PTDataset:
-    """PTDataset is a base Dataset class for our library.
-        PTDatasets contain input-output pairs a(x), u(x) and may also
-        contain additional information, e.g. function parameters,
-        input geometry or output query points.
-
-        datasets may implement a download flag at init, which provides
-        access to a number of premade datasets for sample problems provided
-        in our Zenodo archive.
-
-    Parameters
-    ----------
-    root_dir : Union[Path, str]
-        root at which to download data files
-    dataset_name : str
-        prefix of pt data files to store/access
-    n_train : int
-        number of train instances
-    n_tests : List[int]
-        number of test instances per test dataset
-    batch_size : int
-        batch size of training set
-    test_batch_sizes : List[int]
-        batch size of test sets
-    train_resolution : int
-        resolution of data for training set
-    test_resolutions : List[int]
-        resolution of data for testing sets
-    encode_input : bool, optional
-        whether to normalize inputs in provided DataProcessor,
-        by default False
-    encode_output : bool, optional
-        whether to normalize outputs in provided DataProcessor,
-        by default True
-    encoding : str, optional
-        parameter for input/output normalization. Whether
-        to normalize by channel ("channel-wise") or
-        by pixel ("pixel-wise"), default "channel-wise"
-    input_subsampling_rate : int or List[int], optional
-        rate at which to subsample each input dimension, by default None
-    output_subsampling_rate : int or List[int], optional
-        rate at which to subsample each output dimension, by default None
-    channel_dim : int, optional
-        dimension of saved tensors to index data channels, by default 1
-    channels_squeezed : bool, optional
-        If the channels dim is 1, whether that is explicitly kept in the saved tensor.
-        If not, we need to unsqueeze it to explicitly have a channel dim.
-        Only applies when there is only one data channel, as in our example problems
-        Defaults to True
-
-    All datasets are required to expose the following attributes after init:
-
-    train_db: torch.utils.data.Dataset of training examples
-    test_db: torch.utils.data.Dataset of test examples
-    data_processor: neuralop.data.transforms.DataProcessor to process data examples
-        optional, default is None
-    """
 
     def __init__(
         self,
@@ -73,8 +17,6 @@ class PTDataset:
         dataset_name: str,
         n_train: int,
         n_tests: List[int],
-        batch_size: int,
-        test_batch_sizes: List[int],
         train_resolution: int,
         test_resolutions: List[int],
         encode_input: bool = False,
@@ -85,22 +27,11 @@ class PTDataset:
         channel_dim=1,
         channels_squeezed=True,
     ):
-        """Initialize the PTDataset.
-
-        See class docstring for detailed parameter descriptions.
-        """
-
         if isinstance(root_dir, str):
             root_dir = Path(root_dir)
 
         self.root_dir = root_dir
-
-        # save dataloader properties for later
-        self.batch_size = batch_size
         self.test_resolutions = test_resolutions
-        self.test_batch_sizes = test_batch_sizes
-
-        # Load train data
 
         data = torch.load(
         Path(root_dir).joinpath(f"{dataset_name}_train_{train_resolution}.pt").as_posix()
@@ -110,7 +41,6 @@ class PTDataset:
         if channels_squeezed:
             x_train = x_train.unsqueeze(channel_dim)
 
-        # Input subsampling: count only the spatial axes actually present
         input_data_dims = x_train.ndim - 2
         if not input_subsampling_rate:
             input_subsampling_rate = 1
@@ -120,7 +50,6 @@ class PTDataset:
             "Error: length mismatch between input_subsampling_rate and data dims. "
             f"Expected {input_data_dims}, got {input_subsampling_rate}"
         )
-        # Construct full indices along which to grab X
         train_input_indices = [slice(0, n_train, None)] + [slice(None, None, rate) for rate in input_subsampling_rate]
         train_input_indices.insert(channel_dim, slice(None))
         train_input_indices = tuple(train_input_indices)
@@ -134,9 +63,7 @@ class PTDataset:
         # this indexing logic to build full slices explicitly instead of inserting
         # channel_dim—otherwise tensors that already have C in place can misalign.
 
-        # Output subsampling
         output_data_dims = y_train.ndim - 2
-        # convert None and 0 to 1
         if not output_subsampling_rate:
             output_subsampling_rate = 1
         if not isinstance(output_subsampling_rate, list):
@@ -146,7 +73,6 @@ class PTDataset:
             f"Expected {output_data_dims}, got {output_subsampling_rate}"
         )
 
-        # Construct full indices along which to grab Y
         train_output_indices = [slice(0, n_train, None)] + [slice(None, None, rate) for rate in output_subsampling_rate]
         train_output_indices.insert(channel_dim, slice(None))
         train_output_indices = tuple(train_output_indices)
@@ -154,12 +80,9 @@ class PTDataset:
 
         del data
 
-        # Fit optional encoders to train data
-        # Actual encoding happens within DataProcessor
         if encode_input:
             if encoding == "channel-wise":
                 reduce_dims = list(range(x_train.ndim))
-                # preserve mean for each channel
                 reduce_dims.pop(channel_dim)
             elif encoding == "pixel-wise":
                 reduce_dims = [0]
@@ -172,7 +95,6 @@ class PTDataset:
         if encode_output:
             if encoding == "channel-wise":
                 reduce_dims = list(range(y_train.ndim))
-                # preserve mean for each channel
                 reduce_dims.pop(channel_dim)
             elif encoding == "pixel-wise":
                 reduce_dims = [0]
@@ -182,18 +104,15 @@ class PTDataset:
         else:
             output_encoder = None
 
-        # Save train dataset
         self._train_db = TensorDataset(
             x_train,
             y_train,
         )
 
-        # create DataProcessor
         self._data_processor = DefaultDataProcessor(
             in_normalizer=input_encoder, out_normalizer=output_encoder
         )
 
-        # load test data
         self._test_dbs = {}
         for res, n_test in zip(test_resolutions, n_tests):
             logger.info("Loading test db for resolution %s with %s samples", res, n_test)
@@ -202,7 +121,6 @@ class PTDataset:
             x_test = data["x"].type(torch.float32).clone()
             if channels_squeezed:
                 x_test = x_test.unsqueeze(channel_dim)
-            # optionally subsample along data indices
             test_input_indices = [slice(0, n_test, None)] + [slice(None, None, rate) for rate in input_subsampling_rate]
             test_input_indices.insert(channel_dim, slice(None))
             test_input_indices = tuple(test_input_indices)
