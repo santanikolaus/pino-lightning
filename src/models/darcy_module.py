@@ -4,9 +4,10 @@ import lightning as L
 import torch
 
 from src.datasets.transforms.data_processors import DataProcessor
+from src.models.losses import LpLoss, H1Loss
 
 #TODO: migrate in step4 rmd
-from legacy.neuralop import LpLoss, get_model
+from legacy.neuralop import get_model
 from legacy.neuralop.training import AdamW
 
 
@@ -31,10 +32,9 @@ class DarcyLitModule(L.LightningModule):
         self.config = config
         self.model = get_model(self.config)
         self.data_processor = data_processor
-        default_loss_kwargs = {"d": 2, "p": 2}
-        if loss_kwargs is not None:
-            default_loss_kwargs.update(loss_kwargs)
-        self.lp_loss = LpLoss(**default_loss_kwargs)
+        self.lp_loss = LpLoss(loss_kwargs)
+        #todo. why d2? fixed? why not injected?
+        self.h1_loss = H1Loss(d=2)
 
         opt_cfg = _get(config, "opt", {})
         self._learning_rate = _get(opt_cfg, "learning_rate", 5e-3)
