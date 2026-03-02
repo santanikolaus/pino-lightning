@@ -39,10 +39,7 @@ class DefaultDataProcessor(DataProcessor):
         if self.out_normalizer is not None and self.training:
             y = self.out_normalizer.transform(y)
 
-        data_dict["x"] = x
-        data_dict["y"] = y
-
-        return data_dict
+        return {**data_dict, "x": x, "y": y}
 
     def postprocess(self, output):
         if self.out_normalizer and not self.training:
