@@ -6,9 +6,8 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from legacy.neuralop.data.datasets.darcy import (
+from neuralop.data.datasets.darcy import (
     DarcyDataset as LegacyDarcyDataset,
-    example_data_root,
     load_darcy_flow_small as legacy_load_darcy_flow_small,
 )
 
@@ -16,8 +15,11 @@ darcy_dataset_module = importlib.import_module("src.datasets.darcy_dataset")
 NewDarcyDataset = getattr(darcy_dataset_module, "DarcyDataset")
 new_load_darcy = getattr(darcy_dataset_module, "load_darcy")
 
+# .pt files live in the vendored legacy directory; tests skip gracefully if absent
+_DATA_ROOT = Path(__file__).parent.parent.parent / "legacy" / "neuralop" / "data" / "datasets" / "data"
+
 DATA_CONFIG = dict(
-    root_dir=example_data_root,
+    root_dir=_DATA_ROOT,
     n_train=8,
     n_tests=[4, 4],
     batch_size=4,
