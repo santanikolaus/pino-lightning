@@ -50,8 +50,8 @@ class DarcyLitModule(L.LightningModule):
 
     def _prepare_batch(self, batch: Dict[str, Any], train: bool) -> Dict[str, Any]:
         data = {k: v for k, v in batch.items()}
-        data = self.data_processor.preprocess(data)
-        return data
+        self.data_processor.train(train)
+        return self.data_processor.preprocess(data)
 
     def _shared_step(self, batch: Dict[str, Any], stage: str, suffix: Optional[str] = None) -> torch.Tensor:
         train_mode = stage == "train"
@@ -79,30 +79,18 @@ class DarcyLitModule(L.LightningModule):
         return self._shared_step(batch, "train")
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "val", f"val_{dataloader_idx}")
+        return self._shared_step(batch, "val","val")
 
-    def test_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int) -> torch.Tensor:
-        return self._shared_step(batch, "test", f"test_{dataloader_idx}")
+    def test_step(self, batch, batch_idx, dataloader_idx):
+        return self._shared_step(batch, "test", "test")
 
     def configure_optimizers(self):
-        optimizer = AdamW(
-            self.parameters(),
-            lr=self._learning_rate,
-            weight_decay=self._weight_decay,
-        )
-        scheduler_factories = {
-            "StepLR": lambda: torch.optim.lr_scheduler.StepLR(
-                optimizer, step_size=self._step_size, gamma=self._gamma
-            ),
-            "CosineAnnealingLR": lambda: torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=self._step_size
-            ),
-        }
-        scheduler = scheduler_factories[self._scheduler]()
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"},
-        }
+        optimizer = AdamW(self.parameters(), lr=self._learning_rate,
+                          weight_decay=self._weight_decay)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self._step_size,
+                                                    gamma=self._gamma)
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler,
+                                                         "interval": "epoch"}}
 
     def on_fit_start(self) -> None:
         self.data_processor.to(self.device)
