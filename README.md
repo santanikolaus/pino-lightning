@@ -31,11 +31,11 @@ OK  check. Only move on once this runs. check
   - Step 2 (Data surface parity) – still in src/datasets/: port normalization, patching, and resolution handling out
   of legacy glue so DarcyDataModule owns all preprocessing. Keep the model import legacy if that helps; the win is
   having data behavior centralized.
-  - Step 3 (Trainer logic) – grow DarcyLitModule to absorb everything previously in
+OK  - Step 3 (Trainer logic) – grow DarcyLitModule to absorb everything previously in
   legacy.neuralop.training.Trainer: H1/L2 combos, eval cadence, AMP (Lightning Trainer handles), callbacks for
   checkpoints/logging, and distributed flags via Lightning strategies. After this, the legacy Trainer isn’t
   referenced anywhere.
-  - Step 4 (Model code) – either continue importing legacy.neuralop.models.fno.FNO or transplant it into src/models/
+OK  - Step 4 (Model code) – either continue importing legacy.neuralop.models.fno.FNO or transplant it into src/models/
   fno.py; do the latter only after training parity is proven so you can compare outputs against the Step‑0 snapshot.
   - Step 5 (Detach legacy) – once shapes, losses, and eval metrics behave like the snapshot, start deleting legacy
   dependencies/configs and rely entirely on src/ + configs/.

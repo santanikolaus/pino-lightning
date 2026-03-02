@@ -7,7 +7,6 @@ from src.datasets.web_utils import download_from_zenodo_record
 
 logger = logging.getLogger(__name__)
 
-
 class DarcyDataset(PTDataset):
     def __init__(
         self,

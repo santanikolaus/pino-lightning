@@ -1,14 +1,10 @@
-from typing import Any, Dict, Mapping, Optional
-
 import lightning as L
 import torch
 
+from typing import Any, Dict, Mapping, Optional
 from src.datasets.transforms.data_processors import DataProcessor
-from src.models.losses import LpLoss, H1Loss
-
-#TODO: migrate in step4 rmd
-from legacy.neuralop import get_model
-from legacy.neuralop.training import AdamW
+from neuralop import get_model, LpLoss, H1Loss
+from neuralop.training import AdamW
 
 
 def _get(config: Any, key: str, default: Any = None) -> Any:
@@ -17,7 +13,6 @@ def _get(config: Any, key: str, default: Any = None) -> Any:
     if isinstance(config, Mapping):
         return config.get(key, default)
     return getattr(config, key, default)
-
 
 class DarcyLitModule(L.LightningModule):
 
