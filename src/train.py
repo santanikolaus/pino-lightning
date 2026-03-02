@@ -56,6 +56,9 @@ class OptConfig:
     n_epochs: int = 1
     learning_rate: float = 5e-3
     weight_decay: float = 1e-4
+    scheduler: str = "StepLR"
+    step_size: int = 100
+    gamma: float = 0.5
 
 
 @dataclass
@@ -77,11 +80,10 @@ class TrainerConfig:
     logger: bool = True
     enable_model_summary: bool = False
 
+
 @dataclass
 class TrainingLoss:
-    l2: str = "LpLoss"
-    h1: str = "H1Loss"
-
+    training: str = "l2"
 
 @dataclass
 class AppConfig:
@@ -138,7 +140,6 @@ def main(cfg: DictConfig) -> None:
         train_resolution=data_cfg.train_resolution,
         subsampling_rate=data_cfg.subsampling_rate,
         download=data_cfg.download,
-        loss=data_cfg.loss,
     )
     data_module.setup(stage="fit")
 
