@@ -2,6 +2,7 @@
 .venv/
 
 lightning_logs
+outputs
 
 # weights and biases
 .wandb/ 
