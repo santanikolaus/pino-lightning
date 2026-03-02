@@ -70,7 +70,7 @@ class DarcyDataset(PTDataset):
 def load_darcy(
     n_train,
     n_tests,
-    data_root=None,
+    data_root,
     test_resolutions=[16, 32],
     encode_input=False,
     encode_output=True,

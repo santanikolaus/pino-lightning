@@ -77,6 +77,11 @@ class TrainerConfig:
     logger: bool = True
     enable_model_summary: bool = False
 
+@dataclass
+class TrainingLoss:
+    l2: str = "LpLoss"
+    h1: str = "H1Loss"
+
 
 @dataclass
 class AppConfig:
@@ -85,6 +90,7 @@ class AppConfig:
     opt: OptConfig = OptConfig()
     patching: PatchingConfig = PatchingConfig()
     trainer: TrainerConfig = TrainerConfig()
+    loss: TrainingLoss = TrainingLoss()
 
 
 class ConfigDict(dict):
@@ -132,6 +138,7 @@ def main(cfg: DictConfig) -> None:
         train_resolution=data_cfg.train_resolution,
         subsampling_rate=data_cfg.subsampling_rate,
         download=data_cfg.download,
+        loss=data_cfg.loss,
     )
     data_module.setup(stage="fit")
 
