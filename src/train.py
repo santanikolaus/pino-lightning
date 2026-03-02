@@ -56,6 +56,8 @@ class OptConfig:
     n_epochs: int = 1
     learning_rate: float = 5e-3
     weight_decay: float = 1e-4
+    step_size: int = 100
+    gamma: float = 0.5
 
 
 @dataclass
@@ -67,7 +69,7 @@ class PatchingConfig:
 
 @dataclass
 class TrainerConfig:
-    max_epochs: int = 1
+    max_epochs: int = 10
     limit_train_batches: int = 2
     limit_val_batches: int = 2
     limit_test_batches: int = 2
@@ -79,12 +81,17 @@ class TrainerConfig:
 
 
 @dataclass
+class TrainingLoss:
+    training: str = "l2"
+
+@dataclass
 class AppConfig:
     data: DataConfig = DataConfig()
     model: ModelConfig = ModelConfig()
     opt: OptConfig = OptConfig()
     patching: PatchingConfig = PatchingConfig()
     trainer: TrainerConfig = TrainerConfig()
+    loss: TrainingLoss = TrainingLoss()
 
 
 class ConfigDict(dict):

@@ -1,6 +1,8 @@
 .env
 .venv/
 
+lightning_logs
+
 # weights and biases
 .wandb/ 
 wandb_api_key.txt
