@@ -56,7 +56,6 @@ class OptConfig:
     n_epochs: int = 1
     learning_rate: float = 5e-3
     weight_decay: float = 1e-4
-    scheduler: str = "StepLR"
     step_size: int = 100
     gamma: float = 0.5
 
@@ -70,7 +69,7 @@ class PatchingConfig:
 
 @dataclass
 class TrainerConfig:
-    max_epochs: int = 1
+    max_epochs: int = 10
     limit_train_batches: int = 2
     limit_val_batches: int = 2
     limit_test_batches: int = 2
