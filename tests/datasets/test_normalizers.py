@@ -248,6 +248,27 @@ def test_single_sample_effective_n_elements_std_is_zero_masked():
     assert torch.allclose(n.std, torch.zeros_like(n.std))
 
 
+def test_masked_stats_match_manual_element_selection():
+    """Independent verification: extract valid elements manually, compare with torch.mean/std."""
+    B, C, H, W = 5, 2, 6, 6
+    x = torch.randn(B, C, H, W)
+
+    mask = torch.zeros(C, H, W, dtype=torch.int64)
+    mask[0, 1::2, ::2] = 1  # channel 0: sparse
+    mask[1, :, :] = 1  # channel 1: all valid
+    mask[1, 0, 0] = 0  # ... except one corner
+
+    dim = [0, 2, 3]
+    n = UnitGaussianNormalizer(dim=dim, mask=mask, eps=1e-7)
+    n.fit(x)
+
+    for c in range(C):
+        valid_hw = mask[c] == 1  # (H, W)
+        vals = x[:, c, :, :][:, valid_hw].flatten()  # all valid values for this channel
+        assert torch.allclose(n.mean[0, c, 0, 0], vals.mean(), atol=1e-5)
+        assert torch.allclose(n.std[0, c, 0, 0], vals.std(), atol=1e-5)
+
+
 def test_device_roundtrip_cpu_cuda_if_available():
     x = torch.randn(2, 1, 4, 4)
     n = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)

@@ -3,11 +3,6 @@ import torch
 
 
 class Transform(torch.nn.Module):
-    """
-    Applies transforms or inverse transforms to
-    model inputs or outputs, respectively
-    """
-
     def __init__(self):
         super().__init__()
 
