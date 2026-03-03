@@ -1,0 +1,7 @@
+model_checkpoint:
+  _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  monitor: val_l2/dataloader_idx_0
+  mode: min
+  save_top_k: 1
+  save_last: true
+  filename: best
