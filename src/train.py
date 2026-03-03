@@ -156,6 +156,14 @@ def main(cfg: DictConfig) -> None:
     wandb_cfg = app_cfg.wandb
     logger = WandbLogger(project=wandb_cfg.project, name=wandb_cfg.name) if wandb_cfg.enabled else True
 
+    checkpoint_callback = L.pytorch.callbacks.ModelCheckpoint(
+        monitor="val_l2/dataloader_idx_0",
+        mode="min",
+        save_top_k=1,
+        save_last=True,
+        filename="best",
+    )
+
     trainer_cfg = app_cfg.trainer
     trainer = L.Trainer(
         max_epochs=trainer_cfg.max_epochs,
@@ -164,9 +172,9 @@ def main(cfg: DictConfig) -> None:
         limit_test_batches=trainer_cfg.limit_test_batches,
         accelerator=trainer_cfg.accelerator,
         devices=trainer_cfg.devices,
-        enable_checkpointing=trainer_cfg.enable_checkpointing,
         logger=logger,
         enable_model_summary=trainer_cfg.enable_model_summary,
+        callbacks=[checkpoint_callback],
     )
     trainer.fit(lit_module, datamodule=data_module)
 

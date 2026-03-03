@@ -1,10 +1,3 @@
-"""
-Power spectrum and field visualizations for a trained FNO run.
-
-Set RUN_ID to the wandb run ID you want to inspect. The script loads
-best.ckpt from pino-darcy/{RUN_ID}/checkpoints/ and runs inference on
-the 16x16 test set.
-"""
 from pathlib import Path
 
 import matplotlib
@@ -18,14 +11,11 @@ from src.models.darcy_module import DarcyLitModule
 from src.train import AppConfig, _to_config_dict
 from omegaconf import OmegaConf
 
-# ── paste run ID here ─────────────────────────────────────────────────────────
-RUN_ID = "5t9ukjt1"
-# ─────────────────────────────────────────────────────────────────────────────
-
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
-CKPT_PATH = _PROJECT_ROOT / "pino-darcy" / RUN_ID / "checkpoints" / "best.ckpt"
+_VISUAL_DIR = Path(__file__).parent
+RUN_ID = (_VISUAL_DIR / "run.txt").read_text().strip()
+CKPT_PATH = _VISUAL_DIR.parent.parent / "pino-darcy" / RUN_ID / "checkpoints" / "best.ckpt"
 DATA_ROOT = Path.home() / "data" / "darcy"
-FIGURE_DIR = Path(__file__).parent / "figures"
+FIGURE_DIR = _VISUAL_DIR / "figures" / RUN_ID
 
 requires_checkpoint = pytest.mark.skipif(
     not CKPT_PATH.exists(),
@@ -39,7 +29,7 @@ requires_darcy_data = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _figure_dir():
-    FIGURE_DIR.mkdir(exist_ok=True)
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @pytest.fixture(scope="module")
@@ -70,21 +60,17 @@ def module_and_loader():
     module.load_state_dict(state_dict)
     module.eval()
 
-    loader_16 = dm.val_dataloader()[0]
-    return module, loader_16
+    return module, dm.val_dataloader()[0]
 
 
 def _radial_power_spectrum(field: torch.Tensor):
-    """Isotropic 1D power spectrum of a 2D field (H, W)."""
     H, W = field.shape
     F = torch.fft.rfft2(field)
     power = F.abs().pow(2)
-
     freqs_y = torch.fft.fftfreq(H)
     freqs_x = torch.fft.rfftfreq(W)
     fy, fx = torch.meshgrid(freqs_y, freqs_x, indexing="ij")
     freq_r = (fy.pow(2) + fx.pow(2)).sqrt()
-
     n_bins = min(H, W) // 2
     bins = torch.linspace(0, 0.5, n_bins + 1)
     spectrum = torch.zeros(n_bins)
@@ -92,43 +78,50 @@ def _radial_power_spectrum(field: torch.Tensor):
         mask = (freq_r >= bins[i]) & (freq_r < bins[i + 1])
         if mask.any():
             spectrum[i] = power[mask].mean()
-
-    bin_centers = 0.5 * (bins[:-1] + bins[1:])
-    return bin_centers.numpy(), spectrum.numpy()
+    return 0.5 * (bins[:-1] + bins[1:]).numpy(), spectrum.numpy()
 
 
-@requires_checkpoint
-@requires_darcy_data
-def test_power_spectrum_pred_vs_true(module_and_loader):
-    module, loader = module_and_loader
+def _batch_averaged_radial_spectrum(fields: torch.Tensor):
+    freqs = spec = None
+    for i in range(fields.shape[0]):
+        f, s = _radial_power_spectrum(fields[i, 0])
+        if freqs is None:
+            freqs, spec = f, s.copy()
+        else:
+            spec += s
+    return freqs, spec / fields.shape[0]
+
+
+def _fftshift_log_power(fields: torch.Tensor):
+    F = torch.fft.fft2(fields)
+    return torch.fft.fftshift(F.abs().pow(2)).log1p().mean(dim=0)
+
+
+def _run_inference(module, loader):
     batch = next(iter(loader))
-
     with torch.no_grad():
         module.data_processor.eval()
         data = module.data_processor.preprocess(batch)
         preds = module(data["x"])
         preds = module.data_processor.postprocess(preds)
+    return preds, batch["y"]
 
-    n_samples = preds.shape[0]
-    freqs = spec_pred = spec_true = None
-    for i in range(n_samples):
-        f, sp = _radial_power_spectrum(preds[i, 0])
-        _, st = _radial_power_spectrum(batch["y"][i, 0])
-        if freqs is None:
-            freqs, spec_pred, spec_true = f, sp.copy(), st.copy()
-        else:
-            spec_pred += sp
-            spec_true += st
-    spec_pred /= n_samples
-    spec_true /= n_samples
+
+@requires_checkpoint
+@requires_darcy_data
+def test_1d_radial_power_spectrum_pred_vs_true_with_mode_cutoff(module_and_loader):
+    module, loader = module_and_loader
+    preds, targets = _run_inference(module, loader)
+
+    freqs_pred, spec_pred = _batch_averaged_radial_spectrum(preds)
+    freqs_true, spec_true = _batch_averaged_radial_spectrum(targets)
 
     n_modes = 15
-    H = preds.shape[-1]
-    mode_cutoff = n_modes / H
+    mode_cutoff = n_modes / preds.shape[-1]
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.semilogy(freqs, spec_true, label="Ground truth", color="steelblue")
-    ax.semilogy(freqs, spec_pred, label="FNO prediction", color="tomato", linestyle="--")
+    ax.semilogy(freqs_true, spec_true, label="Ground truth", color="steelblue")
+    ax.semilogy(freqs_pred, spec_pred, label="FNO prediction", color="tomato", linestyle="--")
     ax.axvline(mode_cutoff, color="gray", linestyle=":", label=f"n_modes={n_modes} cutoff")
     ax.set_xlabel("Spatial frequency")
     ax.set_ylabel("Power spectral density")
@@ -139,27 +132,14 @@ def test_power_spectrum_pred_vs_true(module_and_loader):
     plt.close(fig)
 
 
-def _fftshift_power(field: torch.Tensor):
-    """2D log power spectrum centered at DC, averaged over batch."""
-    F = torch.fft.fft2(field)
-    power = torch.fft.fftshift(F.abs().pow(2))
-    return power.log1p()
-
-
 @requires_checkpoint
 @requires_darcy_data
-def test_power_spectrum_2d_heatmap(module_and_loader):
+def test_2d_fftshift_log_power_heatmap_pred_vs_true(module_and_loader):
     module, loader = module_and_loader
-    batch = next(iter(loader))
+    preds, targets = _run_inference(module, loader)
 
-    with torch.no_grad():
-        module.data_processor.eval()
-        data = module.data_processor.preprocess(batch)
-        preds = module(data["x"])
-        preds = module.data_processor.postprocess(preds)
-
-    avg_pred = _fftshift_power(preds[:, 0]).mean(dim=0)
-    avg_true = _fftshift_power(batch["y"][:, 0]).mean(dim=0)
+    avg_pred = _fftshift_log_power(preds[:, 0])
+    avg_true = _fftshift_log_power(targets[:, 0])
     avg_diff = (avg_pred - avg_true).abs()
 
     vmin = min(avg_pred.min(), avg_true.min()).item()
@@ -169,19 +149,21 @@ def test_power_spectrum_2d_heatmap(module_and_loader):
 
     im0 = axes[0].imshow(avg_true.numpy(), cmap="viridis", vmin=vmin, vmax=vmax)
     axes[0].set_title("Ground truth")
+    axes[0].set_xlabel("kx")
+    axes[0].set_ylabel("ky")
     fig.colorbar(im0, ax=axes[0], fraction=0.046)
 
     im1 = axes[1].imshow(avg_pred.numpy(), cmap="viridis", vmin=vmin, vmax=vmax)
     axes[1].set_title("FNO prediction")
+    axes[1].set_xlabel("kx")
+    axes[1].set_ylabel("ky")
     fig.colorbar(im1, ax=axes[1], fraction=0.046)
 
     im2 = axes[2].imshow(avg_diff.numpy(), cmap="Reds")
     axes[2].set_title("|pred − true|")
+    axes[2].set_xlabel("kx")
+    axes[2].set_ylabel("ky")
     fig.colorbar(im2, ax=axes[2], fraction=0.046)
-
-    for ax in axes:
-        ax.set_xlabel("kx")
-        ax.set_ylabel("ky")
 
     fig.suptitle(f"2D Power Spectrum (log scale, DC centred, run {RUN_ID})")
     fig.tight_layout()

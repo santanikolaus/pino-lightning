@@ -1,15 +1,3 @@
-"""
-Physical-space error visualizations for a trained FNO run.
-
-Set RUN_ID to the wandb run ID you want to inspect. The script loads
-best.ckpt from pino-darcy/{RUN_ID}/checkpoints/ and runs inference on
-the 16x16 test set.
-
-Produces:
-  - field_comparison.png     : ground truth | prediction | |error| (linear)
-  - field_error_log.png      : log-scale pointwise error map
-  - field_error_contours.png : error contours overlaid on the physical field
-"""
 from pathlib import Path
 
 import matplotlib
@@ -24,14 +12,11 @@ from src.models.darcy_module import DarcyLitModule
 from src.train import AppConfig, _to_config_dict
 from omegaconf import OmegaConf
 
-# ── paste run ID here ─────────────────────────────────────────────────────────
-RUN_ID = "5t9ukjt1"
-# ─────────────────────────────────────────────────────────────────────────────
-
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
-CKPT_PATH = _PROJECT_ROOT / "pino-darcy" / RUN_ID / "checkpoints" / "best.ckpt"
+_VISUAL_DIR = Path(__file__).parent
+RUN_ID = (_VISUAL_DIR / "run.txt").read_text().strip()
+CKPT_PATH = _VISUAL_DIR.parent.parent / "pino-darcy" / RUN_ID / "checkpoints" / "best.ckpt"
 DATA_ROOT = Path.home() / "data" / "darcy"
-FIGURE_DIR = Path(__file__).parent / "figures"
+FIGURE_DIR = _VISUAL_DIR / "figures" / RUN_ID
 
 requires_checkpoint = pytest.mark.skipif(
     not CKPT_PATH.exists(),
@@ -45,7 +30,7 @@ requires_darcy_data = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _figure_dir():
-    FIGURE_DIR.mkdir(exist_ok=True)
+    FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @pytest.fixture(scope="module")
@@ -76,8 +61,7 @@ def module_and_loader():
     module.load_state_dict(state_dict)
     module.eval()
 
-    loader_16 = dm.val_dataloader()[0]
-    return module, loader_16
+    return module, dm.val_dataloader()[0]
 
 
 def _run_inference(module, loader):
@@ -92,8 +76,7 @@ def _run_inference(module, loader):
 
 @requires_checkpoint
 @requires_darcy_data
-def test_field_comparison(module_and_loader):
-    """Side-by-side: ground truth | prediction | absolute error (linear scale)."""
+def test_per_sample_field_true_pred_abserr_side_by_side(module_and_loader):
     module, loader = module_and_loader
     preds, targets = _run_inference(module, loader)
 
@@ -103,20 +86,18 @@ def test_field_comparison(module_and_loader):
     for i in range(n_samples):
         true = targets[i, 0].numpy()
         pred = preds[i, 0].numpy()
-        err = np.abs(pred - true)
-
         vmin, vmax = true.min(), true.max()
 
         axes[i, 0].imshow(true, cmap="RdBu_r", vmin=vmin, vmax=vmax)
-        axes[i, 0].set_title(f"Ground truth [{i}]" if i == 0 else "")
+        axes[i, 0].set_title("Ground truth" if i == 0 else "")
         axes[i, 0].axis("off")
 
         axes[i, 1].imshow(pred, cmap="RdBu_r", vmin=vmin, vmax=vmax)
-        axes[i, 1].set_title(f"FNO prediction [{i}]" if i == 0 else "")
+        axes[i, 1].set_title("FNO prediction" if i == 0 else "")
         axes[i, 1].axis("off")
 
-        im = axes[i, 2].imshow(err, cmap="Reds")
-        axes[i, 2].set_title(f"|pred − true| [{i}]" if i == 0 else "")
+        im = axes[i, 2].imshow(np.abs(pred - true), cmap="Reds")
+        axes[i, 2].set_title("|pred − true|" if i == 0 else "")
         axes[i, 2].axis("off")
         fig.colorbar(im, ax=axes[i, 2], fraction=0.046)
 
@@ -128,28 +109,24 @@ def test_field_comparison(module_and_loader):
 
 @requires_checkpoint
 @requires_darcy_data
-def test_field_error_log(module_and_loader):
-    """Log-scale pointwise error maps, averaged over the batch."""
+def test_batch_averaged_log10_absolute_and_relative_error(module_and_loader):
     module, loader = module_and_loader
     preds, targets = _run_inference(module, loader)
 
-    err = (preds[:, 0] - targets[:, 0]).abs()          # (B, H, W)
-    rel_err = err / (targets[:, 0].abs() + 1e-8)       # relative error
-
-    avg_abs = err.mean(dim=0).numpy()
-    avg_rel = rel_err.mean(dim=0).numpy()
+    err = (preds[:, 0] - targets[:, 0]).abs()
+    rel_err = err / (targets[:, 0].abs() + 1e-8)
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
-    im0 = axes[0].imshow(np.log10(avg_abs + 1e-10), cmap="inferno")
+    im0 = axes[0].imshow(np.log10(err.mean(dim=0).numpy() + 1e-10), cmap="inferno")
     axes[0].set_title("log₁₀ |pred − true| (absolute)")
-    fig.colorbar(im0, ax=axes[0], fraction=0.046, label="log₁₀")
     axes[0].axis("off")
+    fig.colorbar(im0, ax=axes[0], fraction=0.046, label="log₁₀")
 
-    im1 = axes[1].imshow(np.log10(avg_rel + 1e-10), cmap="inferno")
+    im1 = axes[1].imshow(np.log10(rel_err.mean(dim=0).numpy() + 1e-10), cmap="inferno")
     axes[1].set_title("log₁₀ |pred − true| / |true| (relative)")
-    fig.colorbar(im1, ax=axes[1], fraction=0.046, label="log₁₀")
     axes[1].axis("off")
+    fig.colorbar(im1, ax=axes[1], fraction=0.046, label="log₁₀")
 
     fig.suptitle(f"Log-scale error maps (batch avg) — run {RUN_ID}")
     fig.tight_layout()
@@ -159,14 +136,14 @@ def test_field_error_log(module_and_loader):
 
 @requires_checkpoint
 @requires_darcy_data
-def test_field_error_contours(module_and_loader):
-    """Error contours overlaid on the physical field (first sample)."""
+def test_absolute_error_contours_overlaid_on_true_and_pred_fields(module_and_loader):
     module, loader = module_and_loader
     preds, targets = _run_inference(module, loader)
 
     true = targets[0, 0].numpy()
     pred = preds[0, 0].numpy()
     err = np.abs(pred - true)
+    levels = np.percentile(err, [25, 50, 75, 90])
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4))
 
@@ -175,11 +152,7 @@ def test_field_error_contours(module_and_loader):
         [true, pred],
         ["Ground truth + error contours", "FNO prediction + error contours"],
     ):
-        vmin, vmax = true.min(), true.max()
-        ax.imshow(field, cmap="RdBu_r", vmin=vmin, vmax=vmax, origin="lower")
-
-        # Overlay error contours at 25th, 50th, 75th percentile of err
-        levels = np.percentile(err, [25, 50, 75, 90])
+        ax.imshow(field, cmap="RdBu_r", vmin=true.min(), vmax=true.max(), origin="lower")
         cs = ax.contour(err, levels=levels, colors="k", linewidths=0.8, alpha=0.6)
         ax.clabel(cs, fmt="%.3f", fontsize=7)
         ax.set_title(title)
