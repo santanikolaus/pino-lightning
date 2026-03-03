@@ -4,6 +4,7 @@ from typing import Any, List, Optional
 import hydra
 import lightning as L
 from hydra.core.config_store import ConfigStore
+from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
 from src.datasets.darcy_datamodule import DarcyDataModule
@@ -13,13 +14,13 @@ from src.models.darcy_module import DarcyLitModule
 @dataclass
 class DataConfig:
     folder: str = "~/data/darcy"
-    batch_size: int = 4
-    n_train: int = 32
-    n_tests: List[int] = field(default_factory=lambda: [16, 16])
-    test_resolutions: List[int] = field(default_factory=lambda: [16, 32])
-    test_batch_sizes: List[int] = field(default_factory=lambda: [4, 4])
-    encode_input: bool = False
-    encode_output: bool = False
+    batch_size: int = 16
+    n_train: int = 1000
+    n_tests: List[int] = field(default_factory=lambda: [50, 200, 200])
+    test_resolutions: List[int] = field(default_factory=lambda: [16, 32, 64])
+    test_batch_sizes: List[int] = field(default_factory=lambda: [16, 16, 8])
+    encode_input: bool = True
+    encode_output: bool = True
     encoding: str = "channel-wise"
     channel_dim: int = 1
     train_resolution: int = 16
@@ -32,8 +33,8 @@ class ModelConfig:
     model_arch: str = "fno"
     data_channels: int = 1
     out_channels: int = 1
-    n_modes: List[int] = field(default_factory=lambda: [16, 16])
-    hidden_channels: int = 24
+    n_modes: List[int] = field(default_factory=lambda: [15, 15])
+    hidden_channels: int = 64
     lifting_channel_ratio: int = 2
     projection_channel_ratio: int = 2
     n_layers: int = 4
@@ -53,8 +54,7 @@ class ModelConfig:
 
 @dataclass
 class OptConfig:
-    n_epochs: int = 1
-    learning_rate: float = 5e-3
+    learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     step_size: int = 100
     gamma: float = 0.5
@@ -69,20 +69,26 @@ class PatchingConfig:
 
 @dataclass
 class TrainerConfig:
-    max_epochs: int = 10
-    limit_train_batches: int = 2
-    limit_val_batches: int = 2
-    limit_test_batches: int = 2
+    max_epochs: int = 500
+    limit_train_batches: Optional[int] = None
+    limit_val_batches: Optional[int] = None
+    limit_test_batches: Optional[int] = None
     accelerator: str = "cpu"
     devices: int = 1
-    enable_checkpointing: bool = False
-    logger: bool = True
     enable_model_summary: bool = False
 
 
 @dataclass
 class TrainingLoss:
     training: str = "l2"
+
+
+@dataclass
+class WandbConfig:
+    project: str = "pino-darcy"
+    name: Optional[str] = None
+    enabled: bool = True
+
 
 @dataclass
 class AppConfig:
@@ -92,6 +98,7 @@ class AppConfig:
     patching: PatchingConfig = PatchingConfig()
     trainer: TrainerConfig = TrainerConfig()
     loss: TrainingLoss = TrainingLoss()
+    wandb: WandbConfig = WandbConfig()
 
 
 class ConfigDict(dict):
@@ -144,6 +151,17 @@ def main(cfg: DictConfig) -> None:
 
     lit_module = DarcyLitModule(app_cfg, data_processor=data_module.data_processor)
 
+    wandb_cfg = app_cfg.wandb
+    logger = WandbLogger(project=wandb_cfg.project, name=wandb_cfg.name) if wandb_cfg.enabled else False
+
+    checkpoint_callback = L.pytorch.callbacks.ModelCheckpoint(
+        monitor="val_l2/dataloader_idx_0",
+        mode="min",
+        save_top_k=1,
+        save_last=True,
+        filename="best",
+    )
+
     trainer_cfg = app_cfg.trainer
     trainer = L.Trainer(
         max_epochs=trainer_cfg.max_epochs,
@@ -152,9 +170,9 @@ def main(cfg: DictConfig) -> None:
         limit_test_batches=trainer_cfg.limit_test_batches,
         accelerator=trainer_cfg.accelerator,
         devices=trainer_cfg.devices,
-        enable_checkpointing=trainer_cfg.enable_checkpointing,
-        logger=trainer_cfg.logger,
+        logger=logger,
         enable_model_summary=trainer_cfg.enable_model_summary,
+        callbacks=[checkpoint_callback],
     )
     trainer.fit(lit_module, datamodule=data_module)
 
