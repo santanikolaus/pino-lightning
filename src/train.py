@@ -54,7 +54,6 @@ class ModelConfig:
 
 @dataclass
 class OptConfig:
-    n_epochs: int = 500
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     step_size: int = 100
@@ -76,7 +75,6 @@ class TrainerConfig:
     limit_test_batches: Optional[int] = None
     accelerator: str = "cpu"
     devices: int = 1
-    enable_checkpointing: bool = True
     enable_model_summary: bool = False
 
 
@@ -154,7 +152,7 @@ def main(cfg: DictConfig) -> None:
     lit_module = DarcyLitModule(app_cfg, data_processor=data_module.data_processor)
 
     wandb_cfg = app_cfg.wandb
-    logger = WandbLogger(project=wandb_cfg.project, name=wandb_cfg.name) if wandb_cfg.enabled else True
+    logger = WandbLogger(project=wandb_cfg.project, name=wandb_cfg.name) if wandb_cfg.enabled else False
 
     checkpoint_callback = L.pytorch.callbacks.ModelCheckpoint(
         monitor="val_l2/dataloader_idx_0",
