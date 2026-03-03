@@ -76,7 +76,7 @@ class TrainerConfig:
     limit_test_batches: Optional[int] = None
     accelerator: str = "cpu"
     devices: int = 1
-    enable_checkpointing: bool = False
+    enable_checkpointing: bool = True
     enable_model_summary: bool = False
 
 
