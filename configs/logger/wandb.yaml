@@ -1,4 +1,4 @@
-_target_: lightning.pytorch.loggers.WandbLogger
-project: pino-darcy
-name: null
-enabled: true
+wandb:
+  _target_: lightning.pytorch.loggers.WandbLogger
+  project: pino-darcy
+  name: null

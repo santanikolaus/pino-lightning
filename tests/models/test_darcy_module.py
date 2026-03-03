@@ -3,45 +3,46 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
+from omegaconf import OmegaConf
+
 from src.datasets.transforms.data_processors import DefaultDataProcessor
 from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 from src.models.darcy_module import DarcyLitModule
-from src.train import ConfigDict
 
 
 def _make_config():
-    return ConfigDict(
-        model=ConfigDict(
-            model_arch="fno",
-            data_channels=1,
-            out_channels=1,
-            n_modes=[8, 8],
-            hidden_channels=8,
-            lifting_channel_ratio=1,
-            projection_channel_ratio=1,
-            n_layers=1,
-            domain_padding=0.0,
-            norm=None,
-            fno_skip="linear",
-            implementation="factorized",
-            use_channel_mlp=False,
-            channel_mlp_expansion=0.5,
-            channel_mlp_dropout=0.0,
-            separable=False,
-            factorization=None,
-            rank=1.0,
-            fixed_rank_modes=False,
-            stabilizer="None",
-        ),
-        opt=ConfigDict(
-            learning_rate=1e-3,
-            weight_decay=1e-4,
-            scheduler="StepLR",
-            step_size=10,
-            gamma=0.5,
-        ),
-        loss=ConfigDict(training="l2"),
-    )
+    return OmegaConf.create({
+        "model": {
+            "model_arch": "fno",
+            "data_channels": 1,
+            "out_channels": 1,
+            "n_modes": [8, 8],
+            "hidden_channels": 8,
+            "lifting_channel_ratio": 1,
+            "projection_channel_ratio": 1,
+            "n_layers": 1,
+            "domain_padding": 0.0,
+            "norm": None,
+            "fno_skip": "linear",
+            "implementation": "factorized",
+            "use_channel_mlp": False,
+            "channel_mlp_expansion": 0.5,
+            "channel_mlp_dropout": 0.0,
+            "separable": False,
+            "factorization": None,
+            "rank": 1.0,
+            "fixed_rank_modes": False,
+            "stabilizer": "None",
+        },
+        "opt": {
+            "learning_rate": 1e-3,
+            "weight_decay": 1e-4,
+            "scheduler": "StepLR",
+            "step_size": 10,
+            "gamma": 0.5,
+        },
+        "loss": {"training": "l2"},
+    })
 
 
 def _make_processor():
