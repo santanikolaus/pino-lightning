@@ -74,7 +74,7 @@ class DarcyLitModule(L.LightningModule):
         return self._shared_step(batch, "train")
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
-        return self._shared_step(batch, "val","val")
+        return self._shared_step(batch, "val", "val")
 
     def test_step(self, batch, batch_idx, dataloader_idx: int = 0):
         return self._shared_step(batch, "test", "test")
