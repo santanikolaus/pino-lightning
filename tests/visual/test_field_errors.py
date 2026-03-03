@@ -13,8 +13,10 @@ from src.train import AppConfig, _to_config_dict
 from omegaconf import OmegaConf
 
 _VISUAL_DIR = Path(__file__).parent
-RUN_ID = (_VISUAL_DIR / "run.txt").read_text().strip()
-CKPT_PATH = _VISUAL_DIR.parent.parent / "pino-darcy" / RUN_ID / "checkpoints" / "best.ckpt"
+_run_cfg = dict(line.split("=", 1) for line in (_VISUAL_DIR / "run.txt").read_text().splitlines() if "=" in line)
+EXPERIMENT = _run_cfg["experiment"]
+RUN_ID = _run_cfg["run_id"]
+CKPT_PATH = _VISUAL_DIR.parent.parent / EXPERIMENT / RUN_ID / "checkpoints" / "best.ckpt"
 DATA_ROOT = Path.home() / "data" / "darcy"
 FIGURE_DIR = _VISUAL_DIR / "figures" / RUN_ID
 
