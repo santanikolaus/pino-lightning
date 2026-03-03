@@ -7,11 +7,13 @@ import numpy as np
 import pytest
 import torch
 
+from hydra import compose, initialize
+from hydra.core.global_hydra import GlobalHydra
+from omegaconf import OmegaConf
+
 from src.datasets.darcy_datamodule import DarcyDataModule
 from src.models.darcy_module import DarcyLitModule
 from src.pde.darcy import DarcyPDE
-from src.train import AppConfig, _to_config_dict
-from omegaconf import OmegaConf
 
 _VISUAL_DIR = Path(__file__).parent
 _run_cfg = dict(line.split("=", 1) for line in (_VISUAL_DIR / "run.txt").read_text().splitlines() if "=" in line)
@@ -38,9 +40,11 @@ def _figure_dir():
 
 @pytest.fixture(scope="module")
 def inference_batch():
-    cfg_dict = OmegaConf.to_container(OmegaConf.structured(AppConfig), resolve=True)
-    app_cfg = _to_config_dict(cfg_dict)
-    data_cfg = app_cfg.data
+    GlobalHydra.instance().clear()
+    with initialize(config_path="../../configs", version_base=None):
+        cfg = compose(config_name="train")
+    cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    data_cfg = cfg.data
 
     dm = DarcyDataModule(
         n_train=data_cfg.n_train,
@@ -58,7 +62,7 @@ def inference_batch():
     )
     dm.setup("fit")
 
-    module = DarcyLitModule(app_cfg, data_processor=dm.data_processor)
+    module = DarcyLitModule(cfg, data_processor=dm.data_processor)
     ckpt = torch.load(CKPT_PATH, map_location="cpu", weights_only=False)
     state_dict = {k: v for k, v in ckpt["state_dict"].items() if k != "_metadata"}
     module.load_state_dict(state_dict)
