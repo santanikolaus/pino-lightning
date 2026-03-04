@@ -1,0 +1,4 @@
+# Loss group: data-supervised only (NO baseline)
+training: l2      # data loss function: l2 | h1
+data_weight: 1.0
+pde_weight: 0.0

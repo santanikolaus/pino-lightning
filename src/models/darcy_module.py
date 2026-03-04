@@ -3,6 +3,7 @@ import torch
 
 from typing import Any, Dict, Mapping, Optional
 from src.datasets.transforms.data_processors import DataProcessor
+from src.pde.darcy import DarcyLoss
 from neuralop import get_model, LpLoss, H1Loss
 from neuralop.training import AdamW
 
@@ -40,6 +41,18 @@ class DarcyLitModule(L.LightningModule):
         training_loss = _get(loss_cfg, "training")
         self.train_loss = {"l2": self.lp_loss, "h1": self.h1_loss}[training_loss]
 
+        self._data_weight: float = _get(loss_cfg, "data_weight", 1.0)
+        self._pde_weight: float = _get(loss_cfg, "pde_weight", 0.0)
+
+        self.darcy_loss: Optional[DarcyLoss] = None
+        if self._pde_weight > 0:
+            data_cfg = _get(config, "data")
+            pde_res = _get(loss_cfg, "pde_resolution", None)
+            if pde_res is None:
+                pde_res = _get(data_cfg, "train_resolution")
+            domain_length: float = _get(data_cfg, "domain_length", 1.0)
+            self.darcy_loss = DarcyLoss(resolution=pde_res, domain_length=domain_length)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
 
@@ -50,6 +63,9 @@ class DarcyLitModule(L.LightningModule):
 
     def _shared_step(self, batch: Dict[str, Any], stage: str, suffix: Optional[str] = None) -> torch.Tensor:
         train_mode = stage == "train"
+        # Stash raw (un-normalized) permeability before preprocessing — DarcyLoss
+        # needs the original physical field, not the normalized version.
+        raw_a = batch["x"] if (train_mode and self.darcy_loss is not None) else None
         data = self._prepare_batch(batch, train_mode)
         preds = self(data["x"])
         preds = self.data_processor.postprocess(preds)
@@ -57,7 +73,16 @@ class DarcyLitModule(L.LightningModule):
         prefix = suffix if suffix is not None else stage
 
         if train_mode:
-            loss = self.train_loss(preds, data["y"])
+            if self.darcy_loss is not None:
+                data_loss = self._data_weight * self.train_loss(preds, data["y"])
+                pde_loss = self._pde_weight * self.darcy_loss(preds, raw_a)
+                loss = data_loss + pde_loss
+                self.log("train_data_loss", data_loss, on_step=True, on_epoch=True,
+                         sync_dist=sync_dist)
+                self.log("train_pde_loss", pde_loss, on_step=True, on_epoch=True,
+                         sync_dist=sync_dist)
+            else:
+                loss = self.train_loss(preds, data["y"])
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
                      sync_dist=sync_dist)
             return loss
