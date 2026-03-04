@@ -1,0 +1,8 @@
+_target_: lightning.Trainer
+max_epochs: 500
+accelerator: cpu
+devices: 1
+enable_model_summary: false
+limit_train_batches: null
+limit_val_batches: null
+limit_test_batches: null

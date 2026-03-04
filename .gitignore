@@ -3,35 +3,34 @@
 .claude
 
 lightning_logs
-outputs
+outputs/
+checkpoints/
+pino-darcy/
+literature/
 
-# weights and biases
-.wandb/ 
+tests/visual/figures
+
+wandb/
+.wandb/
 wandb_api_key.txt
 
-# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
 *.DS_Store
 *.vscode
 
-# C extensions
 *.so
 *.py~
 
-# Pycharm
 .idea
 
-# vim temp files
 *.swp
 
-# Sphinx doc
 legacy/doc/_build/
 legacy/doc/source/auto_examples/
 legacy/doc/source/modules/generated/
 
-# Distribution / packaging
 .Python
 env/
 build/
@@ -50,17 +49,12 @@ var/
 *.egg
 .pytest_cache/
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
-# Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Unit test / coverage reports
 htmlcov/
 .tox/
 .coverage
@@ -71,18 +65,13 @@ coverage.xml
 *,cover
 .hypothesis/
 
-# Translations
 *.mo
 *.pot
 
-# Django stuff:
 *.log
 
-# Sphinx documentation
 docs/_build/
 
-# PyBuilder
 target/
 
-#Ipython Notebook
 .ipynb_checkpoints
