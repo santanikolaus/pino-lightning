@@ -3,6 +3,7 @@ import torch
 
 from typing import Any, Dict, Mapping, Optional
 from src.datasets.transforms.data_processors import DataProcessor
+from src.pde.darcy import DarcyLoss
 from neuralop import get_model, LpLoss, H1Loss
 from neuralop.training import AdamW
 
@@ -40,16 +41,42 @@ class DarcyLitModule(L.LightningModule):
         training_loss = _get(loss_cfg, "training")
         self.train_loss = {"l2": self.lp_loss, "h1": self.h1_loss}[training_loss]
 
+        self._data_weight: float = _get(loss_cfg, "data_weight", 1.0)
+        self._pde_weight: float = _get(loss_cfg, "pde_weight", 0.0)
+
+        self.darcy_loss: Optional[DarcyLoss] = None
+        if self._pde_weight > 0:
+            data_cfg = _get(config, "data")
+            pde_res = _get(loss_cfg, "pde_resolution", None)
+            if pde_res is None:
+                pde_res = _get(data_cfg, "train_resolution")
+            domain_length: float = _get(data_cfg, "domain_length", 1.0)
+            self.darcy_loss = DarcyLoss(resolution=pde_res, domain_length=domain_length)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
 
     def _prepare_batch(self, batch: Dict[str, Any], train: bool) -> Dict[str, Any]:
-        data = {k: v for k, v in batch.items()}
         self.data_processor.train(train)
-        return self.data_processor.preprocess(data)
+        return self.data_processor.preprocess(batch)
+
+    def _denormalize_for_physics(self, preds: torch.Tensor) -> torch.Tensor:
+        """Return predictions in physical units for the PDE residual.
+
+        During training, data_processor.postprocess() is a no-op by design:
+        the data loss is computed entirely in normalized space (both preds and
+        data["y"] are normalized). FD-based physics residuals require physical
+        units, so we explicitly apply the output inverse transform here.
+        """
+        dp = self.data_processor
+        if hasattr(dp, "out_normalizer") and dp.out_normalizer is not None:
+            return dp.out_normalizer.inverse_transform(preds)
+        return preds
 
     def _shared_step(self, batch: Dict[str, Any], stage: str, suffix: Optional[str] = None) -> torch.Tensor:
         train_mode = stage == "train"
+        # batch["x"] is the raw (un-normalised) permeability. preprocess() returns a new
+        # dict ({**data_dict, "x": normalised, "y": normalised}), so batch is never mutated.
         data = self._prepare_batch(batch, train_mode)
         preds = self(data["x"])
         preds = self.data_processor.postprocess(preds)
@@ -57,7 +84,17 @@ class DarcyLitModule(L.LightningModule):
         prefix = suffix if suffix is not None else stage
 
         if train_mode:
-            loss = self.train_loss(preds, data["y"])
+            if self.darcy_loss is not None:
+                data_loss = self._data_weight * self.train_loss(preds, data["y"])
+                u_phys = self._denormalize_for_physics(preds)
+                pde_loss = self._pde_weight * self.darcy_loss(u_phys, batch["x"].to(preds.device))
+                loss = data_loss + pde_loss
+                self.log("train_data_loss", data_loss, on_step=True, on_epoch=True,
+                         sync_dist=sync_dist)
+                self.log("train_pde_loss", pde_loss, on_step=True, on_epoch=True,
+                         sync_dist=sync_dist)
+            else:
+                loss = self.train_loss(preds, data["y"])
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
                      sync_dist=sync_dist)
             return loss
