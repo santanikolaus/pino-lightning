@@ -25,7 +25,6 @@ class DarcyDataModule(L.LightningDataModule):
         train_resolution: int = 16,
         subsampling_rate: Optional[int] = None,
         download: bool = False,
-        domain_length: float = 1.0,
 
     ) -> None:
         super().__init__()
@@ -42,7 +41,6 @@ class DarcyDataModule(L.LightningDataModule):
         self.train_resolution = train_resolution
         self.subsampling_rate = subsampling_rate
         self.download = download
-        self.domain_length = domain_length
 
         if len(self.n_tests) != len(self.test_resolutions):
             raise ValueError(
