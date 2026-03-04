@@ -96,17 +96,23 @@ class DarcyLitModule(L.LightningModule):
 
         if train_mode:
             if self.darcy_loss is not None:
-                data_loss = self._data_weight * self.train_loss(preds, data["y"])
+                raw_data = self.train_loss(preds, data["y"])
+                data_loss = self._data_weight * raw_data
                 u_phys = self._denormalize_for_physics(preds)
                 a = batch["x"].to(preds.device)
                 if u_phys.shape[-1] != self._pde_resolution:
                     u_phys = self._upsample(u_phys, self._pde_resolution)
                     a = self._upsample(a, self._pde_resolution)
-                pde_loss = self._pde_weight * self.darcy_loss(u_phys, a)
+                raw_pde = self.darcy_loss(u_phys, a)
+                pde_loss = self._pde_weight * raw_pde
                 loss = data_loss + pde_loss
                 self.log("train_data_loss", data_loss, on_step=True, on_epoch=True,
                          sync_dist=sync_dist)
                 self.log("train_pde_loss", pde_loss, on_step=True, on_epoch=True,
+                         sync_dist=sync_dist)
+                self.log("train_data_loss_raw", raw_data, on_step=True, on_epoch=True,
+                         sync_dist=sync_dist)
+                self.log("train_pde_loss_raw", raw_pde, on_step=True, on_epoch=True,
                          sync_dist=sync_dist)
             else:
                 loss = self._data_weight * self.train_loss(preds, data["y"])
@@ -126,10 +132,12 @@ class DarcyLitModule(L.LightningModule):
         return self._shared_step(batch, "train")
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
-        return self._shared_step(batch, "val", "val")
+        res = batch["x"].shape[-1]
+        return self._shared_step(batch, "val", f"val_{res}")
 
     def test_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
-        return self._shared_step(batch, "test", "test")
+        res = batch["x"].shape[-1]
+        return self._shared_step(batch, "test", f"test_{res}")
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self._learning_rate,

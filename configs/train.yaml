@@ -5,7 +5,8 @@ defaults:
   - logger: wandb
   - callbacks: default
   - loss: data_only
-  - _self_ #todo.do we need this?
+  - optional experiment: null
+  - _self_
 
 opt:
   learning_rate: 1e-3
