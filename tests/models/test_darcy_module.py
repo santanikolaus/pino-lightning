@@ -374,3 +374,135 @@ class TestPinoIntegration:
         loss_pino = m_pino._shared_step(batch, "train").item()
         loss_data = m_data._shared_step(batch, "train").item()
         assert loss_pino > loss_data
+
+
+# ─── Data-weight in data-only mode ──────────────────────────────────────────
+
+class TestDataWeightDataOnly:
+
+    def test_data_weight_scales_loss(self, batch):
+        """data_weight must multiply the loss even when pde_weight is 0."""
+        processor = _make_processor()
+
+        cfg_w1 = OmegaConf.create(OmegaConf.to_container(_make_config()))
+        cfg_w1["loss"]["data_weight"] = 1.0
+        cfg_w1["loss"]["pde_weight"] = 0.0
+        m1 = DarcyLitModule(cfg_w1, data_processor=processor)
+
+        cfg_w3 = OmegaConf.create(OmegaConf.to_container(_make_config()))
+        cfg_w3["loss"]["data_weight"] = 3.0
+        cfg_w3["loss"]["pde_weight"] = 0.0
+        m3 = DarcyLitModule(cfg_w3, data_processor=processor)
+
+        m3.model.load_state_dict(m1.model.state_dict())
+        for m in (m1, m3):
+            mock_trainer = MagicMock()
+            mock_trainer.world_size = 1
+            m._trainer = mock_trainer
+            m.log = MagicMock()
+
+        loss_w1 = m1._shared_step(batch, "train").item()
+        loss_w3 = m3._shared_step(batch, "train").item()
+        assert loss_w3 == pytest.approx(3.0 * loss_w1, rel=1e-5)
+
+    def test_half_weight_halves_loss(self, batch):
+        processor = _make_processor()
+
+        cfg_w1 = OmegaConf.create(OmegaConf.to_container(_make_config()))
+        cfg_w1["loss"]["data_weight"] = 1.0
+        cfg_w1["loss"]["pde_weight"] = 0.0
+        m1 = DarcyLitModule(cfg_w1, data_processor=processor)
+
+        cfg_wh = OmegaConf.create(OmegaConf.to_container(_make_config()))
+        cfg_wh["loss"]["data_weight"] = 0.5
+        cfg_wh["loss"]["pde_weight"] = 0.0
+        mh = DarcyLitModule(cfg_wh, data_processor=processor)
+
+        mh.model.load_state_dict(m1.model.state_dict())
+        for m in (m1, mh):
+            mock_trainer = MagicMock()
+            mock_trainer.world_size = 1
+            m._trainer = mock_trainer
+            m.log = MagicMock()
+
+        loss_w1 = m1._shared_step(batch, "train").item()
+        loss_wh = mh._shared_step(batch, "train").item()
+        assert loss_wh == pytest.approx(0.5 * loss_w1, rel=1e-5)
+
+
+# ─── End-to-end numerical physics tests (no mocks) ──────────────────────────
+
+class TestPhysicsNumerical:
+
+    def test_exact_solution_pde_loss_matches_analytical_value(self):
+        """End-to-end: stub model with exact Darcy solution, verify PDE loss ≈ 0.
+
+        u = 0.5·x·(1-x) is the exact solution of -∇·(a∇u) = 1 with a=1.
+        The entire pipeline (normalizer round-trip, _denormalize_for_physics,
+        DarcyLoss) must produce a near-zero physics loss.
+        """
+        N = 16
+        X, _ = torch.meshgrid(
+            torch.linspace(0, 1, N), torch.linspace(0, 1, N), indexing="ij"
+        )
+        u_exact = (0.5 * X * (1 - X)).unsqueeze(0).unsqueeze(0)  # (1, 1, N, N)
+
+        mean, std = 0.5, 2.0
+        m, out_norm = _make_pino_module_with_normalizer(mean=mean, std=std)
+        m.model = _FixedOutputModel(out_norm.transform(u_exact).clone())
+
+        batch = {"x": torch.ones(1, 1, N, N), "y": u_exact.clone()}
+        loss = m._shared_step(batch, "train")
+
+        pde_log = next(c for c in m.log.call_args_list if c.args[0] == "train_pde_loss")
+        data_log = next(c for c in m.log.call_args_list if c.args[0] == "train_data_loss")
+
+        assert pde_log.args[1].item() < 0.05
+        assert data_log.args[1].item() < 1e-5
+
+    def test_wrong_solution_gives_large_pde_loss(self):
+        """A constant prediction violates -∇·(a∇u)=1, so PDE loss must be large."""
+        N = 16
+        mean, std = 0.0, 1.0
+        m, out_norm = _make_pino_module_with_normalizer(mean=mean, std=std, eps=0.0)
+        m.model = _FixedOutputModel(torch.full((1, 1, N, N), 5.0))
+
+        batch = {"x": torch.ones(1, 1, N, N), "y": torch.randn(1, 1, N, N)}
+        m._shared_step(batch, "train")
+
+        pde_log = next(c for c in m.log.call_args_list if c.args[0] == "train_pde_loss")
+        assert pde_log.args[1].item() > 0.5
+
+    def test_pde_gradient_magnitude_scales_with_weight(self):
+        """PDE-loss gradients on model params scale linearly with pde_weight."""
+        N = 16
+        batch = {"x": torch.randn(2, 1, N, N), "y": torch.randn(2, 1, N, N)}
+
+        torch.manual_seed(42)
+        m1 = _make_pino_module(pde_weight=1.0, data_weight=0.0)
+        torch.manual_seed(42)
+        m2 = _make_pino_module(pde_weight=2.0, data_weight=0.0)
+        m2.model.load_state_dict(m1.model.state_dict())
+
+        loss1 = m1._shared_step(batch, "train")
+        loss1.backward()
+        grad_norm_1 = sum(p.grad.norm().item() for p in m1.model.parameters() if p.grad is not None)
+
+        loss2 = m2._shared_step(batch, "train")
+        loss2.backward()
+        grad_norm_2 = sum(p.grad.norm().item() for p in m2.model.parameters() if p.grad is not None)
+
+        assert grad_norm_2 == pytest.approx(2.0 * grad_norm_1, rel=0.05)
+
+    def test_domain_length_propagates_to_darcy_loss(self):
+        """domain_length from data config must reach DarcyLoss and affect the result."""
+        cfg_L1 = _make_pino_config()
+        cfg_L1["data"]["domain_length"] = 1.0
+        m1 = DarcyLitModule(cfg_L1, data_processor=_make_processor())
+
+        cfg_L2 = _make_pino_config()
+        cfg_L2["data"]["domain_length"] = 2.0
+        m2 = DarcyLitModule(cfg_L2, data_processor=_make_processor())
+
+        assert m1.darcy_loss.pde.fd.h == (pytest.approx(1.0 / 15), pytest.approx(1.0 / 15))
+        assert m2.darcy_loss.pde.fd.h == (pytest.approx(2.0 / 15), pytest.approx(2.0 / 15))
