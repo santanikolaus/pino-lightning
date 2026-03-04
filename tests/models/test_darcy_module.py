@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
@@ -506,3 +506,56 @@ class TestPhysicsNumerical:
 
         assert m1.darcy_loss.pde.fd.h == (pytest.approx(1.0 / 15), pytest.approx(1.0 / 15))
         assert m2.darcy_loss.pde.fd.h == (pytest.approx(2.0 / 15), pytest.approx(2.0 / 15))
+
+
+# ─── Cross-resolution upsampling ─────────────────────────────────────────────
+
+class TestCrossResolution:
+
+    def test_cross_resolution_produces_scalar_loss(self):
+        """pde_resolution=32 with 16×16 batch must not raise and return a grad scalar."""
+        m = _make_pino_module(pde_resolution=32)
+        batch = {"x": torch.randn(4, 1, 16, 16), "y": torch.randn(4, 1, 16, 16)}
+        loss = m._shared_step(batch, "train")
+        assert loss.dim() == 0
+        assert loss.requires_grad
+
+    def test_same_loss_when_pde_res_equals_train_res(self):
+        """Explicit pde_resolution=16 vs None (defaults to train_resolution=16) must
+        produce identical loss values — upsampling noop must not change numerics."""
+        torch.manual_seed(7)
+        m_explicit = _make_pino_module(pde_resolution=16)
+        torch.manual_seed(7)
+        m_implicit = _make_pino_module(pde_resolution=None)
+        m_implicit.model.load_state_dict(m_explicit.model.state_dict())
+
+        batch = {"x": torch.randn(4, 1, 16, 16), "y": torch.randn(4, 1, 16, 16)}
+        loss_explicit = m_explicit._shared_step(batch, "train").item()
+        loss_implicit = m_implicit._shared_step(batch, "train").item()
+        assert loss_explicit == pytest.approx(loss_implicit, rel=1e-5)
+
+    def test_darcy_loss_receives_upsampled_tensors(self):
+        """When pde_resolution=32, both u and a passed to DarcyLoss must be 32×32."""
+        m = _make_pino_module(pde_resolution=32)
+        batch = {"x": torch.randn(4, 1, 16, 16), "y": torch.randn(4, 1, 16, 16)}
+
+        captured = {}
+        original_call = m.darcy_loss.__class__.__call__
+
+        def capturing_call(self_dl, u, a):
+            captured["u_shape"] = u.shape
+            captured["a_shape"] = a.shape
+            return original_call(self_dl, u, a)
+
+        with patch.object(m.darcy_loss.__class__, "__call__", capturing_call):
+            m._shared_step(batch, "train")
+
+        assert captured["u_shape"][-2:] == (32, 32)
+        assert captured["a_shape"][-2:] == (32, 32)
+
+    def test_upsample_is_noop_at_same_resolution(self):
+        """_upsample must return the exact same tensor when size already matches."""
+        m = _make_pino_module()
+        x = torch.randn(2, 1, 16, 16)
+        result = m._upsample(x, 16)
+        assert result is x

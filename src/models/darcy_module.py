@@ -1,5 +1,6 @@
 import lightning as L
 import torch
+import torch.nn.functional as F
 
 from typing import Any, Dict, Mapping, Optional
 from src.datasets.transforms.data_processors import DataProcessor
@@ -45,6 +46,7 @@ class DarcyLitModule(L.LightningModule):
         self._pde_weight: float = _get(loss_cfg, "pde_weight", 0.0)
 
         self.darcy_loss: Optional[DarcyLoss] = None
+        self._pde_resolution: Optional[int] = None
         if self._pde_weight > 0:
             data_cfg = _get(config, "data")
             pde_res = _get(loss_cfg, "pde_resolution", None)
@@ -52,6 +54,7 @@ class DarcyLitModule(L.LightningModule):
                 pde_res = _get(data_cfg, "train_resolution")
             domain_length: float = _get(data_cfg, "domain_length", 1.0)
             self.darcy_loss = DarcyLoss(resolution=pde_res, domain_length=domain_length)
+            self._pde_resolution = pde_res
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -59,6 +62,14 @@ class DarcyLitModule(L.LightningModule):
     def _prepare_batch(self, batch: Dict[str, Any], train: bool) -> Dict[str, Any]:
         self.data_processor.train(train)
         return self.data_processor.preprocess(batch)
+
+    def _upsample(self, x: torch.Tensor, size: int) -> torch.Tensor:
+        """Bilinearly/bicubically interpolate spatial dims to size×size.
+        align_corners=True preserves physical boundary values (grid at x_i = i/(N-1)).
+        """
+        if x.shape[-1] == size and x.shape[-2] == size:
+            return x
+        return F.interpolate(x, size=(size, size), mode="bicubic", align_corners=True)
 
     def _denormalize_for_physics(self, preds: torch.Tensor) -> torch.Tensor:
         """Return predictions in physical units for the PDE residual.
@@ -87,7 +98,11 @@ class DarcyLitModule(L.LightningModule):
             if self.darcy_loss is not None:
                 data_loss = self._data_weight * self.train_loss(preds, data["y"])
                 u_phys = self._denormalize_for_physics(preds)
-                pde_loss = self._pde_weight * self.darcy_loss(u_phys, batch["x"].to(preds.device))
+                a = batch["x"].to(preds.device)
+                if u_phys.shape[-1] != self._pde_resolution:
+                    u_phys = self._upsample(u_phys, self._pde_resolution)
+                    a = self._upsample(a, self._pde_resolution)
+                pde_loss = self._pde_weight * self.darcy_loss(u_phys, a)
                 loss = data_loss + pde_loss
                 self.log("train_data_loss", data_loss, on_step=True, on_epoch=True,
                          sync_dist=sync_dist)
