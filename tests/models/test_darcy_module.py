@@ -163,6 +163,29 @@ def _make_pino_module(pde_weight: float = 1.0, data_weight: float = 1.0,
     return m
 
 
+def _make_pino_module_with_normalizer(mean: float, std: float, eps: float = 0.0):
+    """PINO module with an out_normalizer whose stats are fully controlled.
+
+    Used by tests that need to verify the exact inverse_transform value that
+    DarcyLoss receives, isolating _denormalize_for_physics from other setup noise.
+    """
+    out_norm = UnitGaussianNormalizer(
+        mean=torch.full((1, 1, 1, 1), mean),
+        std=torch.full((1, 1, 1, 1), std),
+        eps=eps,
+        dim=[0, 2, 3],
+    )
+    in_norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
+    in_norm.fit(torch.randn(16, 1, 16, 16))
+    processor = DefaultDataProcessor(in_normalizer=in_norm, out_normalizer=out_norm)
+    m = DarcyLitModule(_make_pino_config(), data_processor=processor)
+    mock_trainer = MagicMock()
+    mock_trainer.world_size = 1
+    m._trainer = mock_trainer
+    m.log = MagicMock()
+    return m, out_norm
+
+
 @pytest.fixture
 def pino_module():
     return _make_pino_module()
@@ -258,36 +281,18 @@ class TestPinoSharedStep:
         assert called_a.device == called_u.device
 
     def test_darcy_loss_receives_denormalized_predictions(self):
-        # Set up out_normalizer with known mean/std so we can predict the exact
-        # inverse transform. Model outputs a constant value in normalized space;
-        # DarcyLoss must receive the inverse-transformed physical value.
+        # Model outputs a constant in normalised space; DarcyLoss must see
+        # the inverse-transformed physical value, not the normalised one.
         mean_val, std_val = 2.0, 3.0
-        out_norm = UnitGaussianNormalizer(
-            mean=torch.full((1, 1, 1, 1), mean_val),
-            std=torch.full((1, 1, 1, 1), std_val),
-            eps=0.0,
-            dim=[0, 2, 3],
-        )
-        in_norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
-        in_norm.fit(torch.randn(16, 1, 16, 16))
-        processor = DefaultDataProcessor(in_normalizer=in_norm, out_normalizer=out_norm)
-        m = DarcyLitModule(_make_pino_config(), data_processor=processor)
-        mock_trainer = MagicMock()
-        mock_trainer.world_size = 1
-        m._trainer = mock_trainer
-        m.log = MagicMock()
-
-        # Model always outputs 1.0 in normalised space.
-        # inverse_transform(1.0) = 1.0 * (3.0 + 0.0) + 2.0 = 5.0
+        m, _ = _make_pino_module_with_normalizer(mean=mean_val, std=std_val)
+        # Model always outputs 1.0 → inverse_transform(1.0) = 1.0*3.0 + 2.0 = 5.0
         m.model = _FixedOutputModel(torch.ones(4, 1, 16, 16))
         m.darcy_loss = MagicMock(return_value=torch.tensor(0.5))
 
-        batch = {"x": torch.ones(4, 1, 16, 16), "y": torch.randn(4, 1, 16, 16)}
-        m._shared_step(batch, "train")
+        m._shared_step({"x": torch.ones(4, 1, 16, 16), "y": torch.randn(4, 1, 16, 16)}, "train")
 
         called_u = m.darcy_loss.call_args[0][0]
-        expected = 1.0 * std_val + mean_val  # = 5.0
-        assert called_u.mean().item() == pytest.approx(expected, abs=1e-4)
+        assert called_u.mean().item() == pytest.approx(1.0 * std_val + mean_val, abs=1e-4)
 
     def test_physics_loss_near_zero_for_exact_solution_with_correct_denorm(self):
         """End-to-end numerical check that inverse_transform is applied correctly.
@@ -307,29 +312,12 @@ class TestPinoSharedStep:
             torch.linspace(0, 1, N), torch.linspace(0, 1, N), indexing="ij"
         )
         u_exact = (0.5 * X * (1 - X)).unsqueeze(0).unsqueeze(0)  # (1, 1, N, N)
-        a_ones = torch.ones(1, 1, N, N)
 
-        # Non-trivial normalizer: shifting by mean=0.1, scaling by std=2.0
-        out_norm = UnitGaussianNormalizer(
-            mean=torch.full((1, 1, 1, 1), 0.1),
-            std=torch.full((1, 1, 1, 1), 2.0),
-            eps=0.0,
-            dim=[0, 2, 3],
-        )
-        in_norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
-        in_norm.fit(torch.randn(16, 1, N, N))
-        processor = DefaultDataProcessor(in_normalizer=in_norm, out_normalizer=out_norm)
-        m = DarcyLitModule(_make_pino_config(), data_processor=processor)
-        mock_trainer = MagicMock()
-        mock_trainer.world_size = 1
-        m._trainer = mock_trainer
-        m.log = MagicMock()
-
+        m, out_norm = _make_pino_module_with_normalizer(mean=0.1, std=2.0)
         # Model returns the normalised exact solution: (u_exact - 0.1) / 2.0
-        u_normalized = out_norm.transform(u_exact)
-        m.model = _FixedOutputModel(u_normalized.clone())
+        m.model = _FixedOutputModel(out_norm.transform(u_exact).clone())
 
-        m._shared_step(batch={"x": a_ones.clone(), "y": u_exact.clone()}, stage="train")
+        m._shared_step({"x": torch.ones(1, 1, N, N), "y": u_exact.clone()}, "train")
 
         pde_log = next(c for c in m.log.call_args_list if c.args[0] == "train_pde_loss")
         pde_val = pde_log.args[1].item()

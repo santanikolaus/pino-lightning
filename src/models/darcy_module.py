@@ -57,9 +57,8 @@ class DarcyLitModule(L.LightningModule):
         return self.model(x)
 
     def _prepare_batch(self, batch: Dict[str, Any], train: bool) -> Dict[str, Any]:
-        data = {k: v for k, v in batch.items()}
         self.data_processor.train(train)
-        return self.data_processor.preprocess(data)
+        return self.data_processor.preprocess(batch)
 
     def _denormalize_for_physics(self, preds: torch.Tensor) -> torch.Tensor:
         """Return predictions in physical units for the PDE residual.
@@ -76,8 +75,8 @@ class DarcyLitModule(L.LightningModule):
 
     def _shared_step(self, batch: Dict[str, Any], stage: str, suffix: Optional[str] = None) -> torch.Tensor:
         train_mode = stage == "train"
-        # batch["x"] is the raw (un-normalised) permeability; _prepare_batch shallow-copies
-        # the dict so batch["x"] is never reassigned even though data["x"] is normalised.
+        # batch["x"] is the raw (un-normalised) permeability. preprocess() returns a new
+        # dict ({**data_dict, "x": normalised, "y": normalised}), so batch is never mutated.
         data = self._prepare_batch(batch, train_mode)
         preds = self(data["x"])
         preds = self.data_processor.postprocess(preds)
