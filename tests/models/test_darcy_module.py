@@ -1,3 +1,4 @@
+import math
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ from omegaconf import OmegaConf
 from src.datasets.transforms.data_processors import DefaultDataProcessor
 from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 from src.models.darcy_module import DarcyLitModule
+from src.pde.darcy import DarcyLoss
 
 
 class _FixedOutputModel(torch.nn.Module):
@@ -559,3 +561,193 @@ class TestCrossResolution:
         x = torch.randn(2, 1, 16, 16)
         result = m._upsample(x, 16)
         assert result is x
+
+
+# ─── Numerical cross-resolution tests ───────────────────────────────────────
+
+def _unit_grid(N: int):
+    c = torch.linspace(0, 1, N)
+    return torch.meshgrid(c, c, indexing="ij")
+
+
+class TestCrossResolutionNumerical:
+
+    def test_upsample_preserves_corner_values(self):
+        """align_corners=True must keep all four corner values exactly."""
+        m = _make_pino_module()
+        x = torch.randn(2, 1, 8, 8)
+        y = m._upsample(x, 32)
+        for b in range(2):
+            assert y[b, 0, 0, 0].item() == pytest.approx(x[b, 0, 0, 0].item(), abs=1e-5)
+            assert y[b, 0, 0, -1].item() == pytest.approx(x[b, 0, 0, -1].item(), abs=1e-5)
+            assert y[b, 0, -1, 0].item() == pytest.approx(x[b, 0, -1, 0].item(), abs=1e-5)
+            assert y[b, 0, -1, -1].item() == pytest.approx(x[b, 0, -1, -1].item(), abs=1e-5)
+
+    def test_upsample_preserves_constant_field(self):
+        """A spatially constant tensor must remain constant after upsampling.
+        Critical because constant permeability a=1 is the baseline Darcy case."""
+        m = _make_pino_module()
+        x = torch.full((2, 1, 16, 16), 3.14)
+        y = m._upsample(x, 32)
+        assert (y - 3.14).abs().max().item() < 1e-5
+
+    def test_upsample_recovers_smooth_function_on_fine_grid(self):
+        """Bicubic interpolation of a low-frequency cosine must closely match the
+        analytical function evaluated on the fine grid."""
+        m = _make_pino_module()
+        N_coarse, N_fine = 16, 64
+        Xc, Yc = _unit_grid(N_coarse)
+        f_coarse = (torch.cos(2 * math.pi * Xc) * torch.cos(2 * math.pi * Yc))
+        f_coarse = f_coarse.unsqueeze(0).unsqueeze(0)
+
+        Xf, Yf = _unit_grid(N_fine)
+        f_fine_exact = torch.cos(2 * math.pi * Xf) * torch.cos(2 * math.pi * Yf)
+
+        f_fine_interp = m._upsample(f_coarse, N_fine)
+        max_error = (f_fine_interp[0, 0] - f_fine_exact).abs().max().item()
+        assert max_error < 0.05
+
+    def test_upsample_permeability_matches_analytical_on_fine_grid(self):
+        """Upsampled a(x) = 1 + x must match (1 + x) evaluated at fine grid nodes.
+        Bicubic interpolation has O(h²) error at non-aligned grid points."""
+        m = _make_pino_module()
+        N_coarse, N_fine = 16, 32
+        Xc, _ = _unit_grid(N_coarse)
+        a_coarse = (1.0 + Xc).unsqueeze(0).unsqueeze(0)
+
+        Xf, _ = _unit_grid(N_fine)
+        a_fine_exact = 1.0 + Xf
+
+        a_fine_interp = m._upsample(a_coarse, N_fine)
+        max_error = (a_fine_interp[0, 0] - a_fine_exact).abs().max().item()
+        assert max_error < 0.01
+
+    def test_cross_res_exact_solution_pde_loss_matches_standalone(self):
+        """Full pipeline: model outputs the normalised exact Darcy solution on a
+        16×16 grid. The module denormalizes, upsamples to 32×32, and calls DarcyLoss.
+
+        Instead of expecting near-zero loss (interpolation artifacts prevent that),
+        we verify the pipeline PDE loss matches a standalone computation:
+          manual_upsample(inverse_transform(transform(u_exact))) → DarcyLoss(32)
+        This proves the wiring (denormalize → upsample → physics) is correct.
+        """
+        N = 16
+        pde_res = 32
+        X, _ = _unit_grid(N)
+        u_exact = (0.5 * X * (1 - X)).unsqueeze(0).unsqueeze(0)
+
+        mean, std = 0.1, 2.0
+        m, out_norm = _make_pino_module_with_normalizer(mean=mean, std=std)
+        m._pde_resolution = pde_res
+        m.darcy_loss = DarcyLoss(resolution=pde_res, domain_length=1.0)
+        m.model = _FixedOutputModel(out_norm.transform(u_exact).clone())
+
+        batch = {"x": torch.ones(1, 1, N, N), "y": u_exact.clone()}
+        m._shared_step(batch, "train")
+
+        pde_log = next(c for c in m.log.call_args_list if c.args[0] == "train_pde_loss")
+        pipeline_pde = pde_log.args[1].item()
+
+        u_phys = out_norm.inverse_transform(out_norm.transform(u_exact))
+        u_up = m._upsample(u_phys, pde_res)
+        a_up = m._upsample(torch.ones(1, 1, N, N), pde_res)
+        standalone_pde = DarcyLoss(resolution=pde_res, domain_length=1.0)(u_up, a_up).item()
+
+        assert pipeline_pde == pytest.approx(standalone_pde, rel=1e-5), (
+            f"Pipeline PDE loss ({pipeline_pde:.4f}) differs from standalone "
+            f"({standalone_pde:.4f}). Wiring of denormalize→upsample→DarcyLoss is broken."
+        )
+
+    def test_richer_coarse_grid_yields_smaller_upsampled_residual(self):
+        """Upsampling from a finer coarse grid to the same target resolution must
+        give a smaller FD residual because the interpolation has more information.
+
+        Upsample u_exact from 16→64 vs 32→64: the 32→64 path should have a
+        smaller residual because the coarse representation is more accurate."""
+        from src.pde.darcy import DarcyPDE
+        m = _make_pino_module()
+        target = 64
+
+        errors = {}
+        for N_src in (16, 32):
+            X, _ = _unit_grid(N_src)
+            u_src = (0.5 * X * (1 - X)).unsqueeze(0).unsqueeze(0)
+            u_up = m._upsample(u_src, target)
+            pde = DarcyPDE(resolution=target)
+            res = pde.residual(u_up.squeeze(1), torch.ones(1, target, target))
+            errors[N_src] = res[0, 4:-4, 4:-4].abs().max().item()
+
+        assert errors[32] < errors[16], (
+            f"32→64 residual ({errors[32]:.4f}) must be smaller than 16→64 "
+            f"({errors[16]:.4f}) because a richer coarse grid gives better interpolation."
+        )
+
+    def test_cross_res_gradients_are_finite_and_nonzero(self):
+        """Gradients through the upsample→DarcyLoss path must be finite and non-zero,
+        confirming that the interpolation does not break the computation graph."""
+        m = _make_pino_module(pde_resolution=32, data_weight=0.0, pde_weight=1.0)
+        batch = {"x": torch.randn(2, 1, 16, 16), "y": torch.randn(2, 1, 16, 16)}
+        loss = m._shared_step(batch, "train")
+        loss.backward()
+
+        grads = [p.grad for p in m.model.parameters() if p.grad is not None]
+        assert len(grads) > 0
+        for g in grads:
+            assert torch.isfinite(g).all()
+            assert g.abs().max().item() > 0
+
+    def test_cross_res_data_loss_unaffected_by_pde_resolution(self):
+        """The data loss is computed in normalised space at the original resolution.
+        Changing pde_resolution must not change the data loss component."""
+        torch.manual_seed(99)
+        m16 = _make_pino_module(pde_resolution=16, data_weight=1.0, pde_weight=1.0)
+        torch.manual_seed(99)
+        m32 = _make_pino_module(pde_resolution=32, data_weight=1.0, pde_weight=1.0)
+        m32.model.load_state_dict(m16.model.state_dict())
+
+        batch = {"x": torch.randn(4, 1, 16, 16), "y": torch.randn(4, 1, 16, 16)}
+        m16._shared_step(batch, "train")
+        m32._shared_step(batch, "train")
+
+        data16 = next(c for c in m16.log.call_args_list if c.args[0] == "train_data_loss")
+        data32 = next(c for c in m32.log.call_args_list if c.args[0] == "train_data_loss")
+        assert data16.args[1].item() == pytest.approx(data32.args[1].item(), rel=1e-5)
+
+    def test_native_fine_grid_residual_is_near_zero(self):
+        """The exact solution u = 0.5·x·(1-x) evaluated DIRECTLY on a 32-grid
+        (not upsampled) must have near-zero FD residual, confirming DarcyPDE
+        is correct at the target resolution used for super-resolution."""
+        from src.pde.darcy import DarcyPDE
+        N = 32
+        X, _ = _unit_grid(N)
+        u_native = (0.5 * X * (1 - X)).unsqueeze(0)
+        pde = DarcyPDE(resolution=N)
+        res = pde.residual(u_native, torch.ones(1, N, N))
+        assert res[0, 2:-2, 2:-2].abs().max().item() < 1e-3
+
+    def test_upsampled_residual_bounded_by_interpolation_error(self):
+        """The FD residual on an upsampled grid is dominated by interpolation
+        artifacts, not by incorrect wiring. Verify the residual is consistent
+        with the known interpolation error magnitude (amplified by 1/h²)."""
+        from src.pde.darcy import DarcyPDE
+        m = _make_pino_module()
+        N_coarse, N_fine = 16, 32
+
+        Xc, _ = _unit_grid(N_coarse)
+        u_coarse = (0.5 * Xc * (1 - Xc)).unsqueeze(0).unsqueeze(0)
+        u_fine = m._upsample(u_coarse, N_fine)
+
+        Xf, _ = _unit_grid(N_fine)
+        u_exact_fine = (0.5 * Xf * (1 - Xf)).unsqueeze(0)
+        interp_error = (u_fine[0, 0] - u_exact_fine[0]).abs().max().item()
+
+        pde = DarcyPDE(resolution=N_fine)
+        res = pde.residual(u_fine.squeeze(1), torch.ones(1, N_fine, N_fine))
+        fd_residual = res[0, 2:-2, 2:-2].abs().max().item()
+
+        h = 1.0 / (N_fine - 1)
+        expected_residual_bound = interp_error / (h ** 2) * 4.0
+        assert fd_residual < expected_residual_bound, (
+            f"FD residual ({fd_residual:.4f}) exceeds the bound from interpolation "
+            f"error ({interp_error:.6f}) amplified by 1/h² ({expected_residual_bound:.4f})."
+        )
