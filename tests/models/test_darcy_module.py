@@ -380,7 +380,7 @@ class TestPinoIntegration:
 
 class TestDataWeightDataOnly:
 
-    def test_data_weight_scales_loss_in_data_only_mode(self, batch):
+    def test_data_weight_scales_loss(self, batch):
         """data_weight must multiply the loss even when pde_weight is 0."""
         processor = _make_processor()
 
@@ -405,7 +405,7 @@ class TestDataWeightDataOnly:
         loss_w3 = m3._shared_step(batch, "train").item()
         assert loss_w3 == pytest.approx(3.0 * loss_w1, rel=1e-5)
 
-    def test_data_weight_half_halves_loss(self, batch):
+    def test_half_weight_halves_loss(self, batch):
         processor = _make_processor()
 
         cfg_w1 = OmegaConf.create(OmegaConf.to_container(_make_config()))
