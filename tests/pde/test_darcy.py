@@ -363,3 +363,55 @@ class TestDomainLength:
         Du_1 = DarcyPDE(resolution=N, domain_length=1.0)._operator(u, a)
         Du_2 = DarcyPDE(resolution=N, domain_length=2.0)._operator(u, a)
         torch.testing.assert_close(Du_2, Du_1 / 4.0, atol=1e-5, rtol=1e-4)
+
+
+class TestResolutionValidation:
+    """DarcyPDE must reject tensors whose spatial dims don't match the initialised
+    resolution — otherwise the FD grid spacing h is wrong and the residual is
+    silently mis-scaled (e.g. pde_resolution=32 with 16×16 tensors scales h by
+    factor (16-1)/(32-1), so derivatives are wrong without any error)."""
+
+    def test_operator_raises_when_height_mismatches_resolution(self):
+        pde = DarcyPDE(resolution=32)
+        with pytest.raises(ValueError, match="resolution"):
+            pde._operator(torch.randn(2, 16, 16), torch.ones(2, 16, 16))
+
+    def test_operator_raises_when_width_mismatches_resolution(self):
+        pde = DarcyPDE(resolution=32)
+        with pytest.raises(ValueError, match="resolution"):
+            pde._operator(torch.randn(2, 32, 16), torch.ones(2, 32, 16))
+
+    def test_operator_raises_on_4d_input_mismatch(self):
+        pde = DarcyPDE(resolution=32)
+        with pytest.raises(ValueError, match="resolution"):
+            pde._operator(torch.randn(2, 1, 16, 16), torch.ones(2, 1, 16, 16))
+
+    def test_operator_does_not_raise_when_size_matches(self):
+        pde = DarcyPDE(resolution=16)
+        pde._operator(torch.randn(2, 16, 16), torch.ones(2, 16, 16))  # must not raise
+
+    def test_mismatched_resolution_would_produce_wrong_derivatives(self):
+        """Demonstrate *why* the validation is needed.
+
+        The exact solution u = 0.5*x*(1-x) satisfies -u_xx = 1 on a 32×32 grid
+        with h=1/31. If we (wrongly) pass the same tensor to DarcyPDE(resolution=16)
+        — which uses h=1/15 — the FD result is scaled by (1/15)²/(1/31)² ≈ 4.27,
+        so the operator output ≠ 1 and the physics loss is far from zero.
+        This test documents the silent error that would occur without validation.
+        """
+        N = 32
+        X, _ = torch.meshgrid(
+            torch.linspace(0, 1, N), torch.linspace(0, 1, N), indexing="ij"
+        )
+        u_exact = (0.5 * X * (1 - X)).unsqueeze(0)
+        a = torch.ones(1, N, N)
+
+        # Correct: DarcyPDE at N=32 → residual ≈ 0
+        correct_pde = DarcyPDE(resolution=N)
+        Du_correct = correct_pde._operator(u_exact, a)
+        assert (Du_correct[0, 2:-2, 2:-2] - 1.0).abs().max().item() < 0.05
+
+        # Wrong h: DarcyPDE at N=16, but tensor is 32×32 — now raises
+        wrong_pde = DarcyPDE(resolution=16)
+        with pytest.raises(ValueError, match="resolution"):
+            wrong_pde._operator(u_exact, a)

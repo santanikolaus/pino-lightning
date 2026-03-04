@@ -10,6 +10,18 @@ from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 from src.models.darcy_module import DarcyLitModule
 
 
+class _FixedOutputModel(torch.nn.Module):
+    """Stub nn.Module that always returns a pre-set tensor, ignoring its input.
+    Used to decouple the DarcyLitModule training-step logic from the FNO model."""
+
+    def __init__(self, output: torch.Tensor) -> None:
+        super().__init__()
+        self._output = output
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self._output
+
+
 def _make_config():
     return OmegaConf.create({
         "model": {
@@ -239,7 +251,95 @@ class TestPinoSharedStep:
         pino_module.darcy_loss = MagicMock(return_value=torch.tensor(0.5))
         pino_module._shared_step(batch, "train")
         called_a = pino_module.darcy_loss.call_args[0][1]
-        assert torch.equal(called_a, original_x)
+        # Values must match original permeability (not the normalised copy).
+        torch.testing.assert_close(called_a.cpu(), original_x)
+        # Must live on the same device as the predictions (u_phys is first arg).
+        called_u = pino_module.darcy_loss.call_args[0][0]
+        assert called_a.device == called_u.device
+
+    def test_darcy_loss_receives_denormalized_predictions(self):
+        # Set up out_normalizer with known mean/std so we can predict the exact
+        # inverse transform. Model outputs a constant value in normalized space;
+        # DarcyLoss must receive the inverse-transformed physical value.
+        mean_val, std_val = 2.0, 3.0
+        out_norm = UnitGaussianNormalizer(
+            mean=torch.full((1, 1, 1, 1), mean_val),
+            std=torch.full((1, 1, 1, 1), std_val),
+            eps=0.0,
+            dim=[0, 2, 3],
+        )
+        in_norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
+        in_norm.fit(torch.randn(16, 1, 16, 16))
+        processor = DefaultDataProcessor(in_normalizer=in_norm, out_normalizer=out_norm)
+        m = DarcyLitModule(_make_pino_config(), data_processor=processor)
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        m._trainer = mock_trainer
+        m.log = MagicMock()
+
+        # Model always outputs 1.0 in normalised space.
+        # inverse_transform(1.0) = 1.0 * (3.0 + 0.0) + 2.0 = 5.0
+        m.model = _FixedOutputModel(torch.ones(4, 1, 16, 16))
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.5))
+
+        batch = {"x": torch.ones(4, 1, 16, 16), "y": torch.randn(4, 1, 16, 16)}
+        m._shared_step(batch, "train")
+
+        called_u = m.darcy_loss.call_args[0][0]
+        expected = 1.0 * std_val + mean_val  # = 5.0
+        assert called_u.mean().item() == pytest.approx(expected, abs=1e-4)
+
+    def test_physics_loss_near_zero_for_exact_solution_with_correct_denorm(self):
+        """End-to-end numerical check that inverse_transform is applied correctly.
+
+        Build a module with a non-trivial output normalizer (mean=0.1, std=2.0).
+        Stub the model so it returns the NORMALIZED form of the exact Darcy
+        solution u = 0.5*x*(1-x) (which satisfies -Δu = 1 with a=1, f=1).
+
+        After _shared_step applies _denormalize_for_physics, DarcyLoss sees the
+        physical solution and the residual should be near zero.
+
+        Without denormalization (the bug), the FD operator output is scaled by
+        1/std ≈ 0.5 instead of 1, so the physics loss would be ≈ 0.5 — not near zero.
+        """
+        N = 16
+        X, _ = torch.meshgrid(
+            torch.linspace(0, 1, N), torch.linspace(0, 1, N), indexing="ij"
+        )
+        u_exact = (0.5 * X * (1 - X)).unsqueeze(0).unsqueeze(0)  # (1, 1, N, N)
+        a_ones = torch.ones(1, 1, N, N)
+
+        # Non-trivial normalizer: shifting by mean=0.1, scaling by std=2.0
+        out_norm = UnitGaussianNormalizer(
+            mean=torch.full((1, 1, 1, 1), 0.1),
+            std=torch.full((1, 1, 1, 1), 2.0),
+            eps=0.0,
+            dim=[0, 2, 3],
+        )
+        in_norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
+        in_norm.fit(torch.randn(16, 1, N, N))
+        processor = DefaultDataProcessor(in_normalizer=in_norm, out_normalizer=out_norm)
+        m = DarcyLitModule(_make_pino_config(), data_processor=processor)
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        m._trainer = mock_trainer
+        m.log = MagicMock()
+
+        # Model returns the normalised exact solution: (u_exact - 0.1) / 2.0
+        u_normalized = out_norm.transform(u_exact)
+        m.model = _FixedOutputModel(u_normalized.clone())
+
+        m._shared_step(batch={"x": a_ones.clone(), "y": u_exact.clone()}, stage="train")
+
+        pde_log = next(c for c in m.log.call_args_list if c.args[0] == "train_pde_loss")
+        pde_val = pde_log.args[1].item()
+
+        # Correct denorm → u_phys = u_exact → residual ≈ 0
+        assert pde_val < 0.1, (
+            f"PDE loss={pde_val:.4f} is too large. "
+            "If predictions are not denormalized before the physics residual, "
+            "the FD operator output is scaled by 1/std ≈ 0.5 and the loss ≈ 0.5."
+        )
 
     def test_pino_eval_step_is_unchanged(self, pino_module, batch):
         # Physics loss must not affect validation — same metrics as data-only.

@@ -61,11 +61,23 @@ class DarcyLitModule(L.LightningModule):
         self.data_processor.train(train)
         return self.data_processor.preprocess(data)
 
+    def _denormalize_for_physics(self, preds: torch.Tensor) -> torch.Tensor:
+        """Return predictions in physical units for the PDE residual.
+
+        During training, data_processor.postprocess() is a no-op by design:
+        the data loss is computed entirely in normalized space (both preds and
+        data["y"] are normalized). FD-based physics residuals require physical
+        units, so we explicitly apply the output inverse transform here.
+        """
+        dp = self.data_processor
+        if hasattr(dp, "out_normalizer") and dp.out_normalizer is not None:
+            return dp.out_normalizer.inverse_transform(preds)
+        return preds
+
     def _shared_step(self, batch: Dict[str, Any], stage: str, suffix: Optional[str] = None) -> torch.Tensor:
         train_mode = stage == "train"
-        # Stash raw (un-normalized) permeability before preprocessing — DarcyLoss
-        # needs the original physical field, not the normalized version.
-        raw_a = batch["x"] if (train_mode and self.darcy_loss is not None) else None
+        # batch["x"] is the raw (un-normalised) permeability; _prepare_batch shallow-copies
+        # the dict so batch["x"] is never reassigned even though data["x"] is normalised.
         data = self._prepare_batch(batch, train_mode)
         preds = self(data["x"])
         preds = self.data_processor.postprocess(preds)
@@ -75,7 +87,8 @@ class DarcyLitModule(L.LightningModule):
         if train_mode:
             if self.darcy_loss is not None:
                 data_loss = self._data_weight * self.train_loss(preds, data["y"])
-                pde_loss = self._pde_weight * self.darcy_loss(preds, raw_a)
+                u_phys = self._denormalize_for_physics(preds)
+                pde_loss = self._pde_weight * self.darcy_loss(u_phys, batch["x"].to(preds.device))
                 loss = data_loss + pde_loss
                 self.log("train_data_loss", data_loss, on_step=True, on_epoch=True,
                          sync_dist=sync_dist)
