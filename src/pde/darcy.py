@@ -26,6 +26,13 @@ class DarcyPDE:
             u = u.squeeze(1)
         if a.dim() == 4:
             a = a.squeeze(1)
+        if u.shape[-2:] != (self.resolution, self.resolution):
+            raise ValueError(
+                f"DarcyPDE was initialized with resolution={self.resolution} "
+                f"but received tensor with spatial shape {tuple(u.shape[-2:])}. "
+                "Tensors must match pde_resolution; cross-resolution evaluation "
+                "is not yet supported."
+            )
         pressure_gradient = self.fd.gradient(u)
         permeability_weighted_flux = a.unsqueeze(-3) * pressure_gradient
         return -self.fd.divergence(permeability_weighted_flux)
