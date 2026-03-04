@@ -1,0 +1,15 @@
+# Loss group: PINO — data loss + PDE residual loss
+training: l2      # data loss function: l2 | h1
+data_weight: 1.0
+pde_weight: 1.0
+
+# Physics loss resolution — may differ from data.train_resolution.
+# Needed to replicate the PINO paper, which trains at low resolution but
+# evaluates the physics loss at higher resolution for generalization experiments.
+# Set to null to inherit data.train_resolution; override e.g. pde_resolution: 61
+pde_resolution: null
+
+# TODO: BC mollifier — multiply prediction by sin(πx)sin(πy) before computing
+# the physics residual to exactly enforce zero Dirichlet BCs (as in PINO paper,
+# Appendix A.2). Add after basic physics integration is verified working.
+bc_mollifier: false

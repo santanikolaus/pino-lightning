@@ -4,10 +4,8 @@ defaults:
   - trainer: default
   - logger: wandb
   - callbacks: default
-  - _self_
-
-loss:
-  training: l2
+  - loss: data_only
+  - _self_ #todo.do we need this?
 
 opt:
   learning_rate: 1e-3
