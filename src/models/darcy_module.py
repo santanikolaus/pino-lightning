@@ -94,7 +94,7 @@ class DarcyLitModule(L.LightningModule):
                 self.log("train_pde_loss", pde_loss, on_step=True, on_epoch=True,
                          sync_dist=sync_dist)
             else:
-                loss = self.train_loss(preds, data["y"])
+                loss = self._data_weight * self.train_loss(preds, data["y"])
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
                      sync_dist=sync_dist)
             return loss
