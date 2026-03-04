@@ -115,6 +115,21 @@ class TestSharedStep:
         assert "val_l2" in logged_names
         assert "val_h1" in logged_names
 
+    def test_validation_step_logs_resolution_in_metric_name(self, module, batch):
+        # batch["x"] is 16×16 — validation_step must log val_16_l2, val_16_h1
+        module.validation_step(batch, batch_idx=0)
+        logged_names = [call.args[0] for call in module.log.call_args_list]
+        assert "val_16_l2" in logged_names
+        assert "val_16_h1" in logged_names
+
+    def test_validation_step_resolution_tracks_batch_shape(self, module):
+        # 32×32 batch must produce val_32_* metrics
+        batch_32 = {"x": torch.randn(4, 1, 32, 32), "y": torch.randn(4, 1, 32, 32)}
+        module.validation_step(batch_32, batch_idx=0)
+        logged_names = [call.args[0] for call in module.log.call_args_list]
+        assert "val_32_l2" in logged_names
+        assert "val_32_h1" in logged_names
+
 
 class TestConfigureOptimizers:
 
@@ -238,6 +253,26 @@ class TestPinoSharedStep:
         assert "train_data_loss" in logged
         assert "train_pde_loss" in logged
         assert "train_loss" in logged
+
+    def test_pino_logs_raw_losses(self, pino_module, batch):
+        pino_module._shared_step(batch, "train")
+        logged = [c.args[0] for c in pino_module.log.call_args_list]
+        assert "train_data_loss_raw" in logged
+        assert "train_pde_loss_raw" in logged
+
+    def test_raw_losses_equal_weighted_when_weights_are_one(self, batch):
+        m = _make_pino_module(data_weight=1.0, pde_weight=1.0)
+        m._shared_step(batch, "train")
+        vals = {c.args[0]: c.args[1] for c in m.log.call_args_list}
+        assert vals["train_data_loss"].item() == pytest.approx(vals["train_data_loss_raw"].item())
+        assert vals["train_pde_loss"].item() == pytest.approx(vals["train_pde_loss_raw"].item())
+
+    def test_raw_losses_differ_from_weighted_when_weights_not_one(self, batch):
+        m = _make_pino_module(data_weight=2.0, pde_weight=0.5)
+        m._shared_step(batch, "train")
+        vals = {c.args[0]: c.args[1] for c in m.log.call_args_list}
+        assert vals["train_data_loss"].item() == pytest.approx(2.0 * vals["train_data_loss_raw"].item())
+        assert vals["train_pde_loss"].item() == pytest.approx(0.5 * vals["train_pde_loss_raw"].item())
 
     def test_data_only_does_not_log_component_losses(self, module, batch):
         module._shared_step(batch, "train")
