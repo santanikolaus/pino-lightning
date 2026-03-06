@@ -47,6 +47,7 @@ class DarcyLitModule(L.LightningModule):
 
         self.darcy_loss: Optional[DarcyLoss] = None
         self._pde_resolution: Optional[int] = None
+        self.register_buffer("_bc_mollifier", None)
         if self._pde_weight > 0:
             data_cfg = _get(config, "data")
             pde_res = _get(loss_cfg, "pde_resolution", None)
@@ -55,6 +56,16 @@ class DarcyLitModule(L.LightningModule):
             domain_length: float = _get(data_cfg, "domain_length", 1.0)
             self.darcy_loss = DarcyLoss(resolution=pde_res, domain_length=domain_length)
             self._pde_resolution = pde_res
+
+            if _get(loss_cfg, "bc_mollifier", False):
+                self._bc_mollifier = self._build_mollifier(pde_res)
+
+    @staticmethod
+    def _build_mollifier(resolution: int) -> torch.Tensor:
+        """sin(πx)·sin(πy) mask enforcing zero Dirichlet BCs (PINO paper, App. A.2)."""
+        x = torch.linspace(0, 1, resolution)
+        mx = torch.sin(torch.pi * x)
+        return (mx.unsqueeze(0) * mx.unsqueeze(1)).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -103,6 +114,8 @@ class DarcyLitModule(L.LightningModule):
                 if u_phys.shape[-1] != self._pde_resolution:
                     u_phys = self._upsample(u_phys, self._pde_resolution)
                     a = self._upsample(a, self._pde_resolution)
+                if self._bc_mollifier is not None:
+                    u_phys = u_phys * self._bc_mollifier
                 raw_pde = self.darcy_loss(u_phys, a)
                 pde_loss = self._pde_weight * raw_pde
                 loss = data_loss + pde_loss
