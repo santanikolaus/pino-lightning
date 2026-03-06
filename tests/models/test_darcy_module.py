@@ -153,7 +153,7 @@ class TestTrainingStepIntegration:
 # ─── PINO helpers ────────────────────────────────────────────────────────────
 
 def _make_pino_config(pde_weight: float = 1.0, data_weight: float = 1.0,
-                      pde_resolution=None):
+                      pde_resolution=None, bc_mollifier: bool = False):
     """Extend the base config with a PINO loss block and a minimal data block."""
     base = OmegaConf.to_container(_make_config())
     base["loss"] = {
@@ -161,6 +161,7 @@ def _make_pino_config(pde_weight: float = 1.0, data_weight: float = 1.0,
         "data_weight": data_weight,
         "pde_weight": pde_weight,
         "pde_resolution": pde_resolution,
+        "bc_mollifier": bc_mollifier,
     }
     base["data"] = {"train_resolution": 16}
     return OmegaConf.create(base)
@@ -786,3 +787,91 @@ class TestCrossResolutionNumerical:
             f"FD residual ({fd_residual:.4f}) exceeds the bound from interpolation "
             f"error ({interp_error:.6f}) amplified by 1/h² ({expected_residual_bound:.4f})."
         )
+
+
+# ─── BC mollifier ────────────────────────────────────────────────────────────
+
+class TestBCMollifier:
+
+    def test_mollifier_zero_on_boundaries(self):
+        """sin(πx)·sin(πy) must be exactly zero on all four edges."""
+        m = DarcyLitModule._build_mollifier(17)  # odd size for exact center
+        mol = m.squeeze()  # (H, W)
+        assert mol[0, :].abs().max().item() < 1e-6
+        assert mol[-1, :].abs().max().item() < 1e-6
+        assert mol[:, 0].abs().max().item() < 1e-6
+        assert mol[:, -1].abs().max().item() < 1e-6
+
+    def test_mollifier_one_at_center_odd_grid(self):
+        """For an odd-sized grid, the center value must be exactly 1.0."""
+        m = DarcyLitModule._build_mollifier(17).squeeze()
+        assert m[8, 8].item() == pytest.approx(1.0, abs=1e-6)
+
+    def test_mollifier_shape(self):
+        m = DarcyLitModule._build_mollifier(32)
+        assert m.shape == (1, 1, 32, 32)
+
+    def test_mollifier_not_created_when_flag_false(self):
+        m = _make_pino_module(pde_weight=1.0)
+        assert m._bc_mollifier is None
+
+    def test_mollifier_created_when_flag_true(self):
+        cfg = _make_pino_config(pde_weight=1.0, bc_mollifier=True)
+        m = DarcyLitModule(cfg, data_processor=_make_processor())
+        assert m._bc_mollifier is not None
+        assert m._bc_mollifier.shape == (1, 1, 16, 16)
+
+    def test_mollifier_uses_pde_resolution(self):
+        cfg = _make_pino_config(pde_weight=1.0, pde_resolution=32, bc_mollifier=True)
+        m = DarcyLitModule(cfg, data_processor=_make_processor())
+        assert m._bc_mollifier.shape == (1, 1, 32, 32)
+
+    def test_physics_branch_zero_on_boundary_with_mollifier(self):
+        """With bc_mollifier=True, u_phys passed to DarcyLoss must be zero on ∂D."""
+        cfg = _make_pino_config(pde_weight=1.0, bc_mollifier=True)
+        m = DarcyLitModule(cfg, data_processor=_make_processor())
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        m._trainer = mock_trainer
+        m.log = MagicMock()
+
+        captured = {}
+        original_call = m.darcy_loss.__class__.__call__
+
+        def capturing_call(self_dl, u, a):
+            captured["u"] = u.detach().clone()
+            return original_call(self_dl, u, a)
+
+        batch = {"x": torch.randn(2, 1, 16, 16), "y": torch.randn(2, 1, 16, 16)}
+        with patch.object(m.darcy_loss.__class__, "__call__", capturing_call):
+            m._shared_step(batch, "train")
+
+        u = captured["u"]
+        assert u[:, :, 0, :].abs().max().item() < 1e-5
+        assert u[:, :, -1, :].abs().max().item() < 1e-5
+        assert u[:, :, :, 0].abs().max().item() < 1e-5
+        assert u[:, :, :, -1].abs().max().item() < 1e-5
+
+    def test_mollifier_does_not_affect_data_loss(self):
+        """Data loss must be identical with and without mollifier (mollifier only
+        applies to the physics branch)."""
+        torch.manual_seed(123)
+        m_no = _make_pino_module(pde_weight=1.0)
+        torch.manual_seed(123)
+        cfg_yes = _make_pino_config(pde_weight=1.0, bc_mollifier=True)
+        m_yes = DarcyLitModule(cfg_yes, data_processor=_make_processor())
+        m_yes.model.load_state_dict(m_no.model.state_dict())
+
+        for m in (m_no, m_yes):
+            mock_trainer = MagicMock()
+            mock_trainer.world_size = 1
+            m._trainer = mock_trainer
+            m.log = MagicMock()
+
+        batch = {"x": torch.randn(4, 1, 16, 16), "y": torch.randn(4, 1, 16, 16)}
+        m_no._shared_step(batch, "train")
+        m_yes._shared_step(batch, "train")
+
+        data_no = next(c for c in m_no.log.call_args_list if c.args[0] == "train_data_loss")
+        data_yes = next(c for c in m_yes.log.call_args_list if c.args[0] == "train_data_loss")
+        assert data_no.args[1].item() == pytest.approx(data_yes.args[1].item(), rel=1e-5)

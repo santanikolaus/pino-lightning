@@ -11,7 +11,7 @@ defaults:
 loss:
   pde_resolution: 64
   data_weight: 1.0
-  pde_weight: 1.0
+  pde_weight: 0.1
 
 logger:
   wandb:
