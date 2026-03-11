@@ -1,13 +1,23 @@
 # Loss group: PINO — data loss + PDE residual loss
 training: l2      # data loss function: l2 | h1
 data_weight: 1.0
-pde_weight: 0.1 #todo. was not recognized
+pde_weight: 0.1
 
 # Physics loss resolution — may differ from data.train_resolution.
 # Needed to replicate the PINO paper, which trains at low resolution but
 # evaluates the physics loss at higher resolution for generalization experiments.
 # Set to null to inherit data.train_resolution; override e.g. pde_resolution: 61
 pde_resolution: null
+
+# PDE forcing constant.  The neuralop Darcy dataset stores the permeability as
+# a binary indicator a ∈ {0,1} and the solution u with an implicit scaling.
+# The stored quantities satisfy  -div(a ∇u) = C·a  where C ≈ 2.6936.
+forcing: 2.6936
+
+# When true (default), the forcing target is  f(x) = forcing · a(x)  (spatially
+# varying).  Set to false for a uniform constant forcing (original DarcyLoss
+# behaviour before the fix).
+forcing_is_coeff_scaled: true
 
 # BC mollifier — multiply prediction by sin(πx)sin(πy) before computing
 # the physics residual to exactly enforce zero Dirichlet BCs (PINO paper, App. A.2).

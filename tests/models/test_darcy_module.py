@@ -153,7 +153,9 @@ class TestTrainingStepIntegration:
 # ─── PINO helpers ────────────────────────────────────────────────────────────
 
 def _make_pino_config(pde_weight: float = 1.0, data_weight: float = 1.0,
-                      pde_resolution=None, bc_mollifier: bool = False):
+                      pde_resolution=None, bc_mollifier: bool = False,
+                      forcing: float = 2.6936,
+                      forcing_is_coeff_scaled: bool = True):
     """Extend the base config with a PINO loss block and a minimal data block."""
     base = OmegaConf.to_container(_make_config())
     base["loss"] = {
@@ -162,6 +164,8 @@ def _make_pino_config(pde_weight: float = 1.0, data_weight: float = 1.0,
         "pde_weight": pde_weight,
         "pde_resolution": pde_resolution,
         "bc_mollifier": bc_mollifier,
+        "forcing": forcing,
+        "forcing_is_coeff_scaled": forcing_is_coeff_scaled,
     }
     base["data"] = {"train_resolution": 16}
     return OmegaConf.create(base)
@@ -181,7 +185,9 @@ def _make_pino_module(pde_weight: float = 1.0, data_weight: float = 1.0,
     return m
 
 
-def _make_pino_module_with_normalizer(mean: float, std: float, eps: float = 0.0):
+def _make_pino_module_with_normalizer(mean: float, std: float, eps: float = 0.0,
+                                      forcing: float = 2.6936,
+                                      forcing_is_coeff_scaled: bool = True):
     """PINO module with an out_normalizer whose stats are fully controlled.
 
     Used by tests that need to verify the exact inverse_transform value that
@@ -196,7 +202,11 @@ def _make_pino_module_with_normalizer(mean: float, std: float, eps: float = 0.0)
     in_norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
     in_norm.fit(torch.randn(16, 1, 16, 16))
     processor = DefaultDataProcessor(in_normalizer=in_norm, out_normalizer=out_norm)
-    m = DarcyLitModule(_make_pino_config(), data_processor=processor)
+    m = DarcyLitModule(
+        _make_pino_config(forcing=forcing,
+                          forcing_is_coeff_scaled=forcing_is_coeff_scaled),
+        data_processor=processor,
+    )
     mock_trainer = MagicMock()
     mock_trainer.world_size = 1
     m._trainer = mock_trainer
@@ -351,7 +361,9 @@ class TestPinoSharedStep:
         )
         u_exact = (0.5 * X * (1 - X)).unsqueeze(0).unsqueeze(0)  # (1, 1, N, N)
 
-        m, out_norm = _make_pino_module_with_normalizer(mean=0.1, std=2.0)
+        m, out_norm = _make_pino_module_with_normalizer(mean=0.1, std=2.0,
+                                                         forcing=1.0,
+                                                         forcing_is_coeff_scaled=False)
         # Model returns the normalised exact solution: (u_exact - 0.1) / 2.0
         m.model = _FixedOutputModel(out_norm.transform(u_exact).clone())
 
@@ -486,7 +498,9 @@ class TestPhysicsNumerical:
         u_exact = (0.5 * X * (1 - X)).unsqueeze(0).unsqueeze(0)  # (1, 1, N, N)
 
         mean, std = 0.5, 2.0
-        m, out_norm = _make_pino_module_with_normalizer(mean=mean, std=std)
+        m, out_norm = _make_pino_module_with_normalizer(mean=mean, std=std,
+                                                         forcing=1.0,
+                                                         forcing_is_coeff_scaled=False)
         m.model = _FixedOutputModel(out_norm.transform(u_exact).clone())
 
         batch = {"x": torch.ones(1, 1, N, N), "y": u_exact.clone()}

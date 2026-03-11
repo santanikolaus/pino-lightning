@@ -54,7 +54,12 @@ class DarcyLitModule(L.LightningModule):
             if pde_res is None:
                 pde_res = _get(data_cfg, "train_resolution")
             domain_length: float = _get(data_cfg, "domain_length", 1.0)
-            self.darcy_loss = DarcyLoss(resolution=pde_res, domain_length=domain_length)
+            forcing: float = _get(loss_cfg, "forcing", 2.6936)
+            forcing_is_coeff_scaled: bool = _get(loss_cfg, "forcing_is_coeff_scaled", True)
+            self.darcy_loss = DarcyLoss(
+                resolution=pde_res, domain_length=domain_length,
+                forcing=forcing, forcing_is_coeff_scaled=forcing_is_coeff_scaled,
+            )
             self._pde_resolution = pde_res
 
             if _get(loss_cfg, "bc_mollifier", False):
