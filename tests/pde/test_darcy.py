@@ -182,7 +182,7 @@ class TestDarcyLossBasic:
         N = 64
         X, _ = _unit_grid(N)
         u = (0.5 * X * (1 - X)).unsqueeze(0)
-        loss = DarcyLoss(resolution=N)(u, torch.ones(1, N, N))
+        loss = DarcyLoss(resolution=N, forcing=1.0, forcing_is_coeff_scaled=False)(u, torch.ones(1, N, N))
         assert loss.item() < 1e-3
 
     def test_large_for_random_field(self):
@@ -211,7 +211,8 @@ class TestDarcyLossBasic:
         a = (1.0 + X).unsqueeze(0)
         loss = pde(u, a)
         Du = pde.pde._operator(u, a)
-        f = torch.full_like(Du, 1.0)
+        a_sq = a.squeeze(1) if a.dim() == 4 else a
+        f = pde.pde.forcing * a_sq
         expected = pde.lp.rel(Du, f)
         torch.testing.assert_close(loss, expected)
 
@@ -240,8 +241,8 @@ class TestDarcyLossDomainLength:
         X, _ = _unit_grid(N)
         u = (0.5 * X * (1 - X)).unsqueeze(0)
         a = torch.ones(1, N, N)
-        loss_1 = DarcyLoss(resolution=N, domain_length=1.0)(u, a)
-        loss_2 = DarcyLoss(resolution=N, domain_length=2.0)(u, a)
+        loss_1 = DarcyLoss(resolution=N, domain_length=1.0, forcing=1.0, forcing_is_coeff_scaled=False)(u, a)
+        loss_2 = DarcyLoss(resolution=N, domain_length=2.0, forcing=1.0, forcing_is_coeff_scaled=False)(u, a)
         # u is the exact solution for domain_length=1: Du=f=1 → loss≈0
         # for domain_length=2: Du=0.25, f=1 → loss = ||0.25−1||/||1|| = 0.75
         assert loss_1.item() < 1e-2
