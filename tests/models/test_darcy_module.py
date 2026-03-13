@@ -1031,3 +1031,63 @@ class TestPairedResolutionDataset:
         assert sample["a_highres"].shape == (1, 32, 32)
         torch.testing.assert_close(sample["x"], x[3])
         torch.testing.assert_close(sample["a_highres"], a_hi[3])
+
+
+# ─── Cross-resolution fallback guard ────────────────────────────────────────
+
+class TestCrossResolutionGuard:
+
+    def test_cross_res_without_a_highres_raises(self):
+        """pde_resolution != train_resolution without a_highres must raise RuntimeError."""
+        m = _make_native_pino_module(pde_resolution=64, train_resolution=16)
+        batch_no_highres = {"x": torch.randn(2, 1, 16, 16), "y": torch.randn(2, 1, 16, 16)}
+        with pytest.raises(RuntimeError, match="a_highres"):
+            m._shared_step(batch_no_highres, "train")
+
+    def test_same_res_pde_without_a_highres_works(self):
+        """pde_resolution == train_resolution without a_highres must still work."""
+        m = _make_pino_module(pde_resolution=16)
+        batch = {"x": torch.randn(2, 1, 16, 16), "y": torch.randn(2, 1, 16, 16)}
+        loss = m._shared_step(batch, "train")
+        assert loss.dim() == 0
+        assert loss.requires_grad
+
+
+# ─── test_step resolution logging ────────────────────────────────────────────
+
+class TestTestStep:
+
+    def test_test_step_logs_resolution_in_metric_name(self, module, batch):
+        module.test_step(batch, batch_idx=0)
+        logged_names = [call.args[0] for call in module.log.call_args_list]
+        assert "test_16_l2" in logged_names
+        assert "test_16_h1" in logged_names
+
+    def test_test_step_resolution_tracks_batch_shape(self, module):
+        batch_32 = {"x": torch.randn(4, 1, 32, 32), "y": torch.randn(4, 1, 32, 32)}
+        module.test_step(batch_32, batch_idx=0)
+        logged_names = [call.args[0] for call in module.log.call_args_list]
+        assert "test_32_l2" in logged_names
+        assert "test_32_h1" in logged_names
+
+
+# ─── Native path mollifier data-loss invariance ─────────────────────────────
+
+class TestNativeMollifierDataLossInvariance:
+
+    def test_mollifier_does_not_affect_data_loss_in_native_path(self):
+        """Data loss must be identical with and without mollifier in the native path
+        (mollifier only applies to the physics branch)."""
+        torch.manual_seed(321)
+        m_no = _make_native_pino_module(pde_weight=1.0, bc_mollifier=False)
+        torch.manual_seed(321)
+        m_yes = _make_native_pino_module(pde_weight=1.0, bc_mollifier=True)
+        m_yes.model.load_state_dict(m_no.model.state_dict())
+
+        batch = _make_native_batch(batch_size=4)
+        m_no._shared_step(batch, "train")
+        m_yes._shared_step(batch, "train")
+
+        data_no = next(c for c in m_no.log.call_args_list if c.args[0] == "train_data_loss")
+        data_yes = next(c for c in m_yes.log.call_args_list if c.args[0] == "train_data_loss")
+        assert data_no.args[1].item() == pytest.approx(data_yes.args[1].item(), rel=1e-5)

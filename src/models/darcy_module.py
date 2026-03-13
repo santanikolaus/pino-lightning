@@ -165,6 +165,14 @@ class DarcyLitModule(L.LightningModule):
 
         if train_mode:
             if self.darcy_loss is not None:
+                if self._subsample_factor is not None:
+                    raise RuntimeError(
+                        f"pde_resolution ({self._pde_resolution}) != "
+                        f"train_resolution ({self._train_resolution}) but batch "
+                        f"has no 'a_highres' key. Wrap your training dataset "
+                        f"with PairedResolutionDataset to supply high-resolution "
+                        f"permeability for the native forward pass."
+                    )
                 raw_data = self.train_loss(preds, data["y"])
                 data_loss = self._data_weight * raw_data
                 u_phys = self._denormalize_for_physics(preds)
