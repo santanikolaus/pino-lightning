@@ -11,4 +11,5 @@ encoding: channel-wise
 channel_dim: 1
 train_resolution: 16
 subsampling_rate: null
+pde_resolution: null
 download: true

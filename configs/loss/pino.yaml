@@ -7,7 +7,7 @@ pde_weight: 0.1
 # Needed to replicate the PINO paper, which trains at low resolution but
 # evaluates the physics loss at higher resolution for generalization experiments.
 # Set to null to inherit data.train_resolution; override e.g. pde_resolution: 61
-pde_resolution: null
+pde_resolution: 64
 
 # PDE forcing constant.  The neuralop Darcy dataset stores the permeability as
 # a binary indicator a ∈ {0,1} and the solution u with an implicit scaling.
