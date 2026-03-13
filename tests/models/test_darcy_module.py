@@ -515,7 +515,7 @@ class TestNativeHighResForward:
     def test_model_accepts_higher_resolution_input(self, module):
         """FNO must natively handle inputs larger than the training resolution."""
         batch_32 = {"x": torch.randn(2, 1, 32, 32), "y": torch.randn(2, 1, 32, 32)}
-        result = module._shared_step(batch_32, "val", suffix="val_32")
+        result = module.validation_step(batch_32, batch_idx=0, dataloader_idx=0)
         assert result.dim() == 0
 
     def test_model_preserves_spatial_resolution(self, module):
@@ -528,8 +528,9 @@ class TestNativeHighResForward:
     def test_forward_at_multiple_resolutions(self, module):
         """The same module must produce valid outputs at 16×16 and 32×32."""
         for res in (16, 32):
+            module.log.reset_mock()
             batch = {"x": torch.randn(2, 1, res, res), "y": torch.randn(2, 1, res, res)}
-            result = module._shared_step(batch, "val", suffix=f"val_{res}")
+            result = module.validation_step(batch, batch_idx=0, dataloader_idx=0)
             assert result.dim() == 0
             assert torch.isfinite(result)
 
