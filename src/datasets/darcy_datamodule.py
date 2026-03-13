@@ -123,6 +123,12 @@ class DarcyDataModule(L.LightningDataModule):
                 Path(self.data_root).expanduser()
                 / f"darcy_train_{self.pde_resolution}.pt"
             )
+            if not hires_path.exists():
+                raise FileNotFoundError(
+                    f"High-resolution Darcy training data not found at '{hires_path}'. "
+                    f"pde_resolution={self.pde_resolution} requires this file. "
+                    f"Set download=True or ensure the file is present."
+                )
             hires_data = torch.load(hires_path.as_posix(), weights_only=False)
             a_highres = hires_data["x"].type(torch.float32).clone()[:self.n_train]
             a_highres = a_highres.unsqueeze(self.channel_dim)  # (N, 1, H, W)

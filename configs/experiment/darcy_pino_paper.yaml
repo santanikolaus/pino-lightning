@@ -13,6 +13,9 @@ loss:
   data_weight: 1.0
   pde_weight: 0.1
 
+data:
+  pde_resolution: ${loss.pde_resolution}
+
 logger:
   wandb:
     name: darcy_pino_train16_pde64
