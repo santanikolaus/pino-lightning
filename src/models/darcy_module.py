@@ -1,6 +1,5 @@
 import lightning as L
 import torch
-import torch.nn.functional as F
 
 from typing import Any, Dict, Mapping, Optional
 from src.datasets.transforms.data_processors import DataProcessor
@@ -84,14 +83,6 @@ class DarcyLitModule(L.LightningModule):
     def _prepare_batch(self, batch: Dict[str, Any], train: bool) -> Dict[str, Any]:
         self.data_processor.train(train)
         return self.data_processor.preprocess(batch)
-
-    def _upsample(self, x: torch.Tensor, size: int) -> torch.Tensor:
-        """Bilinearly/bicubically interpolate spatial dims to size×size.
-        align_corners=True preserves physical boundary values (grid at x_i = i/(N-1)).
-        """
-        if x.shape[-1] == size and x.shape[-2] == size:
-            return x
-        return F.interpolate(x, size=(size, size), mode="bicubic", align_corners=True)
 
     def _denormalize_for_physics(self, preds: torch.Tensor) -> torch.Tensor:
         """Return predictions in physical units for the PDE residual.
@@ -178,9 +169,6 @@ class DarcyLitModule(L.LightningModule):
                 data_loss = self._data_weight * raw_data
                 u_phys = self._denormalize_for_physics(preds)
                 a = batch["x"].to(preds.device)
-                if u_phys.shape[-1] != self._pde_resolution:
-                    u_phys = self._upsample(u_phys, self._pde_resolution)
-                    a = self._upsample(a, self._pde_resolution)
                 if self._bc_mollifier is not None:
                     u_phys = u_phys * self._bc_mollifier
                 raw_pde = self.darcy_loss(u_phys, a)

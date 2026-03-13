@@ -30,14 +30,24 @@ class DarcyPDE:
             shape = tuple(u.shape[-2:])
             raise ValueError(
                 f"Tensor spatial shape {shape} does not match DarcyPDE "
-                f"resolution={self.resolution}. Upsample before calling DarcyLoss."
+                f"resolution={self.resolution}. Resample inputs to the PDE resolution "
+                f"before calling this method."
             )
         pressure_gradient = self.fd.gradient(u)
         permeability_weighted_flux = a.unsqueeze(-3) * pressure_gradient
         return -self.fd.divergence(permeability_weighted_flux)
 
-    def residual(self, u: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        return self._operator(u, a) - self.forcing
+    def residual(
+        self,
+        u: torch.Tensor,
+        a: torch.Tensor,
+        forcing_is_coeff_scaled: bool = False,
+    ) -> torch.Tensor:
+        operator_output = self._operator(u, a)
+        if forcing_is_coeff_scaled:
+            a_sq = a.squeeze(1) if a.dim() == 4 else a
+            return operator_output - self.forcing * a_sq
+        return operator_output - self.forcing
 
 
 class DarcyLoss:
