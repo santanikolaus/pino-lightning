@@ -506,3 +506,122 @@ class TestPhysicsNumerical:
 
         assert m1.darcy_loss.pde.fd.h == (pytest.approx(1.0 / 15), pytest.approx(1.0 / 15))
         assert m2.darcy_loss.pde.fd.h == (pytest.approx(2.0 / 15), pytest.approx(2.0 / 15))
+
+
+# ─── Native high-resolution forward path ─────────────────────────────────────
+
+class TestNativeHighResForward:
+
+    def test_model_accepts_higher_resolution_input(self, module):
+        """FNO must natively handle inputs larger than the training resolution."""
+        batch_32 = {"x": torch.randn(2, 1, 32, 32), "y": torch.randn(2, 1, 32, 32)}
+        result = module._shared_step(batch_32, "val", suffix="val_32")
+        assert result.dim() == 0
+
+    def test_model_preserves_spatial_resolution(self, module):
+        """Predictions must keep the same spatial shape as the input."""
+        x_32 = torch.randn(2, 1, 32, 32)
+        data = module._prepare_batch({"x": x_32, "y": torch.randn(2, 1, 32, 32)}, train=False)
+        preds = module(data["x"])
+        assert preds.shape[-2:] == (32, 32)
+
+    def test_forward_at_multiple_resolutions(self, module):
+        """The same module must produce valid outputs at 16×16 and 32×32."""
+        for res in (16, 32):
+            batch = {"x": torch.randn(2, 1, res, res), "y": torch.randn(2, 1, res, res)}
+            result = module._shared_step(batch, "val", suffix=f"val_{res}")
+            assert result.dim() == 0
+            assert torch.isfinite(result)
+
+    def test_no_interpolation_in_forward_path(self, module):
+        """Output spatial dims must exactly match input — no resize/interpolation."""
+        for res in (16, 24, 32):
+            x = torch.randn(1, 1, res, res)
+            data = module._prepare_batch({"x": x, "y": torch.randn(1, 1, res, res)}, train=False)
+            preds = module(data["x"])
+            assert preds.shape[-2:] == (res, res), (
+                f"Expected output shape ({res}, {res}), got {tuple(preds.shape[-2:])}"
+            )
+
+
+# ─── Resolution-qualified metric logging ─────────────────────────────────────
+
+class TestResolutionQualifiedMetrics:
+
+    def test_validation_step_logs_with_resolution_prefix(self, module):
+        batch_16 = {"x": torch.randn(2, 1, 16, 16), "y": torch.randn(2, 1, 16, 16)}
+        module.validation_step(batch_16, batch_idx=0, dataloader_idx=0)
+        logged = [c.args[0] for c in module.log.call_args_list]
+        assert "val_16_l2" in logged
+        assert "val_16_h1" in logged
+
+    def test_validation_step_resolution_varies_with_input(self, module):
+        batch_32 = {"x": torch.randn(2, 1, 32, 32), "y": torch.randn(2, 1, 32, 32)}
+        module.validation_step(batch_32, batch_idx=0, dataloader_idx=0)
+        logged = [c.args[0] for c in module.log.call_args_list]
+        assert "val_32_l2" in logged
+        assert "val_32_h1" in logged
+
+    def test_test_step_logs_with_resolution_prefix(self, module):
+        batch_16 = {"x": torch.randn(2, 1, 16, 16), "y": torch.randn(2, 1, 16, 16)}
+        module.test_step(batch_16, batch_idx=0, dataloader_idx=0)
+        logged = [c.args[0] for c in module.log.call_args_list]
+        assert "test_16_l2" in logged
+        assert "test_16_h1" in logged
+
+    def test_test_step_resolution_varies_with_input(self, module):
+        batch_32 = {"x": torch.randn(2, 1, 32, 32), "y": torch.randn(2, 1, 32, 32)}
+        module.test_step(batch_32, batch_idx=0, dataloader_idx=0)
+        logged = [c.args[0] for c in module.log.call_args_list]
+        assert "test_32_l2" in logged
+        assert "test_32_h1" in logged
+
+    def test_different_resolutions_produce_distinct_metric_names(self, module):
+        """Calling val at two resolutions must not collide metric names."""
+        batch_16 = {"x": torch.randn(2, 1, 16, 16), "y": torch.randn(2, 1, 16, 16)}
+        batch_32 = {"x": torch.randn(2, 1, 32, 32), "y": torch.randn(2, 1, 32, 32)}
+        module.validation_step(batch_16, batch_idx=0, dataloader_idx=0)
+        module.validation_step(batch_32, batch_idx=0, dataloader_idx=1)
+        logged = [c.args[0] for c in module.log.call_args_list]
+        assert "val_16_l2" in logged
+        assert "val_32_l2" in logged
+
+
+# ─── Normalizer broadcasting across resolutions ──────────────────────────────
+
+class TestNormalizerBroadcasting:
+
+    def test_normalizer_fit_on_16_transforms_32(self):
+        """Normalizer fit on 16×16 data must correctly transform 32×32 tensors."""
+        norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
+        norm.fit(torch.randn(8, 1, 16, 16))
+        x_32 = torch.randn(2, 1, 32, 32)
+        transformed = norm.transform(x_32)
+        assert transformed.shape == (2, 1, 32, 32)
+        assert torch.isfinite(transformed).all()
+
+    def test_normalizer_inverse_transform_recovers_original(self):
+        """Round-trip transform→inverse_transform must recover the input."""
+        norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
+        norm.fit(torch.randn(8, 1, 16, 16))
+        x_32 = torch.randn(2, 1, 32, 32)
+        recovered = norm.inverse_transform(norm.transform(x_32))
+        torch.testing.assert_close(recovered, x_32)
+
+    def test_data_processor_handles_high_res_batch(self):
+        """DefaultDataProcessor fit on 16×16 must preprocess 32×32 batches."""
+        processor = _make_processor()
+        batch_32 = {"x": torch.randn(2, 1, 32, 32), "y": torch.randn(2, 1, 32, 32)}
+        processor.train(True)
+        result = processor.preprocess(batch_32)
+        assert result["x"].shape == (2, 1, 32, 32)
+        assert result["y"].shape == (2, 1, 32, 32)
+
+    def test_data_processor_postprocess_high_res(self):
+        """Postprocess must inverse-transform 32×32 predictions in eval mode."""
+        processor = _make_processor()
+        processor.train(False)
+        preds_32 = torch.randn(2, 1, 32, 32)
+        result = processor.postprocess(preds_32)
+        assert result.shape == (2, 1, 32, 32)
+        assert torch.isfinite(result).all()
