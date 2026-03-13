@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from omegaconf import OmegaConf
 
@@ -893,16 +894,12 @@ class TestBCMollifier:
 
 # ─── Native high-res forward pass (PINO paper-faithful) ─────────────────────
 
-def _make_native_pino_module(pde_resolution: int = 32, train_resolution: int = 16,
+def _make_native_pino_module(pde_resolution: int = 64, train_resolution: int = 16,
                               pde_weight: float = 1.0, data_weight: float = 1.0,
                               bc_mollifier: bool = False,
                               forcing: float = 2.6936,
                               forcing_is_coeff_scaled: bool = True):
-    """Create a PINO module configured for the native high-res forward pass path.
-
-    Defaults to pde_resolution=32 (not 64) to keep tests fast on laptops.
-    The native path logic is resolution-agnostic; only the subsample factor matters.
-    """
+    """Create a PINO module configured for the native high-res forward pass path."""
     base = OmegaConf.to_container(_make_config())
     base["loss"] = {
         "training": "l2",
@@ -923,11 +920,8 @@ def _make_native_pino_module(pde_resolution: int = 32, train_resolution: int = 1
     return m
 
 
-def _make_native_batch(batch_size: int = 2, train_res: int = 16, pde_res: int = 32):
-    """Create a training batch with a_highres (the native high-res forward pass trigger).
-
-    Defaults to pde_res=32 and batch_size=2 to keep tests fast on laptops.
-    """
+def _make_native_batch(batch_size: int = 4, train_res: int = 16, pde_res: int = 64):
+    """Create a training batch with a_highres (the native high-res forward pass trigger)."""
     return {
         "x": torch.randn(batch_size, 1, train_res, train_res),
         "y": torch.randn(batch_size, 1, train_res, train_res),
@@ -995,7 +989,7 @@ class TestNativeForwardPassStep:
         assert loss.item() == pytest.approx(7.0)
 
     def test_native_path_darcy_loss_receives_pde_resolution_tensors(self):
-        """DarcyLoss must receive native 32×32 tensors, NOT upsampled 16×16."""
+        """DarcyLoss must receive native 64×64 tensors, NOT upsampled 16×16."""
         m = _make_native_pino_module()
         batch = _make_native_batch()
 
@@ -1010,11 +1004,11 @@ class TestNativeForwardPassStep:
         with patch.object(m.darcy_loss.__class__, "__call__", capturing_call):
             m._shared_step(batch, "train")
 
-        assert captured["u_shape"][-2:] == (32, 32), (
-            f"u passed to DarcyLoss has shape {captured['u_shape']}, expected (..., 32, 32)"
+        assert captured["u_shape"][-2:] == (64, 64), (
+            f"u passed to DarcyLoss has shape {captured['u_shape']}, expected (..., 64, 64)"
         )
-        assert captured["a_shape"][-2:] == (32, 32), (
-            f"a passed to DarcyLoss has shape {captured['a_shape']}, expected (..., 32, 32)"
+        assert captured["a_shape"][-2:] == (64, 64), (
+            f"a passed to DarcyLoss has shape {captured['a_shape']}, expected (..., 64, 64)"
         )
 
     def test_native_path_darcy_loss_receives_raw_a_highres(self):
@@ -1031,7 +1025,7 @@ class TestNativeForwardPassStep:
 
     def test_native_path_darcy_loss_receives_denormalized_u(self):
         """DarcyLoss must receive denormalized (physical-unit) predictions."""
-        N_pde = 32
+        N_pde = 64
         mean_val, std_val = 2.0, 3.0
         out_norm = UnitGaussianNormalizer(
             mean=torch.full((1, 1, 1, 1), mean_val),
@@ -1056,7 +1050,7 @@ class TestNativeForwardPassStep:
         m.log = MagicMock()
 
         # Model outputs constant 1.0 → inverse_transform(1.0) = 1.0*3.0 + 2.0 = 5.0
-        m.model = _FixedOutputModel(torch.ones(2, 1, N_pde, N_pde))
+        m.model = _FixedOutputModel(torch.ones(4, 1, N_pde, N_pde))
         m.darcy_loss = MagicMock(return_value=torch.tensor(0.5))
 
         batch = _make_native_batch()
@@ -1066,8 +1060,8 @@ class TestNativeForwardPassStep:
         assert called_u.mean().item() == pytest.approx(5.0, abs=1e-4)
 
     def test_native_path_data_loss_uses_subsampled_output(self):
-        """Data loss must compare stride-subsampled 32→16 output with 16×16 labels,
-        NOT the full 32×32 output."""
+        """Data loss must compare stride-subsampled 64→16 output with 16×16 labels,
+        NOT the full 64×64 output."""
         m = _make_native_pino_module()
         batch = _make_native_batch()
 
@@ -1104,8 +1098,8 @@ class TestNativeForwardPassStep:
         with patch.object(m.darcy_loss.__class__, "__call__", capturing_call):
             loss = m._shared_step(batch_no_hires, "train")
 
-        # Fallback path upsamples to pde_resolution=32
-        assert captured["u_shape"][-2:] == (32, 32)
+        # Fallback path upsamples to pde_resolution=64
+        assert captured["u_shape"][-2:] == (64, 64)
         assert loss.dim() == 0
 
     def test_validation_path_unchanged_with_native_module(self):
@@ -1254,10 +1248,10 @@ class TestNativeForwardPassMollifier:
         assert u[:, :, :, -1].abs().max().item() < 1e-5
 
     def test_mollifier_at_pde_resolution_in_native_path(self):
-        """Mollifier must be at pde_resolution (32×32), not train_resolution."""
+        """Mollifier must be at pde_resolution (64×64), not train_resolution."""
         m = _make_native_pino_module(bc_mollifier=True)
         assert m._bc_mollifier is not None
-        assert m._bc_mollifier.shape == (1, 1, 32, 32)
+        assert m._bc_mollifier.shape == (1, 1, 64, 64)
 
 
 class TestPairedResolutionDataset:
