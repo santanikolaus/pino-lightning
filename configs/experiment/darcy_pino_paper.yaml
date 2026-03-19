@@ -1,0 +1,21 @@
+# @package _global_
+# PINO experiment: matches spirit of PINO paper §4.1 (Darcy flow).
+#
+# Paper trains at 11×11 data, evaluates physics at 61×61 (~5.5× ratio).
+# Here: train at 16×16 (our finest available), evaluate physics at 64×64 (4× ratio).
+# Architecture, optimizer, and data settings identical to darcy_data_only.
+
+defaults:
+  - override /loss: pino
+
+loss:
+  pde_resolution: 64
+  data_weight: 1.0
+  pde_weight: 0.1
+
+data:
+  pde_resolution: ${loss.pde_resolution}
+
+logger:
+  wandb:
+    name: darcy_pino_train16_pde64
