@@ -21,6 +21,7 @@ class DarcyDataset(PTDataset):
         channel_dim=1,
         subsampling_rate=None,
         download: bool = True,
+        pde_resolution: Optional[int] = None,
     ):
         if isinstance(root_dir, str):
             root_dir = Path(root_dir)
@@ -29,6 +30,8 @@ class DarcyDataset(PTDataset):
 
         zenodo_record_id = "12784353"
         resolutions = set(test_resolutions + [train_resolution])
+        if pde_resolution is not None:
+            resolutions.add(pde_resolution)
         available_resolutions = [16, 32, 64, 128, 421]
         for res in resolutions:
             assert res in available_resolutions, (
@@ -78,6 +81,7 @@ def load_darcy(
     train_resolution: int = 16,
     subsampling_rate: Optional[int] = None,
     download: bool = True,
+    pde_resolution: Optional[int] = None,
 ):
 
     return DarcyDataset(
@@ -92,4 +96,5 @@ def load_darcy(
         encoding=encoding,
         subsampling_rate=subsampling_rate,
         download=download,
+        pde_resolution=pde_resolution,
     )

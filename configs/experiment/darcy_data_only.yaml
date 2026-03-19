@@ -1,0 +1,8 @@
+# @package _global_
+# Baseline: data-supervised FNO on 16×16 Darcy.
+# Documents the "first run" settings for comparison against PINO runs.
+# All model/data/optimizer settings come from the train.yaml defaults.
+
+logger:
+  wandb:
+    name: darcy_data_only_train16

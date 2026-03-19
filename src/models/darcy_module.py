@@ -44,14 +44,38 @@ class DarcyLitModule(L.LightningModule):
         self._data_weight: float = _get(loss_cfg, "data_weight", 1.0)
         self._pde_weight: float = _get(loss_cfg, "pde_weight", 0.0)
 
+        data_cfg = _get(config, "data")
+        self._train_resolution: int = _get(data_cfg, "train_resolution", 16)
+
         self.darcy_loss: Optional[DarcyLoss] = None
+        self._pde_resolution: Optional[int] = None
+        self._subsample_factor: Optional[int] = None
+        self.register_buffer("_bc_mollifier", None)
         if self._pde_weight > 0:
-            data_cfg = _get(config, "data")
             pde_res = _get(loss_cfg, "pde_resolution", None)
             if pde_res is None:
-                pde_res = _get(data_cfg, "train_resolution")
+                pde_res = self._train_resolution
             domain_length: float = _get(data_cfg, "domain_length", 1.0)
-            self.darcy_loss = DarcyLoss(resolution=pde_res, domain_length=domain_length)
+            forcing: float = _get(loss_cfg, "forcing", 2.6936)
+            forcing_is_coeff_scaled: bool = _get(loss_cfg, "forcing_is_coeff_scaled", True)
+            self.darcy_loss = DarcyLoss(
+                resolution=pde_res, domain_length=domain_length,
+                forcing=forcing, forcing_is_coeff_scaled=forcing_is_coeff_scaled,
+            )
+            self._pde_resolution = pde_res
+
+            if pde_res != self._train_resolution and pde_res % self._train_resolution == 0:
+                self._subsample_factor = pde_res // self._train_resolution
+
+            if _get(loss_cfg, "bc_mollifier", False):
+                self._bc_mollifier = self._build_mollifier(pde_res)
+
+    @staticmethod
+    def _build_mollifier(resolution: int) -> torch.Tensor:
+        """sin(πx)·sin(πy) mask enforcing zero Dirichlet BCs (PINO paper, App. A.2)."""
+        x = torch.linspace(0, 1, resolution)
+        mx = torch.sin(torch.pi * x)
+        return (mx.unsqueeze(0) * mx.unsqueeze(1)).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -73,25 +97,98 @@ class DarcyLitModule(L.LightningModule):
             return dp.out_normalizer.inverse_transform(preds)
         return preds
 
+    def _normalize_input(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the input normalizer (if present) to an arbitrary-resolution input."""
+        dp = self.data_processor
+        if hasattr(dp, "in_normalizer") and dp.in_normalizer is not None:
+            return dp.in_normalizer.transform(x)
+        return x
+
+    def _normalize_output(self, y: torch.Tensor) -> torch.Tensor:
+        """Apply the output normalizer (if present) to labels."""
+        dp = self.data_processor
+        if hasattr(dp, "out_normalizer") and dp.out_normalizer is not None:
+            return dp.out_normalizer.transform(y)
+        return y
+
     def _shared_step(self, batch: Dict[str, Any], stage: str, suffix: Optional[str] = None) -> torch.Tensor:
         train_mode = stage == "train"
+        sync_dist = bool(self.trainer and getattr(self.trainer, "world_size", 1) > 1)
+        prefix = suffix if suffix is not None else stage
+
+        # ── PINO native forward pass at pde_resolution (paper-faithful) ──────
+        # When the batch includes high-res permeability ("a_highres"), run a
+        # single FNO forward pass at pde_resolution.  Data loss is computed on
+        # stride-subsampled output; PDE loss on the full high-res output.
+        if (train_mode and self.darcy_loss is not None
+                and "a_highres" in batch and self._subsample_factor is not None):
+            self.data_processor.train(True)
+            a_hires_raw = batch["a_highres"].to(self.device)
+
+            # Forward pass at pde_resolution (native FNO output)
+            a_hires_norm = self._normalize_input(a_hires_raw)
+            u_hires_norm = self.model(a_hires_norm)
+
+            # Data loss: stride-subsample to train_resolution, compare with labels
+            s = self._subsample_factor
+            u_lowres_norm = u_hires_norm[:, :, ::s, ::s]
+            y_norm = self._normalize_output(batch["y"].to(self.device))
+            raw_data = self.train_loss(u_lowres_norm, y_norm)
+            data_loss = self._data_weight * raw_data
+
+            # PDE loss: denormalize, mollify, compute residual at pde_resolution
+            u_hires_phys = self._denormalize_for_physics(u_hires_norm)
+            if self._bc_mollifier is not None:
+                u_hires_phys = u_hires_phys * self._bc_mollifier
+            raw_pde = self.darcy_loss(u_hires_phys, a_hires_raw)
+            pde_loss = self._pde_weight * raw_pde
+
+            loss = data_loss + pde_loss
+            self.log("train_data_loss", data_loss, on_step=True, on_epoch=True,
+                     sync_dist=sync_dist)
+            self.log("train_pde_loss", pde_loss, on_step=True, on_epoch=True,
+                     sync_dist=sync_dist)
+            self.log("train_data_loss_raw", raw_data, on_step=True, on_epoch=True,
+                     sync_dist=sync_dist)
+            self.log("train_pde_loss_raw", raw_pde, on_step=True, on_epoch=True,
+                     sync_dist=sync_dist)
+            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
+                     sync_dist=sync_dist)
+            return loss
+
+        # ── Original path: data-only, same-res PDE, or validation/test ───────
         # batch["x"] is the raw (un-normalised) permeability. preprocess() returns a new
         # dict ({**data_dict, "x": normalised, "y": normalised}), so batch is never mutated.
         data = self._prepare_batch(batch, train_mode)
         preds = self(data["x"])
         preds = self.data_processor.postprocess(preds)
-        sync_dist = bool(self.trainer and getattr(self.trainer, "world_size", 1) > 1)
-        prefix = suffix if suffix is not None else stage
 
         if train_mode:
             if self.darcy_loss is not None:
-                data_loss = self._data_weight * self.train_loss(preds, data["y"])
+                if self._subsample_factor is not None:
+                    raise RuntimeError(
+                        f"pde_resolution ({self._pde_resolution}) != "
+                        f"train_resolution ({self._train_resolution}) but batch "
+                        f"has no 'a_highres' key. Wrap your training dataset "
+                        f"with PairedResolutionDataset to supply high-resolution "
+                        f"permeability for the native forward pass."
+                    )
+                raw_data = self.train_loss(preds, data["y"])
+                data_loss = self._data_weight * raw_data
                 u_phys = self._denormalize_for_physics(preds)
-                pde_loss = self._pde_weight * self.darcy_loss(u_phys, batch["x"].to(preds.device))
+                a = batch["x"].to(preds.device)
+                if self._bc_mollifier is not None:
+                    u_phys = u_phys * self._bc_mollifier
+                raw_pde = self.darcy_loss(u_phys, a)
+                pde_loss = self._pde_weight * raw_pde
                 loss = data_loss + pde_loss
                 self.log("train_data_loss", data_loss, on_step=True, on_epoch=True,
                          sync_dist=sync_dist)
                 self.log("train_pde_loss", pde_loss, on_step=True, on_epoch=True,
+                         sync_dist=sync_dist)
+                self.log("train_data_loss_raw", raw_data, on_step=True, on_epoch=True,
+                         sync_dist=sync_dist)
+                self.log("train_pde_loss_raw", raw_pde, on_step=True, on_epoch=True,
                          sync_dist=sync_dist)
             else:
                 loss = self._data_weight * self.train_loss(preds, data["y"])
@@ -111,10 +208,12 @@ class DarcyLitModule(L.LightningModule):
         return self._shared_step(batch, "train")
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
-        return self._shared_step(batch, "val", "val")
+        res = batch["x"].shape[-1]
+        return self._shared_step(batch, "val", f"val_{res}")
 
     def test_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
-        return self._shared_step(batch, "test", "test")
+        res = batch["x"].shape[-1]
+        return self._shared_step(batch, "test", f"test_{res}")
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self._learning_rate,

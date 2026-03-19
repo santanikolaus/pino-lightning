@@ -10,6 +10,6 @@ encode_output: true
 encoding: channel-wise
 channel_dim: 1
 train_resolution: 16
-domain_length: 1.0
 subsampling_rate: null
+pde_resolution: null
 download: true
