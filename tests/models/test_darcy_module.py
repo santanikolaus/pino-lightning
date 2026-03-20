@@ -642,9 +642,10 @@ class TestBCMollifier:
         assert u[:, :, :, 0].abs().max().item() < 1e-5
         assert u[:, :, :, -1].abs().max().item() < 1e-5
 
-    def test_mollifier_does_not_affect_data_loss(self):
-        """Data loss must be identical with and without mollifier (mollifier only
-        applies to the physics branch)."""
+    def test_mollifier_affects_data_loss(self):
+        """With bc_mollifier=True, data loss must differ from bc_mollifier=False
+        because the mollifier is applied to the prediction for ALL losses
+        (paper-faithful: prediction = m · ũ)."""
         torch.manual_seed(123)
         m_no = _make_pino_module(pde_weight=1.0)
         torch.manual_seed(123)
@@ -664,7 +665,7 @@ class TestBCMollifier:
 
         data_no = next(c for c in m_no.log.call_args_list if c.args[0] == "train_data_loss")
         data_yes = next(c for c in m_yes.log.call_args_list if c.args[0] == "train_data_loss")
-        assert data_no.args[1].item() == pytest.approx(data_yes.args[1].item(), rel=1e-5)
+        assert data_no.args[1].item() != pytest.approx(data_yes.args[1].item(), rel=0.01)
 
 
 # ─── Native high-res forward pass (PINO paper-faithful) ─────────────────────
@@ -877,6 +878,21 @@ class TestNativeForwardPassStep:
         assert "val_h1" in logged
         assert "train_pde_loss" not in logged
 
+    def test_validation_applies_mollifier_at_test_resolution(self):
+        """With bc_mollifier=True, validation must apply sin(πx)sin(πy) at
+        the test batch resolution, changing the reported metrics."""
+        torch.manual_seed(42)
+        m_no = _make_native_pino_module(bc_mollifier=False)
+        torch.manual_seed(42)
+        m_yes = _make_native_pino_module(bc_mollifier=True)
+        m_yes.model.load_state_dict(m_no.model.state_dict())
+
+        batch = {"x": torch.randn(2, 1, 16, 16), "y": torch.randn(2, 1, 16, 16)}
+        l2_no = m_no._shared_step(batch, "val", suffix="val")
+        l2_yes = m_yes._shared_step(batch, "val", suffix="val")
+        # Mollifier scales down predictions → metrics differ
+        assert l2_no.item() != pytest.approx(l2_yes.item(), rel=0.01)
+
 
 class TestNativeForwardPassNumerical:
 
@@ -1081,24 +1097,82 @@ class TestTestStep:
 
 # ─── Native path mollifier data-loss invariance ─────────────────────────────
 
-class TestNativeMollifierDataLossInvariance:
+class TestNativeMollifierDataLoss:
 
-    def test_mollifier_does_not_affect_data_loss_in_native_path(self):
-        """Data loss must be identical with and without mollifier in the native path
-        (mollifier only applies to the physics branch)."""
-        torch.manual_seed(321)
-        m_no = _make_native_pino_module(pde_weight=1.0, bc_mollifier=False)
-        torch.manual_seed(321)
-        m_yes = _make_native_pino_module(pde_weight=1.0, bc_mollifier=True)
-        m_yes.model.load_state_dict(m_no.model.state_dict())
+    def test_mollifier_affects_data_loss_in_native_path(self):
+        """With bc_mollifier=True, data loss must differ from bc_mollifier=False
+        in the native path because the mollifier is applied to the prediction
+        for ALL losses (paper-faithful: prediction = m · ũ).
 
-        batch = _make_native_batch(batch_size=4)
+        Uses a fixed model output and controlled normalizer to make the
+        comparison deterministic (random-data tests are fragile because
+        the near-identity normalizer masks the difference)."""
+        N_pde, N_train = 31, 16
+
+        # Controlled normalizer with non-trivial stats so that the
+        # normalized ↔ physical distinction is large.
+        out_norm = UnitGaussianNormalizer(
+            mean=torch.full((1, 1, 1, 1), 2.0),
+            std=torch.full((1, 1, 1, 1), 3.0),
+            eps=0.0, dim=[0, 2, 3],
+        )
+        in_norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
+        in_norm.fit(torch.randn(16, 1, 16, 16))
+        processor = DefaultDataProcessor(in_normalizer=in_norm, out_normalizer=out_norm)
+
+        def _build(bc_mol):
+            cfg = OmegaConf.create(OmegaConf.to_container(_make_config()))
+            cfg["loss"] = {
+                "training": "l2", "data_weight": 1.0, "pde_weight": 1.0,
+                "pde_resolution": N_pde, "bc_mollifier": bc_mol,
+                "forcing": 1.0, "forcing_is_coeff_scaled": False,
+            }
+            cfg["data"] = {"train_resolution": N_train}
+            m = DarcyLitModule(cfg, data_processor=processor)
+            m.model = _FixedOutputModel(torch.ones(2, 1, N_pde, N_pde))
+            mock_trainer = MagicMock()
+            mock_trainer.world_size = 1
+            m._trainer = mock_trainer
+            m.log = MagicMock()
+            return m
+
+        m_no = _build(False)
+        m_yes = _build(True)
+
+        batch = {
+            "x": torch.randn(2, 1, N_train, N_train),
+            "y": torch.randn(2, 1, N_train, N_train),
+            "a_highres": torch.ones(2, 1, N_pde, N_pde),
+        }
         m_no._shared_step(batch, "train")
         m_yes._shared_step(batch, "train")
 
         data_no = next(c for c in m_no.log.call_args_list if c.args[0] == "train_data_loss")
         data_yes = next(c for c in m_yes.log.call_args_list if c.args[0] == "train_data_loss")
-        assert data_no.args[1].item() == pytest.approx(data_yes.args[1].item(), rel=1e-5)
+        assert data_no.args[1].item() != pytest.approx(data_yes.args[1].item(), rel=0.05)
+
+    def test_data_loss_prediction_has_zero_boundaries_in_native_path(self):
+        """With bc_mollifier=True, the prediction subsampled for data loss must
+        have zero boundaries — proving both losses use the mollified prediction."""
+        m = _make_native_pino_module(bc_mollifier=True)
+        batch = _make_native_batch()
+
+        captured = {}
+        original_train_loss = m.train_loss
+
+        def capturing_train_loss(pred, target):
+            captured["pred"] = pred.detach().clone()
+            return original_train_loss(pred, target)
+
+        m.train_loss = capturing_train_loss
+        m._shared_step(batch, "train")
+
+        pred = captured["pred"]
+        # Subsampled mollified prediction must be zero on boundaries
+        assert pred[:, :, 0, :].abs().max().item() < 1e-5
+        assert pred[:, :, -1, :].abs().max().item() < 1e-5
+        assert pred[:, :, :, 0].abs().max().item() < 1e-5
+        assert pred[:, :, :, -1].abs().max().item() < 1e-5
 
 
 # ─── Native path normalization round-trip ────────────────────────────────────
