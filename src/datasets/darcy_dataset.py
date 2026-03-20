@@ -19,7 +19,7 @@ class DarcyDataset(PTDataset):
         encode_output: bool = True,
         encoding="channel-wise",
         channel_dim=1,
-        subsampling_rate=None,
+        source_resolution: int = 421,
         download: bool = True,
         pde_resolution: Optional[int] = None,
     ):
@@ -29,24 +29,27 @@ class DarcyDataset(PTDataset):
             root_dir.mkdir(parents=True)
 
         zenodo_record_id = "12784353"
-        resolutions = set(test_resolutions + [train_resolution])
+
+        # Validate stride divisibility for all target resolutions
+        all_resolutions = set(test_resolutions + [train_resolution])
         if pde_resolution is not None:
-            resolutions.add(pde_resolution)
-        available_resolutions = [16, 32, 64, 128, 421]
-        for res in resolutions:
-            assert res in available_resolutions, (
-                f"Error: resolution {res} not available"
-            )
+            all_resolutions.add(pde_resolution)
+        for res in all_resolutions:
+            if (source_resolution - 1) % (res - 1) != 0:
+                raise ValueError(
+                    f"Cannot stride-subsample source_resolution={source_resolution} "
+                    f"to target resolution={res}: "
+                    f"({source_resolution}-1) % ({res}-1) != 0"
+                )
 
         if download:
             files_to_download = []
             already_downloaded_files = [x.name for x in root_dir.iterdir()]
-            for res in resolutions:
-                if (
-                    f"darcy_train_{res}.pt" not in already_downloaded_files
-                    or f"darcy_test_{res}.pt" not in already_downloaded_files
-                ):
-                    files_to_download.append(f"darcy_{res}.tgz")
+            if (
+                f"darcy_train_{source_resolution}.pt" not in already_downloaded_files
+                or f"darcy_test_{source_resolution}.pt" not in already_downloaded_files
+            ):
+                files_to_download.append(f"darcy_{source_resolution}.tgz")
             download_from_zenodo_record(
                 record_id=zenodo_record_id,
                 root=root_dir,
@@ -60,12 +63,11 @@ class DarcyDataset(PTDataset):
             n_tests=n_tests,
             train_resolution=train_resolution,
             test_resolutions=test_resolutions,
+            source_resolution=source_resolution,
             encode_input=encode_input,
             encode_output=encode_output,
             encoding=encoding,
             channel_dim=channel_dim,
-            input_subsampling_rate=subsampling_rate,
-            output_subsampling_rate=subsampling_rate,
         )
 
 
@@ -79,7 +81,7 @@ def load_darcy(
     encoding="channel-wise",
     channel_dim=1,
     train_resolution: int = 16,
-    subsampling_rate: Optional[int] = None,
+    source_resolution: int = 421,
     download: bool = True,
     pde_resolution: Optional[int] = None,
 ):
@@ -94,7 +96,7 @@ def load_darcy(
         encode_output=encode_output,
         channel_dim=channel_dim,
         encoding=encoding,
-        subsampling_rate=subsampling_rate,
+        source_resolution=source_resolution,
         download=download,
         pde_resolution=pde_resolution,
     )
