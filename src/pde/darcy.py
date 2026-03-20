@@ -53,19 +53,18 @@ class DarcyPDE:
 class DarcyLoss:
     """PDE residual loss for Darcy flow.
 
-    The neuralop Darcy dataset stores the permeability as a binary indicator
-    a ∈ {0, 1} and the solution u with an implicit scaling.  The stored
-    quantities satisfy  -div(a ∇u) = C · a  where C ≈ 2.6936, NOT f = 1.
-    Setting ``forcing_is_coeff_scaled=True`` (the default) uses the
-    spatially-varying target  f(x) = forcing · a(x)  which matches the data.
+    The 421×421 source data stores continuous permeability a ∈ [0.3, 3.3]
+    and physical-scale solution u.  The PDE satisfied is  -div(a ∇u) = 1
+    (constant forcing).  Set ``forcing_is_coeff_scaled=False`` (default)
+    for this data.
     """
 
     def __init__(
         self,
         resolution: int,
         domain_length: float = 1.0,
-        forcing: float = 2.6936,
-        forcing_is_coeff_scaled: bool = True,
+        forcing: float = 1.0,
+        forcing_is_coeff_scaled: bool = False,
     ) -> None:
         self.pde = DarcyPDE(resolution, domain_length, forcing)
         self.lp = LpLoss(d=2, p=2)
