@@ -9,6 +9,21 @@ from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 
 logger = logging.getLogger(__name__)
 
+
+def _vertex_stride(source: int, target: int) -> int:
+    """Compute stride for vertex-centered subsampling.
+
+    Formula: stride = (source - 1) // (target - 1), valid only when
+    (source - 1) % (target - 1) == 0.
+    """
+    if (source - 1) % (target - 1) != 0:
+        raise ValueError(
+            f"Cannot stride-subsample {source} -> {target}: "
+            f"({source}-1) % ({target}-1) != 0"
+        )
+    return (source - 1) // (target - 1)
+
+
 class PTDataset:
 
     def __init__(
@@ -19,11 +34,10 @@ class PTDataset:
         n_tests: List[int],
         train_resolution: int,
         test_resolutions: List[int],
+        source_resolution: int,
         encode_input: bool = False,
         encode_output: bool = True,
         encoding="channel-wise",
-        input_subsampling_rate=None,
-        output_subsampling_rate=None,
         channel_dim=1,
         channels_squeezed=True,
     ):
@@ -33,50 +47,21 @@ class PTDataset:
         self.root_dir = root_dir
         self.test_resolutions = test_resolutions
 
+        # ── Train data: load source, stride to train_resolution ──────────
+        train_stride = _vertex_stride(source_resolution, train_resolution)
         data = torch.load(
-        Path(root_dir).joinpath(f"{dataset_name}_train_{train_resolution}.pt").as_posix()
+            Path(root_dir).joinpath(f"{dataset_name}_train_{source_resolution}.pt").as_posix()
         )
 
         x_train = data["x"].type(torch.float32).clone()
         if channels_squeezed:
             x_train = x_train.unsqueeze(channel_dim)
-
-        input_data_dims = x_train.ndim - 2
-        if not input_subsampling_rate:
-            input_subsampling_rate = 1
-        if not isinstance(input_subsampling_rate, list):
-            input_subsampling_rate = [input_subsampling_rate] * input_data_dims
-        assert len(input_subsampling_rate) == input_data_dims, (
-            "Error: length mismatch between input_subsampling_rate and data dims. "
-            f"Expected {input_data_dims}, got {input_subsampling_rate}"
-        )
-        train_input_indices = [slice(0, n_train, None)] + [slice(None, None, rate) for rate in input_subsampling_rate]
-        train_input_indices.insert(channel_dim, slice(None))
-        train_input_indices = tuple(train_input_indices)
-        x_train = x_train[train_input_indices]
+        x_train = x_train[:n_train, :, ::train_stride, ::train_stride]
 
         y_train = data["y"].clone()
         if channels_squeezed:
             y_train = y_train.unsqueeze(channel_dim)
-
-        # TODO(patching): If a dataset ever passes channels_squeezed=False, switch
-        # this indexing logic to build full slices explicitly instead of inserting
-        # channel_dim—otherwise tensors that already have C in place can misalign.
-
-        output_data_dims = y_train.ndim - 2
-        if not output_subsampling_rate:
-            output_subsampling_rate = 1
-        if not isinstance(output_subsampling_rate, list):
-            output_subsampling_rate = [output_subsampling_rate] * output_data_dims
-        assert len(output_subsampling_rate) == output_data_dims, (  # NEW
-            "Error: length mismatch between output_subsampling_rate and data dims. "
-            f"Expected {output_data_dims}, got {output_subsampling_rate}"
-        )
-
-        train_output_indices = [slice(0, n_train, None)] + [slice(None, None, rate) for rate in output_subsampling_rate]
-        train_output_indices.insert(channel_dim, slice(None))
-        train_output_indices = tuple(train_output_indices)
-        y_train = y_train[train_output_indices]
+        y_train = y_train[:n_train, :, ::train_stride, ::train_stride]
 
         del data
 
@@ -113,34 +98,32 @@ class PTDataset:
             in_normalizer=input_encoder, out_normalizer=output_encoder
         )
 
+        # ── Test data: load source once, stride to each test resolution ──
         self._test_dbs = {}
+        test_data = torch.load(
+            Path(root_dir).joinpath(f"{dataset_name}_test_{source_resolution}.pt").as_posix()
+        )
         for res, n_test in zip(test_resolutions, n_tests):
             logger.info("Loading test db for resolution %s with %s samples", res, n_test)
-            data = torch.load(Path(root_dir).joinpath(f"{dataset_name}_test_{res}.pt").as_posix())
+            test_stride = _vertex_stride(source_resolution, res)
 
-            x_test = data["x"].type(torch.float32).clone()
+            x_test = test_data["x"].type(torch.float32).clone()
             if channels_squeezed:
                 x_test = x_test.unsqueeze(channel_dim)
-            test_input_indices = [slice(0, n_test, None)] + [slice(None, None, rate) for rate in input_subsampling_rate]
-            test_input_indices.insert(channel_dim, slice(None))
-            test_input_indices = tuple(test_input_indices)
-            x_test = x_test[test_input_indices]
+            x_test = x_test[:n_test, :, ::test_stride, ::test_stride]
 
-            y_test = data["y"].clone()
+            y_test = test_data["y"].clone()
             if channels_squeezed:
                 y_test = y_test.unsqueeze(channel_dim)
-            test_output_indices = [slice(0, n_test, None)] + [slice(None, None, rate) for rate in output_subsampling_rate]
-            test_output_indices.insert(channel_dim, slice(None))
-            test_output_indices = tuple(test_output_indices)
-            y_test = y_test[test_output_indices]
-
-            del data
+            y_test = y_test[:n_test, :, ::test_stride, ::test_stride]
 
             test_db = TensorDataset(
                 x_test,
                 y_test,
             )
             self._test_dbs[res] = test_db
+
+        del test_data
 
     @property
     def data_processor(self):

@@ -64,8 +64,14 @@ class DarcyLitModule(L.LightningModule):
             )
             self._pde_resolution = pde_res
 
-            if pde_res != self._train_resolution and pde_res % self._train_resolution == 0:
-                self._subsample_factor = pde_res // self._train_resolution
+            if pde_res != self._train_resolution:
+                if (pde_res - 1) % (self._train_resolution - 1) != 0:
+                    raise ValueError(
+                        f"pde_resolution ({pde_res}) and train_resolution "
+                        f"({self._train_resolution}) not on same vertex grid: "
+                        f"({pde_res}-1) % ({self._train_resolution}-1) != 0"
+                    )
+                self._subsample_factor = (pde_res - 1) // (self._train_resolution - 1)
 
             if _get(loss_cfg, "bc_mollifier", False):
                 self._bc_mollifier = self._build_mollifier(pde_res)
