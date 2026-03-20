@@ -135,17 +135,28 @@ class DarcyLitModule(L.LightningModule):
             a_hires_norm = self._normalize_input(a_hires_raw)
             u_hires_norm = self.model(a_hires_norm)
 
-            # Data loss: stride-subsample to train_resolution, compare with labels
-            s = self._subsample_factor
-            u_lowres_norm = u_hires_norm[:, :, ::s, ::s]
-            y_norm = self._normalize_output(batch["y"].to(self.device))
-            raw_data = self.train_loss(u_lowres_norm, y_norm)
-            data_loss = self._data_weight * raw_data
-
-            # PDE loss: denormalize, mollify, compute residual at pde_resolution
+            # Denormalize to physical space and apply BC mollifier.
+            # Paper: prediction = m · ũ; both losses use this mollified
+            # prediction so that the data and PDE objectives are consistent.
             u_hires_phys = self._denormalize_for_physics(u_hires_norm)
             if self._bc_mollifier is not None:
                 u_hires_phys = u_hires_phys * self._bc_mollifier
+
+            # Data loss: subsample prediction to train_resolution
+            s = self._subsample_factor
+            if self._bc_mollifier is not None:
+                # Mollified prediction — compare in physical space
+                u_pred_train = u_hires_phys[:, :, ::s, ::s]
+                y_true = batch["y"].to(self.device)
+                raw_data = self.train_loss(u_pred_train, y_true)
+            else:
+                # No mollifier — compare in normalized space (original)
+                u_lowres_norm = u_hires_norm[:, :, ::s, ::s]
+                y_norm = self._normalize_output(batch["y"].to(self.device))
+                raw_data = self.train_loss(u_lowres_norm, y_norm)
+            data_loss = self._data_weight * raw_data
+
+            # PDE loss at pde_resolution
             raw_pde = self.darcy_loss(u_hires_phys, a_hires_raw)
             pde_loss = self._pde_weight * raw_pde
 
@@ -179,12 +190,15 @@ class DarcyLitModule(L.LightningModule):
                         f"with PairedResolutionDataset to supply high-resolution "
                         f"permeability for the native forward pass."
                     )
-                raw_data = self.train_loss(preds, data["y"])
-                data_loss = self._data_weight * raw_data
                 u_phys = self._denormalize_for_physics(preds)
                 a = batch["x"].to(preds.device)
                 if self._bc_mollifier is not None:
                     u_phys = u_phys * self._bc_mollifier
+                    # Mollified prediction — data loss in physical space
+                    raw_data = self.train_loss(u_phys, batch["y"].to(self.device))
+                else:
+                    raw_data = self.train_loss(preds, data["y"])
+                data_loss = self._data_weight * raw_data
                 raw_pde = self.darcy_loss(u_phys, a)
                 pde_loss = self._pde_weight * raw_pde
                 loss = data_loss + pde_loss
@@ -202,6 +216,9 @@ class DarcyLitModule(L.LightningModule):
                      sync_dist=sync_dist)
             return loss
         else:
+            if self._bc_mollifier is not None:
+                mol = self._build_mollifier(preds.shape[-1]).to(preds.device)
+                preds = preds * mol
             l2 = self.lp_loss(preds, data["y"])
             h1 = self.h1_loss(preds, data["y"])
             self.log(f"{prefix}_l2", l2, on_step=False, on_epoch=True, prog_bar=True,
