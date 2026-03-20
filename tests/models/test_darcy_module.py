@@ -154,8 +154,8 @@ class TestTrainingStepIntegration:
 
 def _make_pino_config(pde_weight: float = 1.0, data_weight: float = 1.0,
                       pde_resolution=None, bc_mollifier: bool = False,
-                      forcing: float = 2.6936,
-                      forcing_is_coeff_scaled: bool = True):
+                      forcing: float = 1.0,
+                      forcing_is_coeff_scaled: bool = False):
     """Extend the base config with a PINO loss block and a minimal data block."""
     base = OmegaConf.to_container(_make_config())
     base["loss"] = {
@@ -186,8 +186,8 @@ def _make_pino_module(pde_weight: float = 1.0, data_weight: float = 1.0,
 
 
 def _make_pino_module_with_normalizer(mean: float, std: float, eps: float = 0.0,
-                                      forcing: float = 2.6936,
-                                      forcing_is_coeff_scaled: bool = True):
+                                      forcing: float = 1.0,
+                                      forcing_is_coeff_scaled: bool = False):
     """PINO module with an out_normalizer whose stats are fully controlled.
 
     Used by tests that need to verify the exact inverse_transform value that
@@ -672,8 +672,8 @@ class TestBCMollifier:
 def _make_native_pino_module(pde_resolution: int = 61, train_resolution: int = 16,
                               pde_weight: float = 1.0, data_weight: float = 1.0,
                               bc_mollifier: bool = False,
-                              forcing: float = 2.6936,
-                              forcing_is_coeff_scaled: bool = True):
+                              forcing: float = 1.0,
+                              forcing_is_coeff_scaled: bool = False):
     """Create a PINO module configured for the native high-res forward pass path."""
     base = OmegaConf.to_container(_make_config())
     base["loss"] = {
@@ -823,7 +823,7 @@ class TestNativeForwardPassStep:
         cfg["loss"] = {
             "training": "l2", "data_weight": 1.0, "pde_weight": 1.0,
             "pde_resolution": N_pde, "bc_mollifier": False,
-            "forcing": 2.6936, "forcing_is_coeff_scaled": True,
+            "forcing": 1.0, "forcing_is_coeff_scaled": False,
         }
         cfg["data"] = {"train_resolution": 16}
         m = DarcyLitModule(cfg, data_processor=processor)
@@ -1099,3 +1099,135 @@ class TestNativeMollifierDataLossInvariance:
         data_no = next(c for c in m_no.log.call_args_list if c.args[0] == "train_data_loss")
         data_yes = next(c for c in m_yes.log.call_args_list if c.args[0] == "train_data_loss")
         assert data_no.args[1].item() == pytest.approx(data_yes.args[1].item(), rel=1e-5)
+
+
+# ─── Native path normalization round-trip ────────────────────────────────────
+
+class TestNativePathNormalizationRoundTrip:
+
+    def test_pde_and_data_loss_near_zero_for_exact_solution(self):
+        """End-to-end: normalizer round-trip in native path gives near-zero losses.
+
+        Create a module with known normalizer stats (mean=0.1, std=2.0).
+        Stub model with exact Darcy solution u = 0.5·x·(1-x) at pde_resolution.
+        Verify: normalize → model → denormalize → DarcyLoss → near-zero PDE loss,
+        AND stride-subsample → data loss also near-zero.
+        """
+        N_pde = 31
+        N_train = 16
+        s = (N_pde - 1) // (N_train - 1)
+
+        X, _ = torch.meshgrid(
+            torch.linspace(0, 1, N_pde), torch.linspace(0, 1, N_pde), indexing="ij"
+        )
+        u_exact_hires = (0.5 * X * (1 - X)).unsqueeze(0).unsqueeze(0)
+
+        mean, std = 0.1, 2.0
+        out_norm = UnitGaussianNormalizer(
+            mean=torch.full((1, 1, 1, 1), mean),
+            std=torch.full((1, 1, 1, 1), std),
+            eps=0.0, dim=[0, 2, 3],
+        )
+        in_norm = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
+        in_norm.fit(torch.randn(16, 1, 16, 16))
+        processor = DefaultDataProcessor(in_normalizer=in_norm, out_normalizer=out_norm)
+
+        cfg = OmegaConf.create(OmegaConf.to_container(_make_config()))
+        cfg["loss"] = {
+            "training": "l2", "data_weight": 1.0, "pde_weight": 1.0,
+            "pde_resolution": N_pde, "bc_mollifier": False,
+            "forcing": 1.0, "forcing_is_coeff_scaled": False,
+        }
+        cfg["data"] = {"train_resolution": N_train}
+        m = DarcyLitModule(cfg, data_processor=processor)
+        mock_trainer = MagicMock()
+        mock_trainer.world_size = 1
+        m._trainer = mock_trainer
+        m.log = MagicMock()
+
+        m.model = _FixedOutputModel(out_norm.transform(u_exact_hires).clone())
+
+        batch = {
+            "x": torch.ones(1, 1, N_train, N_train),
+            "y": u_exact_hires[:, :, ::s, ::s].clone(),
+            "a_highres": torch.ones(1, 1, N_pde, N_pde),
+        }
+        m._shared_step(batch, "train")
+
+        pde_log = next(c for c in m.log.call_args_list if c.args[0] == "train_pde_loss")
+        data_log = next(c for c in m.log.call_args_list if c.args[0] == "train_data_loss")
+
+        assert pde_log.args[1].item() < 0.05, (
+            f"PDE loss={pde_log.args[1].item():.4f} too large — "
+            "normalizer round-trip may be corrupting the exact solution."
+        )
+        assert data_log.args[1].item() < 1e-4, (
+            f"Data loss={data_log.args[1].item():.4f} too large — "
+            "stride subsampling of the exact solution should match labels exactly."
+        )
+
+
+# ─── Mollifier × denormalization order ───────────────────────────────────────
+
+class TestMollifierDenormalizationOrder:
+
+    def test_zero_on_boundaries_and_physical_scale_in_interior(self):
+        """Verify mollifier * denormalize(u) is zero on ∂D and physical-scale inside.
+
+        The correct order is: first denormalize, then multiply by mollifier.
+        If reversed (mollify then denormalize), boundary values would be mean (not zero)
+        and interior values would differ.
+        """
+        N = 33  # odd for exact center
+        mean, std = 0.1, 2.0
+        out_norm = UnitGaussianNormalizer(
+            mean=torch.full((1, 1, 1, 1), mean),
+            std=torch.full((1, 1, 1, 1), std),
+            eps=0.0, dim=[0, 2, 3],
+        )
+
+        u_norm = torch.ones(1, 1, N, N) * 0.5
+        u_phys = out_norm.inverse_transform(u_norm.clone())  # = 0.5*2.0 + 0.1 = 1.1
+        mollifier = DarcyLitModule._build_mollifier(N)
+        u_mollified = mollifier * u_phys
+
+        # Boundary must be zero (not mean)
+        assert u_mollified[:, :, 0, :].abs().max().item() < 1e-6
+        assert u_mollified[:, :, -1, :].abs().max().item() < 1e-6
+        assert u_mollified[:, :, :, 0].abs().max().item() < 1e-6
+        assert u_mollified[:, :, :, -1].abs().max().item() < 1e-6
+
+        # Center: mollifier = 1 → mollified = denormalized = 1.1
+        center = N // 2
+        assert u_mollified[0, 0, center, center].item() == pytest.approx(1.1, abs=1e-5)
+
+        # Confirm this is physical scale, not normalized
+        assert u_mollified[0, 0, center, center].item() != pytest.approx(0.5, abs=0.1)
+
+    def test_interior_mean_matches_denormalized_where_mollifier_near_one(self):
+        """Deep interior of mollifier * denormalize(u) ≈ denormalize(u),
+        since sin(πx)sin(πy) ≈ 1 far from boundaries."""
+        N = 65
+        mean, std = 0.1, 2.0
+        out_norm = UnitGaussianNormalizer(
+            mean=torch.full((1, 1, 1, 1), mean),
+            std=torch.full((1, 1, 1, 1), std),
+            eps=0.0, dim=[0, 2, 3],
+        )
+
+        # Use constant normalized field so ratio is deterministic
+        u_norm = torch.ones(1, 1, N, N) * 0.5
+        u_phys = out_norm.inverse_transform(u_norm.clone())  # constant 1.1
+        mollifier = DarcyLitModule._build_mollifier(N)
+        u_mollified = mollifier * u_phys
+
+        # Deep interior: mollifier values are close to 1
+        margin = N // 3
+        interior_mollifier = mollifier[:, :, margin:-margin, margin:-margin]
+        interior_phys = u_phys[:, :, margin:-margin, margin:-margin]
+        interior_moll = u_mollified[:, :, margin:-margin, margin:-margin]
+
+        # For a constant field, mollified interior mean = field_value * mollifier mean
+        expected_ratio = interior_mollifier.mean().item()
+        actual_ratio = (interior_moll.mean() / interior_phys.mean()).item()
+        assert actual_ratio == pytest.approx(expected_ratio, rel=1e-5)
