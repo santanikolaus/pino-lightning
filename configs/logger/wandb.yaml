@@ -1,4 +1,4 @@
 wandb:
   _target_: lightning.pytorch.loggers.WandbLogger
-  project: pino-darcy
+  project: pino-darcy-paper
   name: null

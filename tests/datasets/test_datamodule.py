@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import torch
 
 from src.datasets.darcy_datamodule import DarcyDataModule
 
@@ -9,12 +10,13 @@ N_TRAIN = 8
 N_TESTS = [4, 4]
 BATCH_SIZE = 4
 TEST_BATCH_SIZES = [4, 4]
-TEST_RESOLUTIONS = [16, 32]
-TRAIN_RESOLUTION = 16
+TEST_RESOLUTIONS = [11, 61]
+TRAIN_RESOLUTION = 11
+SOURCE_RESOLUTION = 421
 
 requires_darcy_data = pytest.mark.skipif(
-    not (DARCY_ROOT / "darcy_train_16.pt").exists(),
-    reason="Darcy .pt files not found",
+    not (DARCY_ROOT / "darcy_train_421.pt").exists(),
+    reason="Darcy 421 .pt files not found",
 )
 
 
@@ -28,6 +30,7 @@ def datamodule():
         data_root=DARCY_ROOT,
         test_resolutions=TEST_RESOLUTIONS,
         train_resolution=TRAIN_RESOLUTION,
+        source_resolution=SOURCE_RESOLUTION,
         encode_input=True,
         encode_output=True,
         download=False,
@@ -64,8 +67,8 @@ class TestDataloaders:
     def test_train_dataloader_batch_shape(self, datamodule):
         datamodule.setup(stage="fit")
         batch = next(iter(datamodule.train_dataloader()))
-        assert batch["x"].shape == (BATCH_SIZE, 1, 16, 16)
-        assert batch["y"].shape == (BATCH_SIZE, 1, 16, 16)
+        assert batch["x"].shape == (BATCH_SIZE, 1, 11, 11)
+        assert batch["y"].shape == (BATCH_SIZE, 1, 11, 11)
 
     def test_val_dataloader_returns_list_with_one_loader_per_resolution(self, datamodule):
         datamodule.setup(stage="fit")
@@ -80,7 +83,6 @@ class TestDataloaders:
         assert len(test_loaders) == len(val_loaders)
 
 
-@requires_darcy_data
 class TestValidation:
 
     def test_mismatched_n_tests_length_raises(self):
@@ -91,6 +93,7 @@ class TestValidation:
                 batch_size=BATCH_SIZE,
                 test_batch_sizes=TEST_BATCH_SIZES,
                 test_resolutions=TEST_RESOLUTIONS,
+                source_resolution=SOURCE_RESOLUTION,
             )
 
     def test_mismatched_test_batch_sizes_length_raises(self):
@@ -101,4 +104,60 @@ class TestValidation:
                 batch_size=BATCH_SIZE,
                 test_batch_sizes=[4],
                 test_resolutions=TEST_RESOLUTIONS,
+                source_resolution=SOURCE_RESOLUTION,
             )
+
+    def test_incompatible_source_and_train_raises(self):
+        with pytest.raises(ValueError, match="not on same vertex grid"):
+            DarcyDataModule(
+                n_train=N_TRAIN,
+                n_tests=N_TESTS,
+                batch_size=BATCH_SIZE,
+                test_batch_sizes=TEST_BATCH_SIZES,
+                test_resolutions=TEST_RESOLUTIONS,
+                train_resolution=10,
+                source_resolution=421,
+            )
+
+    def test_incompatible_source_and_pde_raises(self):
+        with pytest.raises(ValueError, match="not on same vertex grid"):
+            DarcyDataModule(
+                n_train=N_TRAIN,
+                n_tests=N_TESTS,
+                batch_size=BATCH_SIZE,
+                test_batch_sizes=TEST_BATCH_SIZES,
+                test_resolutions=TEST_RESOLUTIONS,
+                train_resolution=11,
+                source_resolution=421,
+                pde_resolution=64,
+            )
+
+    def test_incompatible_pde_and_train_raises(self):
+        # pde=13: (421-1)%(13-1)=420%12=0 passes source check,
+        # but (13-1)%(11-1)=12%10=2 fails train check
+        with pytest.raises(ValueError, match="not on same vertex grid"):
+            DarcyDataModule(
+                n_train=N_TRAIN,
+                n_tests=N_TESTS,
+                batch_size=BATCH_SIZE,
+                test_batch_sizes=TEST_BATCH_SIZES,
+                test_resolutions=TEST_RESOLUTIONS,
+                train_resolution=11,
+                source_resolution=421,
+                pde_resolution=13,
+            )
+
+    def test_valid_paper_config_accepted(self):
+        """PINO paper config: source=421, train=11, pde=61, test={11,61,211}."""
+        dm = DarcyDataModule(
+            n_train=N_TRAIN,
+            n_tests=[4, 4, 4],
+            batch_size=BATCH_SIZE,
+            test_batch_sizes=[4, 4, 4],
+            test_resolutions=[11, 61, 211],
+            train_resolution=11,
+            source_resolution=421,
+            pde_resolution=61,
+        )
+        assert dm.source_resolution == 421
+        assert dm.pde_resolution == 61
