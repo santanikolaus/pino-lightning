@@ -1,6 +1,6 @@
 _target_: lightning.Trainer
 max_epochs: 500
-accelerator: cpu
+accelerator: gpu
 devices: 1
 enable_model_summary: false
 limit_train_batches: null
