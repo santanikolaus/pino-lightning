@@ -211,8 +211,7 @@ class TestDarcyLossBasic:
         a = (1.0 + X).unsqueeze(0)
         loss = pde(u, a)
         Du = pde.pde._operator(u, a)
-        a_sq = a.squeeze(1) if a.dim() == 4 else a
-        f = pde.pde.forcing * a_sq
+        f = torch.full_like(Du, pde.pde.forcing)
         expected = pde.lp.rel(Du, f)
         torch.testing.assert_close(loss, expected)
 
@@ -334,6 +333,31 @@ class TestBoundaryStencils:
         Du_nonperiodic = pde_nonperiodic._operator(u, a)
         Du_periodic = pde_periodic._operator(u, a)
         assert not torch.allclose(Du_nonperiodic[0, :, 0], Du_periodic[0, :, 0])
+
+
+class TestForcingWithVaryingPermeability:
+
+    def test_exact_solution_with_linear_permeability_has_near_zero_loss(self):
+        """DarcyLoss ≈ 0 for exact solution of -div((1+x)·∇u) = 1.
+
+        Exact solution: u(x) = -x + ln(1+x)/ln(2), satisfying zero Dirichlet
+        BCs at x=0 and x=1.  Validates forcing=1.0 with non-constant a.
+        """
+        N = 64
+        X, _ = _unit_grid(N)
+        u = (-X + torch.log(1 + X) / math.log(2)).unsqueeze(0)
+        a = (1.0 + X).unsqueeze(0)
+        loss = DarcyLoss(resolution=N, forcing=1.0, forcing_is_coeff_scaled=False)(u, a)
+        assert loss.item() < 1e-2
+
+    def test_exact_solution_with_linear_permeability_has_near_zero_residual(self):
+        """DarcyPDE residual ≈ 0 for exact solution of -div((1+x)·∇u) = 1."""
+        N = 64
+        X, _ = _unit_grid(N)
+        u = (-X + torch.log(1 + X) / math.log(2)).unsqueeze(0)
+        a = (1.0 + X).unsqueeze(0)
+        R = DarcyPDE(resolution=N, forcing=1.0).residual(u, a)
+        assert R[0, 2:-2, 2:-2].abs().max().item() < 1e-2
 
 
 class TestDarcyLossGradientWrtPermeability:

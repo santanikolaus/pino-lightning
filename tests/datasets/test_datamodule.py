@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-import torch
 
 from src.datasets.darcy_datamodule import DarcyDataModule
 
@@ -10,13 +9,13 @@ N_TRAIN = 8
 N_TESTS = [4, 4]
 BATCH_SIZE = 4
 TEST_BATCH_SIZES = [4, 4]
-TEST_RESOLUTIONS = [11, 61]
-TRAIN_RESOLUTION = 11
-SOURCE_RESOLUTION = 421
+TEST_RESOLUTIONS = [10, 22]
+TRAIN_RESOLUTION = 10
+SOURCE_RESOLUTION = 64
 
 requires_darcy_data = pytest.mark.skipif(
-    not (DARCY_ROOT / "darcy_train_421.pt").exists(),
-    reason="Darcy 421 .pt files not found",
+    not (DARCY_ROOT / "darcy_train_64.pt").exists(),
+    reason="Darcy 64 .pt files not found",
 )
 
 
@@ -67,8 +66,8 @@ class TestDataloaders:
     def test_train_dataloader_batch_shape(self, datamodule):
         datamodule.setup(stage="fit")
         batch = next(iter(datamodule.train_dataloader()))
-        assert batch["x"].shape == (BATCH_SIZE, 1, 11, 11)
-        assert batch["y"].shape == (BATCH_SIZE, 1, 11, 11)
+        assert batch["x"].shape == (BATCH_SIZE, 1, TRAIN_RESOLUTION, TRAIN_RESOLUTION)
+        assert batch["y"].shape == (BATCH_SIZE, 1, TRAIN_RESOLUTION, TRAIN_RESOLUTION)
 
     def test_val_dataloader_returns_list_with_one_loader_per_resolution(self, datamodule):
         datamodule.setup(stage="fit")
@@ -93,6 +92,7 @@ class TestValidation:
                 batch_size=BATCH_SIZE,
                 test_batch_sizes=TEST_BATCH_SIZES,
                 test_resolutions=TEST_RESOLUTIONS,
+                train_resolution=TRAIN_RESOLUTION,
                 source_resolution=SOURCE_RESOLUTION,
             )
 
@@ -104,6 +104,7 @@ class TestValidation:
                 batch_size=BATCH_SIZE,
                 test_batch_sizes=[4],
                 test_resolutions=TEST_RESOLUTIONS,
+                train_resolution=TRAIN_RESOLUTION,
                 source_resolution=SOURCE_RESOLUTION,
             )
 
