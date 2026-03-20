@@ -243,9 +243,9 @@ class TestPinoInit:
         assert m.darcy_loss.pde.resolution == 16
 
     def test_pde_resolution_uses_explicit_override(self):
-        m = DarcyLitModule(_make_pino_config(pde_resolution=32),
+        m = DarcyLitModule(_make_pino_config(pde_resolution=31),
                            data_processor=_make_processor())
-        assert m.darcy_loss.pde.resolution == 32
+        assert m.darcy_loss.pde.resolution == 31
 
     def test_data_and_pde_weights_stored(self):
         m = DarcyLitModule(_make_pino_config(data_weight=2.0, pde_weight=0.5),
@@ -612,9 +612,9 @@ class TestBCMollifier:
         assert m._bc_mollifier.shape == (1, 1, 16, 16)
 
     def test_mollifier_uses_pde_resolution(self):
-        cfg = _make_pino_config(pde_weight=1.0, pde_resolution=32, bc_mollifier=True)
+        cfg = _make_pino_config(pde_weight=1.0, pde_resolution=31, bc_mollifier=True)
         m = DarcyLitModule(cfg, data_processor=_make_processor())
-        assert m._bc_mollifier.shape == (1, 1, 32, 32)
+        assert m._bc_mollifier.shape == (1, 1, 31, 31)
 
     def test_physics_branch_zero_on_boundary_with_mollifier(self):
         """With bc_mollifier=True, u_phys passed to DarcyLoss must be zero on ∂D."""
@@ -669,7 +669,7 @@ class TestBCMollifier:
 
 # ─── Native high-res forward pass (PINO paper-faithful) ─────────────────────
 
-def _make_native_pino_module(pde_resolution: int = 64, train_resolution: int = 16,
+def _make_native_pino_module(pde_resolution: int = 61, train_resolution: int = 16,
                               pde_weight: float = 1.0, data_weight: float = 1.0,
                               bc_mollifier: bool = False,
                               forcing: float = 2.6936,
@@ -695,7 +695,7 @@ def _make_native_pino_module(pde_resolution: int = 64, train_resolution: int = 1
     return m
 
 
-def _make_native_batch(batch_size: int = 4, train_res: int = 16, pde_res: int = 64):
+def _make_native_batch(batch_size: int = 4, train_res: int = 16, pde_res: int = 61):
     """Create a training batch with a_highres (the native high-res forward pass trigger)."""
     return {
         "x": torch.randn(batch_size, 1, train_res, train_res),
@@ -706,12 +706,16 @@ def _make_native_batch(batch_size: int = 4, train_res: int = 16, pde_res: int = 
 
 class TestNativeForwardPassInit:
 
+    def test_subsample_factor_61_to_11(self):
+        m = _make_native_pino_module(pde_resolution=61, train_resolution=11)
+        assert m._subsample_factor == 6
+
     def test_subsample_factor_computed_for_cross_res(self):
-        m = _make_native_pino_module(pde_resolution=32, train_resolution=16)
+        m = _make_native_pino_module(pde_resolution=31, train_resolution=16)
         assert m._subsample_factor == 2
 
     def test_subsample_factor_4x(self):
-        m = _make_native_pino_module(pde_resolution=64, train_resolution=16)
+        m = _make_native_pino_module(pde_resolution=61, train_resolution=16)
         assert m._subsample_factor == 4
 
     def test_subsample_factor_none_for_same_res(self):
@@ -721,6 +725,10 @@ class TestNativeForwardPassInit:
     def test_train_resolution_stored(self):
         m = _make_native_pino_module(train_resolution=16)
         assert m._train_resolution == 16
+
+    def test_incompatible_resolutions_raises(self):
+        with pytest.raises(ValueError, match="not on same vertex grid"):
+            _make_native_pino_module(pde_resolution=64, train_resolution=16)
 
 
 class TestNativeForwardPassStep:
@@ -779,11 +787,11 @@ class TestNativeForwardPassStep:
         with patch.object(m.darcy_loss.__class__, "__call__", capturing_call):
             m._shared_step(batch, "train")
 
-        assert captured["u_shape"][-2:] == (64, 64), (
-            f"u passed to DarcyLoss has shape {captured['u_shape']}, expected (..., 64, 64)"
+        assert captured["u_shape"][-2:] == (61, 61), (
+            f"u passed to DarcyLoss has shape {captured['u_shape']}, expected (..., 61, 61)"
         )
-        assert captured["a_shape"][-2:] == (64, 64), (
-            f"a passed to DarcyLoss has shape {captured['a_shape']}, expected (..., 64, 64)"
+        assert captured["a_shape"][-2:] == (61, 61), (
+            f"a passed to DarcyLoss has shape {captured['a_shape']}, expected (..., 61, 61)"
         )
 
     def test_native_path_darcy_loss_receives_raw_a_highres(self):
@@ -800,7 +808,7 @@ class TestNativeForwardPassStep:
 
     def test_native_path_darcy_loss_receives_denormalized_u(self):
         """DarcyLoss must receive denormalized (physical-unit) predictions."""
-        N_pde = 64
+        N_pde = 61
         mean_val, std_val = 2.0, 3.0
         out_norm = UnitGaussianNormalizer(
             mean=torch.full((1, 1, 1, 1), mean_val),
@@ -873,11 +881,11 @@ class TestNativeForwardPassStep:
 class TestNativeForwardPassNumerical:
 
     def test_exact_solution_pde_loss_near_zero(self):
-        """The exact Darcy solution u = 0.5·x·(1-x) evaluated natively at 32×32
+        """The exact Darcy solution u = 0.5·x·(1-x) evaluated natively at 31×31
         must produce near-zero PDE loss (no interpolation artifacts)."""
-        N_pde = 32
+        N_pde = 31
         N_train = 16
-        s = N_pde // N_train
+        s = (N_pde - 1) // (N_train - 1)  # vertex-centered stride
         X, _ = torch.meshgrid(
             torch.linspace(0, 1, N_pde), torch.linspace(0, 1, N_pde), indexing="ij"
         )
@@ -927,9 +935,9 @@ class TestNativeForwardPassNumerical:
         smaller than the old upsample path, because there are no interpolation artifacts.
 
         This test uses DarcyPDE directly (no FNO model), so resolution doesn't matter
-        for speed — we use 64 for a cleaner comparison."""
+        for speed — we use 61 for a cleaner comparison."""
         from src.pde.darcy import DarcyPDE
-        N_pde = 64
+        N_pde = 61
         N_train = 16
 
         # Compute PDE residual via upsampling (old way)
@@ -1004,10 +1012,10 @@ class TestNativeForwardPassMollifier:
         assert u[:, :, :, -1].abs().max().item() < 1e-5
 
     def test_mollifier_at_pde_resolution_in_native_path(self):
-        """Mollifier must be at pde_resolution (64×64), not train_resolution."""
+        """Mollifier must be at pde_resolution (61×61), not train_resolution."""
         m = _make_native_pino_module(bc_mollifier=True)
         assert m._bc_mollifier is not None
-        assert m._bc_mollifier.shape == (1, 1, 64, 64)
+        assert m._bc_mollifier.shape == (1, 1, 61, 61)
 
 
 class TestPairedResolutionDataset:
@@ -1039,7 +1047,7 @@ class TestCrossResolutionGuard:
 
     def test_cross_res_without_a_highres_raises(self):
         """pde_resolution != train_resolution without a_highres must raise RuntimeError."""
-        m = _make_native_pino_module(pde_resolution=64, train_resolution=16)
+        m = _make_native_pino_module(pde_resolution=61, train_resolution=16)
         batch_no_highres = {"x": torch.randn(2, 1, 16, 16), "y": torch.randn(2, 1, 16, 16)}
         with pytest.raises(RuntimeError, match="a_highres"):
             m._shared_step(batch_no_highres, "train")

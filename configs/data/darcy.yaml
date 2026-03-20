@@ -2,14 +2,14 @@ _target_: src.datasets.darcy_datamodule.DarcyDataModule
 data_root: ~/data/darcy
 batch_size: 16
 n_train: 1000
-n_tests: [50, 200, 200]
-test_resolutions: [16, 32, 64]
-test_batch_sizes: [16, 16, 8]
+n_tests: [500, 500, 500]
+test_resolutions: [11, 61, 211]
+test_batch_sizes: [16, 16, 4]
 encode_input: true
 encode_output: true
 encoding: channel-wise
 channel_dim: 1
-train_resolution: 16
-subsampling_rate: null
+train_resolution: 11
+source_resolution: 421
 pde_resolution: null
 download: true

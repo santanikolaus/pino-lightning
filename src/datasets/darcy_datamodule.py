@@ -45,7 +45,7 @@ class DarcyDataModule(L.LightningDataModule):
         encoding: str = "channel-wise",
         channel_dim: int = 1,
         train_resolution: int = 16,
-        subsampling_rate: Optional[int] = None,
+        source_resolution: int = 421,
         download: bool = False,
         pde_resolution: Optional[int] = None,
 
@@ -62,17 +62,29 @@ class DarcyDataModule(L.LightningDataModule):
         self.encoding = encoding
         self.channel_dim = channel_dim
         self.train_resolution = train_resolution
-        self.subsampling_rate = subsampling_rate
+        self.source_resolution = source_resolution
         self.download = download
         self.pde_resolution = pde_resolution
 
-        if (self.pde_resolution is not None
-                and self.pde_resolution != self.train_resolution):
-            if self.pde_resolution % self.train_resolution != 0:
+        # Stride divisibility checks
+        if (self.source_resolution - 1) % (self.train_resolution - 1) != 0:
+            raise ValueError(
+                f"source_resolution ({self.source_resolution}) and train_resolution "
+                f"({self.train_resolution}) not on same vertex grid: "
+                f"({self.source_resolution}-1) % ({self.train_resolution}-1) != 0"
+            )
+        if self.pde_resolution is not None:
+            if (self.source_resolution - 1) % (self.pde_resolution - 1) != 0:
                 raise ValueError(
-                    f"pde_resolution ({self.pde_resolution}) must be an integer "
-                    f"multiple of train_resolution ({self.train_resolution}) for "
-                    f"exact stride subsampling."
+                    f"source_resolution ({self.source_resolution}) and pde_resolution "
+                    f"({self.pde_resolution}) not on same vertex grid: "
+                    f"({self.source_resolution}-1) % ({self.pde_resolution}-1) != 0"
+                )
+            if (self.pde_resolution - 1) % (self.train_resolution - 1) != 0:
+                raise ValueError(
+                    f"pde_resolution ({self.pde_resolution}) and train_resolution "
+                    f"({self.train_resolution}) not on same vertex grid: "
+                    f"({self.pde_resolution}-1) % ({self.train_resolution}-1) != 0"
                 )
 
         if len(self.n_tests) != len(self.test_resolutions):
@@ -102,7 +114,7 @@ class DarcyDataModule(L.LightningDataModule):
             encoding=self.encoding,
             channel_dim=self.channel_dim,
             train_resolution=self.train_resolution,
-            subsampling_rate=self.subsampling_rate,
+            source_resolution=self.source_resolution,
             download=self.download,
         )
         if self.pde_resolution is not None:
@@ -115,24 +127,29 @@ class DarcyDataModule(L.LightningDataModule):
         train_db: Dataset = dataset.train_db
 
         # When pde_resolution differs from train_resolution, load native
-        # high-res permeability and pair it with each training sample.
+        # high-res permeability (stride from source) and pair it with each
+        # training sample.
         if (self.pde_resolution is not None
                 and self.pde_resolution != self.train_resolution
                 and self.data_root is not None):
-            hires_path = (
+            source_path = (
                 Path(self.data_root).expanduser()
-                / f"darcy_train_{self.pde_resolution}.pt"
+                / f"darcy_train_{self.source_resolution}.pt"
             )
-            if not hires_path.exists():
+            if not source_path.exists():
                 raise FileNotFoundError(
-                    f"High-resolution Darcy training data not found at '{hires_path}'. "
-                    f"pde_resolution={self.pde_resolution} requires this file. "
+                    f"Source Darcy training data not found at '{source_path}'. "
+                    f"source_resolution={self.source_resolution} requires this file. "
                     f"Set download=True or ensure the file is present."
                 )
-            hires_data = torch.load(hires_path.as_posix(), weights_only=False)
-            a_highres = hires_data["x"].type(torch.float32).clone()[:self.n_train]
+            source_data = torch.load(source_path.as_posix(), weights_only=False)
+            a_full = source_data["x"].type(torch.float32).clone()[:self.n_train]
+            del source_data
+
+            pde_stride = (self.source_resolution - 1) // (self.pde_resolution - 1)
+            a_highres = a_full[:, ::pde_stride, ::pde_stride]
             a_highres = a_highres.unsqueeze(self.channel_dim)  # (N, 1, H, W)
-            del hires_data
+            del a_full
             train_db = PairedResolutionDataset(train_db, a_highres)
 
         self._train_loader = DataLoader(
