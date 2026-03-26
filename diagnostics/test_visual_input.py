@@ -31,7 +31,6 @@ def dataset_16():
         test_resolutions=[16],
         encode_input=True,
         encode_output=True,
-        download=False,
     )
 
 
@@ -45,7 +44,6 @@ def dataset_32():
         test_resolutions=[32],
         encode_input=True,
         encode_output=True,
-        download=False,
     )
 
 
@@ -115,7 +113,6 @@ def test_subsampling_rate_2_effect_on_pressure_field_at_32x32():
         encode_input=False,
         encode_output=False,
         subsampling_rate=None,
-        download=False,
     )
     ds_sub = DarcyDataset(
         root_dir=DARCY_ROOT,
@@ -126,7 +123,6 @@ def test_subsampling_rate_2_effect_on_pressure_field_at_32x32():
         encode_input=False,
         encode_output=False,
         subsampling_rate=2,
-        download=False,
     )
 
     full_y = ds_full.train_db[0]["y"].squeeze(0)
