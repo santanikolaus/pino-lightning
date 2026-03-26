@@ -1,140 +1,81 @@
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Union
+from typing import List, Tuple, Union
+
 import torch
-import logging
+from torch.utils.data import Dataset
 
-from src.datasets.tensor_dataset import TensorDataset
-from src.datasets.transforms.data_processors import DefaultDataProcessor
-from src.datasets.transforms.normalizers import UnitGaussianNormalizer
-
-logger = logging.getLogger(__name__)
+from src.datasets.transforms.data_processors import DataProcessor
 
 
-def _vertex_stride(source: int, target: int) -> int:
+def vertex_stride(source: int, target: int) -> int:
     """Compute stride for vertex-centered subsampling.
 
     Formula: stride = (source - 1) // (target - 1), valid only when
     (source - 1) % (target - 1) == 0.
     """
     if (source - 1) % (target - 1) != 0:
-        raise ValueError(
-            f"Cannot stride-subsample {source} -> {target}: "
-            f"({source}-1) % ({target}-1) != 0"
-        )
+        raise ValueError(f"Cannot stride-subsample {source} -> {target}: "
+                         f"({source}-1) % ({target}-1) != 0")
     return (source - 1) // (target - 1)
 
 
-class PTDataset:
+class PTDataset(ABC):
+    """Abstract base for datasets stored as .pt files.
+
+    Owns file loading (naming convention: {dataset_name}_{split}_{source_resolution}.pt)
+    and exposes train_db / test_dbs / data_processor properties.
+
+    Subclasses implement _process_train and _process_test to handle
+    PDE-specific data layout (spatial striding, time axes, normalizers, etc.).
+    """
 
     def __init__(
         self,
         root_dir: Union[Path, str],
         dataset_name: str,
+        source_resolution: int,
         n_train: int,
         n_tests: List[int],
         train_resolution: int,
         test_resolutions: List[int],
-        source_resolution: int,
-        encode_input: bool = False,
-        encode_output: bool = True,
-        encoding="channel-wise",
-        channel_dim=1,
-        channels_squeezed=True,
     ):
-        if isinstance(root_dir, str):
-            root_dir = Path(root_dir)
-
-        self.root_dir = root_dir
-        self.test_resolutions = test_resolutions
-
-        # ── Validate all strides before touching disk ─────────────────────
-        train_stride = _vertex_stride(source_resolution, train_resolution)
-        for res in test_resolutions:
-            _vertex_stride(source_resolution, res)
-
-        # ── Train data: load source, stride to train_resolution ──────────
-        data = torch.load(
-            Path(root_dir).joinpath(f"{dataset_name}_train_{source_resolution}.pt").as_posix()
+        root_dir = Path(root_dir)
+        train_data = torch.load(
+            root_dir / f"{dataset_name}_train_{source_resolution}.pt",
+            weights_only=False,
         )
-
-        x_train = data["x"].type(torch.float32).clone()
-        if channels_squeezed:
-            x_train = x_train.unsqueeze(channel_dim)
-        x_train = x_train[:n_train, :, ::train_stride, ::train_stride]
-
-        y_train = data["y"].clone()
-        if channels_squeezed:
-            y_train = y_train.unsqueeze(channel_dim)
-        y_train = y_train[:n_train, :, ::train_stride, ::train_stride]
-
-        del data
-
-        if encode_input:
-            if encoding == "channel-wise":
-                reduce_dims = list(range(x_train.ndim))
-                reduce_dims.pop(channel_dim)
-            elif encoding == "pixel-wise":
-                reduce_dims = [0]
-
-            input_encoder = UnitGaussianNormalizer(dim=reduce_dims)
-            input_encoder.fit(x_train)
-        else:
-            input_encoder = None
-
-        if encode_output:
-            if encoding == "channel-wise":
-                reduce_dims = list(range(y_train.ndim))
-                reduce_dims.pop(channel_dim)
-            elif encoding == "pixel-wise":
-                reduce_dims = [0]
-
-            output_encoder = UnitGaussianNormalizer(dim=reduce_dims)
-            output_encoder.fit(y_train)
-        else:
-            output_encoder = None
-
-        self._train_db = TensorDataset(
-            x_train,
-            y_train,
-        )
-
-        self._data_processor = DefaultDataProcessor(
-            in_normalizer=input_encoder, out_normalizer=output_encoder
-        )
-
-        # ── Test data: load source once, stride to each test resolution ──
-        self._test_dbs = {}
         test_data = torch.load(
-            Path(root_dir).joinpath(f"{dataset_name}_test_{source_resolution}.pt").as_posix()
+            root_dir / f"{dataset_name}_test_{source_resolution}.pt",
+            weights_only=False,
         )
-        for res, n_test in zip(test_resolutions, n_tests):
-            logger.info("Loading test db for resolution %s with %s samples", res, n_test)
-            test_stride = _vertex_stride(source_resolution, res)
 
-            x_test = test_data["x"].type(torch.float32).clone()
-            if channels_squeezed:
-                x_test = x_test.unsqueeze(channel_dim)
-            x_test = x_test[:n_test, :, ::test_stride, ::test_stride]
+        self._train_db, self._data_processor = self._process_train(
+            train_data, n_train, train_resolution)
+        self._test_dbs = {
+            res: self._process_test(test_data, n_test, res)
+            for res, n_test in zip(test_resolutions, n_tests)
+        }
+        del train_data, test_data
 
-            y_test = test_data["y"].clone()
-            if channels_squeezed:
-                y_test = y_test.unsqueeze(channel_dim)
-            y_test = y_test[:n_test, :, ::test_stride, ::test_stride]
+    @abstractmethod
+    def _process_train(self, data: dict, n_train: int,
+                       resolution: int) -> Tuple[Dataset, DataProcessor]:
+        """Return (train_db, data_processor) for the given training resolution."""
+        ...
 
-            test_db = TensorDataset(
-                x_test,
-                y_test,
-            )
-            self._test_dbs[res] = test_db
-
-        del test_data
+    @abstractmethod
+    def _process_test(self, data: dict, n_test: int,
+                      resolution: int) -> Dataset:
+        """Return a Dataset for the given test resolution."""
+        ...
 
     @property
-    def data_processor(self):
+    def data_processor(self) -> DataProcessor:
         return self._data_processor
 
     @property
-    def train_db(self):
+    def train_db(self) -> Dataset:
         return self._train_db
 
     @property
