@@ -213,7 +213,6 @@ class TestDarcyDatasetValidation:
                 train_resolution=10,
                 test_resolutions=[11],
                 source_resolution=421,
-                download=False,
             )
 
     def test_rejects_incompatible_test_resolution(self, tmp_path):
@@ -225,7 +224,6 @@ class TestDarcyDatasetValidation:
                 train_resolution=11,
                 test_resolutions=[99],
                 source_resolution=421,
-                download=False,
             )
 
     def test_accepts_all_paper_resolutions(self, tmp_path):
@@ -237,7 +235,6 @@ class TestDarcyDatasetValidation:
             train_resolution=11,
             test_resolutions=[11, 61, 211],
             source_resolution=421,
-            download=False,
         )
 
 

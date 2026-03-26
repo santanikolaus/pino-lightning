@@ -47,8 +47,12 @@ class PTDataset:
         self.root_dir = root_dir
         self.test_resolutions = test_resolutions
 
-        # ── Train data: load source, stride to train_resolution ──────────
+        # ── Validate all strides before touching disk ─────────────────────
         train_stride = _vertex_stride(source_resolution, train_resolution)
+        for res in test_resolutions:
+            _vertex_stride(source_resolution, res)
+
+        # ── Train data: load source, stride to train_resolution ──────────
         data = torch.load(
             Path(root_dir).joinpath(f"{dataset_name}_train_{source_resolution}.pt").as_posix()
         )
