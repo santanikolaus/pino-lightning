@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from src.datasets.tensor_dataset import TensorDataset
+from src.datasets.darcy_dataset import TensorDataset
 
 
 @pytest.fixture

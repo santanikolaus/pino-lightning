@@ -6,15 +6,9 @@ defaults:
   - override /data: darcy_binary
   - override /loss: pino
 
-loss:
-  pde_resolution: 61
-  data_weight: 1.0
-  pde_weight: 0.1
-
 data:
   pde_resolution: ${loss.pde_resolution}
 
 logger:
   wandb:
-    project: pino-darcy-binary
     name: darcy_binary_pino_paper_table1

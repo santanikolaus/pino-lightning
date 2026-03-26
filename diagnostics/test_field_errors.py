@@ -57,7 +57,6 @@ def module_and_loader():
         encoding=data_cfg.encoding,
         channel_dim=data_cfg.channel_dim,
         train_resolution=data_cfg.train_resolution,
-        download=False,
     )
     dm.setup("fit")
 
