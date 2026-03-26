@@ -32,7 +32,6 @@ def datamodule():
         source_resolution=SOURCE_RESOLUTION,
         encode_input=True,
         encode_output=True,
-        download=False,
     )
 
 
