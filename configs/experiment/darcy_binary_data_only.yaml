@@ -1,0 +1,18 @@
+# @package _global_
+# Data-only FNO baseline for binary Darcy (Table 1 "FNO" row)
+# No normalization, no padding — matches paper code
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: data_only
+
+data:
+  encode_input: false
+  encode_output: false
+
+model:
+  domain_padding: 0.0
+
+logger:
+  wandb:
+    name: darcy_binary_dataonly_no_norm
