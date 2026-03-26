@@ -27,8 +27,8 @@ class DarcyLitModule(L.LightningModule):
         self.config = config
         self.model = get_model(self.config)
         self.data_processor = data_processor
-        self.lp_loss = LpLoss(d=2, p=2)
-        self.h1_loss = H1Loss(d=2)
+        self.lp_loss = LpLoss(d=2, p=2, reduction="mean")
+        self.h1_loss = H1Loss(d=2, reduction="mean")
 
         opt_cfg = _get(config, "opt")
         self._learning_rate: float = _get(opt_cfg, "learning_rate")

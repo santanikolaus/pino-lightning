@@ -6,11 +6,6 @@ defaults:
   - override /data: darcy_binary
   - override /loss: pino
 
-loss:
-  pde_resolution: 61
-  data_weight: 1.0
-  pde_weight: 0.1
-
 data:
   pde_resolution: ${loss.pde_resolution}
 
