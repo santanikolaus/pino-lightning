@@ -16,4 +16,5 @@ data:
 
 logger:
   wandb:
+    project: pino-darcy-binary
     name: darcy_binary_pino_paper_table1
