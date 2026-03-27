@@ -5,7 +5,7 @@ from typing import List, Tuple, Union
 import torch
 from torch.utils.data import Dataset
 
-from src.datasets.transforms.data_processors import DataProcessor
+from src.datasets.transforms.data_processors import DefaultDataProcessor
 
 
 def vertex_stride(source: int, target: int) -> int:
@@ -60,7 +60,7 @@ class PTDataset(ABC):
 
     @abstractmethod
     def _process_train(self, data: dict, n_train: int,
-                       resolution: int) -> Tuple[Dataset, DataProcessor]:
+                       resolution: int) -> Tuple[Dataset, DefaultDataProcessor]:
         """Return (train_db, data_processor) for the given training resolution."""
         ...
 
@@ -71,7 +71,7 @@ class PTDataset(ABC):
         ...
 
     @property
-    def data_processor(self) -> DataProcessor:
+    def data_processor(self) -> DefaultDataProcessor:
         return self._data_processor
 
     @property
