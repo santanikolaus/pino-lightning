@@ -6,6 +6,8 @@ import torch.nn.functional as F
 
 from omegaconf import OmegaConf
 
+from neuralop import LpLoss
+
 from src.datasets.transforms.data_processors import DefaultDataProcessor
 from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 from src.models.darcy_module import DarcyLitModule
@@ -1305,3 +1307,185 @@ class TestMollifierDenormalizationOrder:
         expected_ratio = interior_mollifier.mean().item()
         actual_ratio = (interior_moll.mean() / interior_phys.mean()).item()
         assert actual_ratio == pytest.approx(expected_ratio, rel=1e-5)
+
+
+# ─── Data-only BC mollifier (Run 1g) ─────────────────────────────────────────
+#
+# The changes for Run 1g decouple mollifier construction from pde_weight and
+# apply mollifier_scale in both the data-only training path and validation.
+# These tests numerically pin-point each of those three behaviours.
+
+def _make_data_only_mol_config(bc_mollifier: bool = True,
+                                mollifier_scale: float = 0.001,
+                                train_resolution: int = 16):
+    base = OmegaConf.to_container(_make_config())
+    base["loss"] = {
+        "training": "l2",
+        "data_weight": 1.0,
+        "pde_weight": 0.0,
+        "bc_mollifier": bc_mollifier,
+        "mollifier_scale": mollifier_scale,
+    }
+    base["data"] = {"train_resolution": train_resolution}
+    return OmegaConf.create(base)
+
+
+def _make_data_only_mol_module(bc_mollifier: bool = True,
+                                mollifier_scale: float = 0.001,
+                                train_resolution: int = 16):
+    """Data-only module with a null processor (no normalisation) for exact numerical tests."""
+    m = DarcyLitModule(
+        _make_data_only_mol_config(bc_mollifier=bc_mollifier,
+                                   mollifier_scale=mollifier_scale,
+                                   train_resolution=train_resolution),
+        data_processor=DefaultDataProcessor(),
+    )
+    mock_trainer = MagicMock()
+    mock_trainer.world_size = 1
+    m._trainer = mock_trainer
+    m.log = MagicMock()
+    return m
+
+
+class TestDataOnlyMollifier:
+    """Exact numerical tests for the data-only mollifier path added in Run 1g.
+
+    Uses _FixedOutputModel and a null processor so every value is deterministic.
+    """
+
+    # ── Construction ─────────────────────────────────────────────────────────
+
+    def test_mollifier_built_at_train_resolution_for_data_only(self):
+        """With pde_weight=0 and bc_mollifier=True, _bc_mollifier must exist at train_resolution."""
+        m = _make_data_only_mol_module(train_resolution=16)
+        assert m._bc_mollifier is not None
+        assert m._bc_mollifier.shape == (1, 1, 16, 16)
+
+    def test_mollifier_not_built_when_flag_false_data_only(self):
+        """With pde_weight=0 and bc_mollifier=False (default), _bc_mollifier must stay None."""
+        m = _make_data_only_mol_module(bc_mollifier=False)
+        assert m._bc_mollifier is None
+
+    def test_mollifier_scale_stored(self):
+        """mollifier_scale=0.001 must be stored on the module."""
+        m = _make_data_only_mol_module(mollifier_scale=0.001)
+        assert m._mollifier_scale == pytest.approx(0.001)
+
+    # ── Training path: exact numerical values ────────────────────────────────
+
+    def test_training_loss_equals_lploss_of_scaled_mollified_prediction(self):
+        """Training loss must equal LpLoss(preds * scale * sin(πx)sin(πy), y) exactly.
+
+        Concretely: model always outputs 3.0, y=1.0, scale=0.001, N=9.
+        With a null processor preds and y are in raw space, so we can compute
+        the exact expected value by hand.
+        """
+        N = 9
+        scale = 0.001
+        model_out = torch.full((1, 1, N, N), 3.0)
+        y_true = torch.ones(1, 1, N, N)
+
+        m = _make_data_only_mol_module(mollifier_scale=scale, train_resolution=N)
+        m.model = _FixedOutputModel(model_out)
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
+        actual_loss = m._shared_step(batch, "train").item()
+
+        mol = DarcyLitModule._build_mollifier(N)
+        preds_mol = model_out * (scale * mol)
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        expected_loss = lp(preds_mol, y_true).item()
+
+        assert actual_loss == pytest.approx(expected_loss, rel=1e-5)
+
+    def test_training_loss_differs_between_scale_0001_and_scale_1(self):
+        """scale=0.001 and scale=1.0 must yield distinct training losses.
+
+        scale=0.001 → preds_mol ≈ 0.003 everywhere → close to zero, far from y=1
+        scale=1.0   → preds_mol up to 3.0 in the interior → different residual
+        Both values are verified against their exact expected LpLoss.
+        """
+        N = 9
+        model_out = torch.full((1, 1, N, N), 3.0)
+        y_true = torch.ones(1, 1, N, N)
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        mol = DarcyLitModule._build_mollifier(N)
+
+        losses = {}
+        for scale in (0.001, 1.0):
+            m = _make_data_only_mol_module(mollifier_scale=scale, train_resolution=N)
+            m.model = _FixedOutputModel(model_out.clone())
+            actual = m._shared_step(batch, "train").item()
+            expected = lp(model_out * (scale * mol), y_true).item()
+            assert actual == pytest.approx(expected, rel=1e-5), f"scale={scale}: loss mismatch"
+            losses[scale] = actual
+
+        assert losses[0.001] != pytest.approx(losses[1.0], rel=0.01)
+
+    def test_training_mollified_prediction_zero_on_boundaries(self):
+        """The prediction that enters the loss must be zero on all four edges.
+
+        Monkeypatches train_loss to capture the actual preds_mol tensor.
+        """
+        N = 9
+        model_out = torch.full((1, 1, N, N), 5.0)
+        y_true = torch.ones(1, 1, N, N)
+
+        m = _make_data_only_mol_module(mollifier_scale=0.001, train_resolution=N)
+        m.model = _FixedOutputModel(model_out)
+
+        captured = {}
+        original_train_loss = m.train_loss
+        def capturing_loss(pred, target):
+            captured["pred"] = pred.clone()
+            return original_train_loss(pred, target)
+        m.train_loss = capturing_loss
+
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
+        m._shared_step(batch, "train")
+
+        pred = captured["pred"].squeeze()  # (N, N)
+        assert pred[0, :].abs().max().item() < 1e-6,  "top edge not zero"
+        assert pred[-1, :].abs().max().item() < 1e-6, "bottom edge not zero"
+        assert pred[:, 0].abs().max().item() < 1e-6,  "left edge not zero"
+        assert pred[:, -1].abs().max().item() < 1e-6, "right edge not zero"
+
+    # ── Validation path: scale must be applied ────────────────────────────────
+
+    def test_validation_metric_equals_lploss_of_scaled_mollified_prediction(self):
+        """Validation l2 must equal LpLoss(preds * scale * sin(πx)sin(πy), y) exactly.
+
+        Verifies that self._mollifier_scale is applied in the validation path,
+        not just in training.
+        """
+        N = 9
+        scale = 0.001
+        model_out = torch.full((1, 1, N, N), 3.0)
+        y_true = torch.ones(1, 1, N, N)
+
+        m = _make_data_only_mol_module(mollifier_scale=scale, train_resolution=N)
+        m.model = _FixedOutputModel(model_out)
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
+        actual_l2 = m._shared_step(batch, "val").item()
+
+        mol = DarcyLitModule._build_mollifier(N)
+        preds_mol = model_out * (scale * mol)
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        expected_l2 = lp(preds_mol, y_true).item()
+
+        assert actual_l2 == pytest.approx(expected_l2, rel=1e-5)
+
+    def test_validation_metric_differs_between_scale_0001_and_scale_1(self):
+        """scale=0.001 and scale=1.0 must yield distinct validation l2 values."""
+        N = 9
+        model_out = torch.full((1, 1, N, N), 3.0)
+        y_true = torch.ones(1, 1, N, N)
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
+
+        l2_vals = {}
+        for scale in (0.001, 1.0):
+            m = _make_data_only_mol_module(mollifier_scale=scale, train_resolution=N)
+            m.model = _FixedOutputModel(model_out.clone())
+            l2_vals[scale] = m._shared_step(batch, "val").item()
+
+        assert l2_vals[0.001] != pytest.approx(l2_vals[1.0], rel=0.01)
