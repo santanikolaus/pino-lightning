@@ -18,6 +18,9 @@ model:
   lifting_channel_ratio: 0
   positional_embedding: null
 
+trainer:
+  max_epochs: 300
+
 logger:
   wandb:
     project: lowres-binary-paper
