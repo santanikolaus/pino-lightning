@@ -6,6 +6,8 @@ import torch.nn.functional as F
 
 from omegaconf import OmegaConf
 
+from neuralop import LpLoss
+
 from src.datasets.transforms.data_processors import DefaultDataProcessor
 from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 from src.models.darcy_module import DarcyLitModule
@@ -1307,248 +1309,183 @@ class TestMollifierDenormalizationOrder:
         assert actual_ratio == pytest.approx(expected_ratio, rel=1e-5)
 
 
-# ─── Spectral weight re-initialization ───────────────────────────────────────
+# ─── Data-only BC mollifier (Run 1g) ─────────────────────────────────────────
+#
+# The changes for Run 1g decouple mollifier construction from pde_weight and
+# apply mollifier_scale in both the data-only training path and validation.
+# These tests numerically pin-point each of those three behaviours.
 
-class TestSpectralReinit:
-    """Verify _reinit_spectral_weights against the paper's init scheme.
+def _make_data_only_mol_config(bc_mollifier: bool = True,
+                                mollifier_scale: float = 0.001,
+                                train_resolution: int = 16):
+    base = OmegaConf.to_container(_make_config())
+    base["loss"] = {
+        "training": "l2",
+        "data_weight": 1.0,
+        "pde_weight": 0.0,
+        "bc_mollifier": bc_mollifier,
+        "mollifier_scale": mollifier_scale,
+    }
+    base["data"] = {"train_resolution": train_resolution}
+    return OmegaConf.create(base)
 
-    Checks look inside the actual DenseTensor.tensor parameter (the nn.Parameter
-    that backs the FactorizedTensor weight), not at any wrapper attribute.
+
+def _make_data_only_mol_module(bc_mollifier: bool = True,
+                                mollifier_scale: float = 0.001,
+                                train_resolution: int = 16):
+    """Data-only module with a null processor (no normalisation) for exact numerical tests."""
+    m = DarcyLitModule(
+        _make_data_only_mol_config(bc_mollifier=bc_mollifier,
+                                   mollifier_scale=mollifier_scale,
+                                   train_resolution=train_resolution),
+        data_processor=DefaultDataProcessor(),
+    )
+    mock_trainer = MagicMock()
+    mock_trainer.world_size = 1
+    m._trainer = mock_trainer
+    m.log = MagicMock()
+    return m
+
+
+class TestDataOnlyMollifier:
+    """Exact numerical tests for the data-only mollifier path added in Run 1g.
+
+    Uses _FixedOutputModel and a null processor so every value is deterministic.
     """
 
-    @staticmethod
-    def _spectral_layers(model):
-        """Return all SpectralConv instances in model."""
-        from neuralop.layers.spectral_convolution import SpectralConv
-        return [m for m in model.modules() if isinstance(m, SpectralConv)]
+    # ── Construction ─────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _weight_tensor(layer):
-        """Return the raw complex data tensor from a SpectralConv layer.
+    def test_mollifier_built_at_train_resolution_for_data_only(self):
+        """With pde_weight=0 and bc_mollifier=True, _bc_mollifier must exist at train_resolution."""
+        m = _make_data_only_mol_module(train_resolution=16)
+        assert m._bc_mollifier is not None
+        assert m._bc_mollifier.shape == (1, 1, 16, 16)
 
-        module.weight is a DenseTensor (nn.Module).  The actual nn.Parameter
-        is registered as module.weight.tensor; .data gives the raw Tensor.
+    def test_mollifier_not_built_when_flag_false_data_only(self):
+        """With pde_weight=0 and bc_mollifier=False (default), _bc_mollifier must stay None."""
+        m = _make_data_only_mol_module(bc_mollifier=False)
+        assert m._bc_mollifier is None
+
+    def test_mollifier_scale_stored(self):
+        """mollifier_scale=0.001 must be stored on the module."""
+        m = _make_data_only_mol_module(mollifier_scale=0.001)
+        assert m._mollifier_scale == pytest.approx(0.001)
+
+    # ── Training path: exact numerical values ────────────────────────────────
+
+    def test_training_loss_equals_lploss_of_scaled_mollified_prediction(self):
+        """Training loss must equal LpLoss(preds * scale * sin(πx)sin(πy), y) exactly.
+
+        Concretely: model always outputs 3.0, y=1.0, scale=0.001, N=9.
+        With a null processor preds and y are in raw space, so we can compute
+        the exact expected value by hand.
         """
-        return layer.weight.tensor.data
+        N = 9
+        scale = 0.001
+        model_out = torch.full((1, 1, N, N), 3.0)
+        y_true = torch.ones(1, 1, N, N)
 
-    # ── guard: flag absent ────────────────────────────────────────────────────
+        m = _make_data_only_mol_module(mollifier_scale=scale, train_resolution=N)
+        m.model = _FixedOutputModel(model_out)
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
+        actual_loss = m._shared_step(batch, "train").item()
 
-    def test_no_flag_leaves_weights_at_neuralop_default_scale(self):
-        """Without spectral_init_scale the weights keep neuralop's Normal(0, ~0.354) init.
+        mol = DarcyLitModule._build_mollifier(N)
+        preds_mol = model_out * (scale * mol)
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        expected_loss = lp(preds_mol, y_true).item()
 
-        For 8 hidden channels:
-          neuralop default std = sqrt(2/(8+8)) = sqrt(0.125) ≈ 0.354
-          paper scale = 1/(8*8) = 0.015625
+        assert actual_loss == pytest.approx(expected_loss, rel=1e-5)
 
-        We check both that the init is in the Normal ballpark (std > 0.5 * expected_std)
-        AND that it is far above the paper scale (> 10×), ruling out accidental re-init.
-        Concrete observed values: abs max ≈ 1.16, mean abs ≈ 0.31.
+    def test_training_loss_differs_between_scale_0001_and_scale_1(self):
+        """scale=0.001 and scale=1.0 must yield distinct training losses.
+
+        scale=0.001 → preds_mol ≈ 0.003 everywhere → close to zero, far from y=1
+        scale=1.0   → preds_mol up to 3.0 in the interior → different residual
+        Both values are verified against their exact expected LpLoss.
         """
-        cfg = _make_config()  # no spectral_init_scale key
-        m = DarcyLitModule(cfg, data_processor=_make_processor())
-        layers = self._spectral_layers(m.model)
-        assert len(layers) > 0, "Model has no SpectralConv layers — test is vacuous"
-        for layer in layers:
-            in_ch, out_ch = layer.in_channels, layer.out_channels
-            paper_scale = 1.0 / (in_ch * out_ch)
-            expected_std = (2.0 / (in_ch + out_ch)) ** 0.5  # neuralop: sqrt(2/(in+out))
-            w = self._weight_tensor(layer)
-            # Real/imag std should be in the Normal(0, expected_std) ballpark
-            assert w.real.std().item() > expected_std * 0.5, (
-                f"Default real std {w.real.std():.4f} << expected ~{expected_std:.4f}; "
-                "weights don't look like neuralop's Normal init"
-            )
-            # Max abs must be far above paper scale (observed: ~1.16 vs paper scale 0.0156)
-            assert w.abs().max().item() > paper_scale * 10, (
-                f"Default abs max {w.abs().max():.4f} should be >> paper scale "
-                f"{paper_scale:.6f} (10× floor); was re-init applied without the flag?"
-            )
+        N = 9
+        model_out = torch.full((1, 1, N, N), 3.0)
+        y_true = torch.ones(1, 1, N, N)
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        mol = DarcyLitModule._build_mollifier(N)
 
-    # ── core correctness ──────────────────────────────────────────────────────
+        losses = {}
+        for scale in (0.001, 1.0):
+            m = _make_data_only_mol_module(mollifier_scale=scale, train_resolution=N)
+            m.model = _FixedOutputModel(model_out.clone())
+            actual = m._shared_step(batch, "train").item()
+            expected = lp(model_out * (scale * mol), y_true).item()
+            assert actual == pytest.approx(expected, rel=1e-5), f"scale={scale}: loss mismatch"
+            losses[scale] = actual
 
-    def test_flag_sets_all_weights_within_paper_scale(self):
-        """Real and imag parts are both in [0, scale) after re-init.
+        assert losses[0.001] != pytest.approx(losses[1.0], rel=0.01)
 
-        The paper's scheme: scale * torch.rand(..., dtype=torch.cfloat)
-        Both real and imaginary parts are uniform in [0, scale).
-        The complex magnitude can reach scale * sqrt(2) ≈ 1.414 * scale,
-        so we test the real/imag components directly, not abs().
+    def test_training_mollified_prediction_zero_on_boundaries(self):
+        """The prediction that enters the loss must be zero on all four edges.
+
+        Monkeypatches train_loss to capture the actual preds_mol tensor.
         """
-        cfg = _make_config()
-        OmegaConf.update(cfg, "model.spectral_init_scale", "paper")
-        m = DarcyLitModule(cfg, data_processor=_make_processor())
-        layers = self._spectral_layers(m.model)
-        assert len(layers) > 0, "Model has no SpectralConv layers — test is vacuous"
-        for layer in layers:
-            scale = 1.0 / (layer.in_channels * layer.out_channels)
-            w = self._weight_tensor(layer)
-            assert w.real.max().item() < scale + 1e-7, (
-                f"Layer ({layer.in_channels}→{layer.out_channels}): "
-                f"real max {w.real.max():.8f} exceeds scale {scale:.8f}"
-            )
-            assert w.imag.max().item() < scale + 1e-7, (
-                f"Layer ({layer.in_channels}→{layer.out_channels}): "
-                f"imag max {w.imag.max():.8f} exceeds scale {scale:.8f}"
-            )
+        N = 9
+        model_out = torch.full((1, 1, N, N), 5.0)
+        y_true = torch.ones(1, 1, N, N)
 
-    def test_reinit_uses_uniform_not_normal(self):
-        """Weights are uniform [0, scale): real and imaginary parts must both be >= 0.
+        m = _make_data_only_mol_module(mollifier_scale=0.001, train_resolution=N)
+        m.model = _FixedOutputModel(model_out)
 
-        torch.randn can produce large negative values; torch.rand cannot.
-        This distinguishes the paper's uniform init from neuralop's normal init.
+        captured = {}
+        original_train_loss = m.train_loss
+        def capturing_loss(pred, target):
+            captured["pred"] = pred.clone()
+            return original_train_loss(pred, target)
+        m.train_loss = capturing_loss
+
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
+        m._shared_step(batch, "train")
+
+        pred = captured["pred"].squeeze()  # (N, N)
+        assert pred[0, :].abs().max().item() < 1e-6,  "top edge not zero"
+        assert pred[-1, :].abs().max().item() < 1e-6, "bottom edge not zero"
+        assert pred[:, 0].abs().max().item() < 1e-6,  "left edge not zero"
+        assert pred[:, -1].abs().max().item() < 1e-6, "right edge not zero"
+
+    # ── Validation path: scale must be applied ────────────────────────────────
+
+    def test_validation_metric_equals_lploss_of_scaled_mollified_prediction(self):
+        """Validation l2 must equal LpLoss(preds * scale * sin(πx)sin(πy), y) exactly.
+
+        Verifies that self._mollifier_scale is applied in the validation path,
+        not just in training.
         """
-        cfg = _make_config()
-        OmegaConf.update(cfg, "model.spectral_init_scale", "paper")
-        m = DarcyLitModule(cfg, data_processor=_make_processor())
-        for layer in self._spectral_layers(m.model):
-            w = self._weight_tensor(layer)
-            assert w.real.min().item() >= 0.0, (
-                f"Real parts have negative values ({w.real.min():.6f}) — "
-                "init is not Uniform[0, scale)"
-            )
-            assert w.imag.min().item() >= 0.0, (
-                f"Imag parts have negative values ({w.imag.min():.6f}) — "
-                "init is not Uniform[0, scale)"
-            )
+        N = 9
+        scale = 0.001
+        model_out = torch.full((1, 1, N, N), 3.0)
+        y_true = torch.ones(1, 1, N, N)
 
-    def test_scale_derived_from_actual_layer_channels_not_hardcoded(self):
-        """scale = 1/(in_ch * out_ch) using each layer's own channel attributes.
+        m = _make_data_only_mol_module(mollifier_scale=scale, train_resolution=N)
+        m.model = _FixedOutputModel(model_out)
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
+        actual_l2 = m._shared_step(batch, "val").item()
 
-        We check that real and imag parts are in [0, scale) because the complex
-        magnitude can legitimately reach scale * sqrt(2).
-        """
-        cfg = _make_config()
-        OmegaConf.update(cfg, "model.spectral_init_scale", "paper")
-        m = DarcyLitModule(cfg, data_processor=_make_processor())
-        for layer in self._spectral_layers(m.model):
-            scale = 1.0 / (layer.in_channels * layer.out_channels)
-            w = self._weight_tensor(layer)
-            assert w.real.max().item() < scale + 1e-7, (
-                f"real max {w.real.max():.8f} > 1/({layer.in_channels}*{layer.out_channels})"
-            )
-            assert w.imag.max().item() < scale + 1e-7, (
-                f"imag max {w.imag.max():.8f} > 1/({layer.in_channels}*{layer.out_channels})"
-            )
-            # Weights should actually span the range — guard against all-zeros bugs
-            assert w.abs().max().item() > scale * 0.05, (
-                f"Weights look degenerate (abs max << scale {scale:.8f})"
-            )
+        mol = DarcyLitModule._build_mollifier(N)
+        preds_mol = model_out * (scale * mol)
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        expected_l2 = lp(preds_mol, y_true).item()
 
-    def test_all_layers_reinit_in_multilayer_model(self):
-        """Every SpectralConv in a 4-layer model is re-initialized, not just the first.
+        assert actual_l2 == pytest.approx(expected_l2, rel=1e-5)
 
-        n_layers=4 produces 4 SpectralConv instances.  All four must satisfy the
-        paper-scale constraint; if the loop stopped early, the later ones would
-        still hold Normal(0, ~0.354) values and the assertion would fire.
-        """
-        cfg = _make_config()
-        OmegaConf.update(cfg, "model.n_layers", 4)
-        OmegaConf.update(cfg, "model.spectral_init_scale", "paper")
-        m = DarcyLitModule(cfg, data_processor=_make_processor())
-        layers = self._spectral_layers(m.model)
-        assert len(layers) == 4, (
-            f"Expected 4 SpectralConv layers (n_layers=4), got {len(layers)}"
-        )
-        for i, layer in enumerate(layers):
-            scale = 1.0 / (layer.in_channels * layer.out_channels)
-            w = self._weight_tensor(layer)
-            assert w.real.max().item() < scale + 1e-7, (
-                f"Layer {i}: real max {w.real.max():.8f} exceeds scale {scale:.8f} — "
-                "not all layers were re-initialized"
-            )
-            assert w.imag.max().item() < scale + 1e-7, (
-                f"Layer {i}: imag max {w.imag.max():.8f} exceeds scale {scale:.8f} — "
-                "not all layers were re-initialized"
-            )
+    def test_validation_metric_differs_between_scale_0001_and_scale_1(self):
+        """scale=0.001 and scale=1.0 must yield distinct validation l2 values."""
+        N = 9
+        model_out = torch.full((1, 1, N, N), 3.0)
+        y_true = torch.ones(1, 1, N, N)
+        batch = {"x": torch.zeros(1, 1, N, N), "y": y_true}
 
-    def test_64_channel_model_matches_experiment_scale(self):
-        """Verify the exact magnitude contrast that matters for the actual run1f experiment.
+        l2_vals = {}
+        for scale in (0.001, 1.0):
+            m = _make_data_only_mol_module(mollifier_scale=scale, train_resolution=N)
+            m.model = _FixedOutputModel(model_out.clone())
+            l2_vals[scale] = m._shared_step(batch, "val").item()
 
-        The run1f config uses hidden_channels=64.  Per the task description:
-          paper scale  = 1/(64*64) = 0.000244   (negligible noise on untrained modes)
-          default init = Normal(0, sqrt(2/128))  std ≈ 0.125  (dominates output)
-
-        This test constructs a 64-channel model and checks both sides concretely,
-        matching the numbers from the task's motivation table.
-        """
-        def make_64ch_config(with_paper_init):
-            cfg = _make_config()
-            OmegaConf.update(cfg, "model.hidden_channels", 64)
-            if with_paper_init:
-                OmegaConf.update(cfg, "model.spectral_init_scale", "paper")
-            return cfg
-
-        m_default = DarcyLitModule(make_64ch_config(False), data_processor=_make_processor())
-        m_paper   = DarcyLitModule(make_64ch_config(True),  data_processor=_make_processor())
-
-        def_layers = self._spectral_layers(m_default.model)
-        pap_layers = self._spectral_layers(m_paper.model)
-        assert len(def_layers) > 0 and len(pap_layers) > 0
-
-        for def_l, pap_l in zip(def_layers, pap_layers):
-            assert def_l.in_channels == 64 and def_l.out_channels == 64, (
-                "Expected 64-channel SpectralConv layers"
-            )
-            paper_scale = 1.0 / (64 * 64)          # 0.000244140625
-            default_std = (2.0 / (64 + 64)) ** 0.5  # ≈ 0.125
-
-            w_def = self._weight_tensor(def_l)
-            w_pap = self._weight_tensor(pap_l)
-
-            # Default: std is in the Normal(0, 0.125) ballpark
-            assert w_def.real.std().item() > default_std * 0.5, (
-                f"Default 64ch real std {w_def.real.std():.5f} << expected ~{default_std:.5f}"
-            )
-            # Default: values far exceed paper scale (concrete: ~0.5 vs 0.000244)
-            assert w_def.abs().max().item() > paper_scale * 100, (
-                f"Default 64ch abs max {w_def.abs().max():.5f} should be >> "
-                f"100× paper scale {paper_scale:.6f}"
-            )
-            # Paper: real and imag bounded by scale = 0.000244
-            assert w_pap.real.max().item() < paper_scale + 1e-9, (
-                f"Paper 64ch real max {w_pap.real.max():.8f} exceeds scale {paper_scale:.8f}"
-            )
-            assert w_pap.imag.max().item() < paper_scale + 1e-9, (
-                f"Paper 64ch imag max {w_pap.imag.max():.8f} exceeds scale {paper_scale:.8f}"
-            )
-            # Paper: values are non-negative (uniform, not normal)
-            assert w_pap.real.min().item() >= 0.0
-            assert w_pap.imag.min().item() >= 0.0
-
-    # ── before/after comparison ───────────────────────────────────────────────
-
-    def test_paper_weights_are_smaller_than_default(self):
-        """Explicit side-by-side: paper-init max < default max across every layer."""
-        torch.manual_seed(42)
-        cfg_default = _make_config()
-        m_default = DarcyLitModule(cfg_default, data_processor=_make_processor())
-
-        torch.manual_seed(42)
-        cfg_paper = _make_config()
-        OmegaConf.update(cfg_paper, "model.spectral_init_scale", "paper")
-        m_paper = DarcyLitModule(cfg_paper, data_processor=_make_processor())
-
-        default_layers = self._spectral_layers(m_default.model)
-        paper_layers = self._spectral_layers(m_paper.model)
-        assert len(default_layers) == len(paper_layers)
-
-        for def_l, pap_l in zip(default_layers, paper_layers):
-            scale = 1.0 / (pap_l.in_channels * pap_l.out_channels)
-            w_def = self._weight_tensor(def_l)
-            w_pap = self._weight_tensor(pap_l)
-            # Default weights: abs max must be >> paper scale (observed ~1.16 vs 0.016)
-            assert w_def.abs().max().item() > scale * 10, (
-                f"Default-init abs max {w_def.abs().max():.4f} should be >> "
-                f"10× paper scale {scale * 10:.4f}"
-            )
-            # Paper weights: real and imag parts must each be in [0, scale)
-            assert w_pap.real.max().item() < scale + 1e-7, (
-                f"Paper-init real max {w_pap.real.max():.8f} must be < scale {scale:.8f}"
-            )
-            assert w_pap.imag.max().item() < scale + 1e-7, (
-                f"Paper-init imag max {w_pap.imag.max():.8f} must be < scale {scale:.8f}"
-            )
-            # Tensors must actually differ
-            assert not torch.allclose(w_def, w_pap), (
-                "Paper-init weights are identical to default — re-init did not fire"
-            )
+        assert l2_vals[0.001] != pytest.approx(l2_vals[1.0], rel=0.01)
