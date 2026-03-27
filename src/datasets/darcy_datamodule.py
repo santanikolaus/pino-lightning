@@ -6,7 +6,7 @@ import lightning as L
 from torch.utils.data import DataLoader, Dataset
 
 from src.datasets.darcy_dataset import DarcyDataset
-from src.datasets.transforms.data_processors import DataProcessor
+from src.datasets.transforms.data_processors import DefaultDataProcessor
 
 
 class PairedResolutionDataset(Dataset):
@@ -96,7 +96,7 @@ class DarcyDataModule(L.LightningDataModule):
 
         self._train_loader: Optional[DataLoader] = None
         self._test_loaders: Optional[Dict[int, DataLoader]] = None
-        self.data_processor: Optional[DataProcessor] = None
+        self.data_processor: Optional[DefaultDataProcessor] = None
 
     #TODO: reintroduce MultigridPatching2D, MGPatchingDataProcessor once we port the legacy helper
     def setup(self, stage: Optional[str] = None) -> None:

@@ -2,7 +2,7 @@ import lightning as L
 import torch
 
 from typing import Any, Dict, Mapping, Optional
-from src.datasets.transforms.data_processors import DataProcessor
+from src.datasets.transforms.data_processors import DefaultDataProcessor
 from src.pde.darcy import DarcyLoss
 from neuralop import get_model, LpLoss, H1Loss
 from neuralop.training import AdamW
@@ -21,7 +21,7 @@ class DarcyLitModule(L.LightningModule):
         self,
         config: Any,
         *,
-        data_processor: DataProcessor,
+        data_processor: DefaultDataProcessor,
     ) -> None:
         super().__init__()
         self.config = config
