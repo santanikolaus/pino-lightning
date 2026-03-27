@@ -12,6 +12,16 @@ from src.datasets.transforms.normalizers import UnitGaussianNormalizer
 logger = logging.getLogger(__name__)
 
 
+def _build_coord_grid(resolution: int) -> torch.Tensor:
+    """Vertex-centered [x, y] coordinate grid including both endpoints 0 and 1.
+
+    Returns shape (2, resolution, resolution).
+    """
+    coords = torch.linspace(0, 1, resolution)
+    grid_x, grid_y = torch.meshgrid(coords, coords, indexing="ij")
+    return torch.stack([grid_x, grid_y], dim=0)
+
+
 def _reduce_dims(ndim: int, encoding: str, channel_dim: int) -> List[int]:
     if encoding == "channel-wise":
         dims = list(range(ndim))
@@ -51,6 +61,7 @@ class DarcyDataset(PTDataset):
         encoding: str = "channel-wise",
         channel_dim: int = 1,
         source_resolution: int = 421,
+        input_coord_channels: bool = False,
     ):
         if isinstance(root_dir, str):
             root_dir = Path(root_dir)
@@ -63,6 +74,7 @@ class DarcyDataset(PTDataset):
         self._encoding = encoding
         self._channel_dim = channel_dim
         self._source_resolution = source_resolution
+        self._input_coord_channels = input_coord_channels
 
         # Validate strides before any I/O
         vertex_stride(source_resolution, train_resolution)
@@ -89,6 +101,11 @@ class DarcyDataset(PTDataset):
         y_train = data["y"].clone()
         y_train = y_train.unsqueeze(self._channel_dim)
         y_train = y_train[:n_train, :, ::stride, ::stride]
+
+        if self._input_coord_channels:
+            grid = _build_coord_grid(resolution)  # (2, H, W)
+            grid = grid.unsqueeze(0).expand(x_train.size(0), -1, -1, -1)
+            x_train = torch.cat([x_train, grid], dim=1)  # (N, 3, H, W)
 
         if self._encode_input:
             input_encoder = UnitGaussianNormalizer(dim=_reduce_dims(
@@ -123,5 +140,10 @@ class DarcyDataset(PTDataset):
         y_test = data["y"].clone()
         y_test = y_test.unsqueeze(self._channel_dim)
         y_test = y_test[:n_test, :, ::stride, ::stride]
+
+        if self._input_coord_channels:
+            grid = _build_coord_grid(resolution)
+            grid = grid.unsqueeze(0).expand(x_test.size(0), -1, -1, -1)
+            x_test = torch.cat([x_test, grid], dim=1)
 
         return TensorDataset(x_test, y_test)

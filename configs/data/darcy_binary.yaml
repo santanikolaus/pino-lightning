@@ -12,3 +12,4 @@ channel_dim: 1
 train_resolution: 11
 source_resolution: 421
 pde_resolution: null
+input_coord_channels: false
