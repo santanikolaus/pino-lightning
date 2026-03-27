@@ -1,6 +1,6 @@
 # @package _global_
-# Data-only FNO baseline for binary Darcy (Table 1 "FNO" row)
-# No normalization, no padding — matches paper code
+# Run 1A: Data-only FNO at 61×61 resolution, 300 epochs
+# Tests resolution + epoch fix only (minimal change from data-only baseline)
 
 defaults:
   - override /data: darcy_binary
@@ -9,11 +9,15 @@ defaults:
 data:
   encode_input: false
   encode_output: false
+  train_resolution: 61
 
 model:
   domain_padding: 0.0
 
+trainer:
+  max_epochs: 300
+
 logger:
   wandb:
     project: darcy_dataonly_binary
-    name: darcy
+    name: run1a_res61_epochs300
