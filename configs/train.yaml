@@ -1,5 +1,5 @@
 defaults:
-  - data: darcy
+  - data: darcy_binary
   - model: fno
   - trainer: default
   - logger: wandb

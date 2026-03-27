@@ -365,7 +365,7 @@ class TestPinoSharedStep:
                                                          forcing=1.0,
                                                          forcing_is_coeff_scaled=False)
         # Model returns the normalised exact solution: (u_exact - 0.1) / 2.0
-        m.model = _FixedOutputModel(out_norm.transform(u_exact).clone())
+        m.model = _FixedOutputModel(out_norm(u_exact).clone())
 
         m._shared_step({"x": torch.ones(1, 1, N, N), "y": u_exact.clone()}, "train")
 
@@ -501,7 +501,7 @@ class TestPhysicsNumerical:
         m, out_norm = _make_pino_module_with_normalizer(mean=mean, std=std,
                                                          forcing=1.0,
                                                          forcing_is_coeff_scaled=False)
-        m.model = _FixedOutputModel(out_norm.transform(u_exact).clone())
+        m.model = _FixedOutputModel(out_norm(u_exact).clone())
 
         batch = {"x": torch.ones(1, 1, N, N), "y": u_exact.clone()}
         loss = m._shared_step(batch, "train")
@@ -930,7 +930,7 @@ class TestNativeForwardPassNumerical:
         m.log = MagicMock()
 
         # Model returns the normalised exact solution at pde_resolution
-        m.model = _FixedOutputModel(out_norm.transform(u_exact_hires).clone())
+        m.model = _FixedOutputModel(out_norm(u_exact_hires).clone())
 
         batch = {
             "x": torch.ones(1, 1, N_train, N_train),
@@ -1219,7 +1219,7 @@ class TestNativePathNormalizationRoundTrip:
         m._trainer = mock_trainer
         m.log = MagicMock()
 
-        m.model = _FixedOutputModel(out_norm.transform(u_exact_hires).clone())
+        m.model = _FixedOutputModel(out_norm(u_exact_hires).clone())
 
         batch = {
             "x": torch.ones(1, 1, N_train, N_train),

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import torch
 
 from src.datasets.darcy_datamodule import DarcyDataModule
 
@@ -147,6 +148,19 @@ class TestValidation:
                 pde_resolution=13,
             )
 
+    def test_valid_coord_channels_config_accepted(self):
+        dm = DarcyDataModule(
+            n_train=N_TRAIN,
+            n_tests=N_TESTS,
+            batch_size=BATCH_SIZE,
+            test_batch_sizes=TEST_BATCH_SIZES,
+            test_resolutions=TEST_RESOLUTIONS,
+            train_resolution=TRAIN_RESOLUTION,
+            source_resolution=SOURCE_RESOLUTION,
+            input_coord_channels=True,
+        )
+        assert dm.input_coord_channels is True
+
     def test_valid_paper_config_accepted(self):
         """PINO paper config: source=421, train=11, pde=61, test={11,61,211}."""
         dm = DarcyDataModule(
@@ -161,3 +175,121 @@ class TestValidation:
         )
         assert dm.source_resolution == 421
         assert dm.pde_resolution == 61
+
+
+DARCY_BINARY_ROOT = Path.home() / "data" / "darcy_binary"
+
+requires_darcy_binary_data = pytest.mark.skipif(
+    not (DARCY_BINARY_ROOT / "darcy_train_421.pt").exists(),
+    reason="Darcy binary 421 .pt files not found",
+)
+
+
+@requires_darcy_binary_data
+class TestCoordChannels:
+
+    def test_coord_channels_adds_xy_grids(self):
+        dm = DarcyDataModule(
+            data_root=DARCY_BINARY_ROOT,
+            n_train=10,
+            n_tests=[5],
+            batch_size=4,
+            test_batch_sizes=[4],
+            test_resolutions=[11],
+            train_resolution=11,
+            source_resolution=421,
+            encode_input=False,
+            encode_output=False,
+            input_coord_channels=True,
+        )
+        dm.setup()
+        batch = next(iter(dm.train_dataloader()))
+        assert batch["x"].shape == (4, 3, 11, 11)
+        # Channel 0 is permeability (binary {3, 12})
+        assert batch["x"][:, 0].min() >= 3.0
+        # Channels 1-2 are coordinates in [0, 1]
+        assert batch["x"][:, 1:].min() >= 0.0
+        assert batch["x"][:, 1:].max() <= 1.0
+        # Grid includes endpoints 0 and 1
+        assert torch.isclose(batch["x"][0, 1, 0, 0], torch.tensor(0.0))
+        assert torch.isclose(batch["x"][0, 1, -1, 0], torch.tensor(1.0))
+
+    def test_coord_channels_adapt_to_test_resolution(self):
+        dm = DarcyDataModule(
+            data_root=DARCY_BINARY_ROOT,
+            n_train=10,
+            n_tests=[5, 5],
+            batch_size=4,
+            test_batch_sizes=[4, 4],
+            test_resolutions=[11, 61],
+            train_resolution=11,
+            source_resolution=421,
+            encode_input=False,
+            encode_output=False,
+            input_coord_channels=True,
+        )
+        dm.setup()
+        val_loaders = dm.val_dataloader()
+        batch_61 = next(iter(val_loaders[1]))
+        assert batch_61["x"].shape[1] == 3
+        assert batch_61["x"].shape[2] == 61
+        # 61×61 grid should also include endpoints
+        assert torch.isclose(batch_61["x"][0, 1, 0, 0], torch.tensor(0.0))
+        assert torch.isclose(batch_61["x"][0, 1, -1, 0], torch.tensor(1.0))
+
+    def test_y_remains_one_channel_with_coords(self):
+        dm = DarcyDataModule(
+            data_root=DARCY_BINARY_ROOT,
+            n_train=10,
+            n_tests=[5],
+            batch_size=4,
+            test_batch_sizes=[4],
+            test_resolutions=[11],
+            train_resolution=11,
+            source_resolution=421,
+            encode_input=False,
+            encode_output=False,
+            input_coord_channels=True,
+        )
+        dm.setup()
+        batch = next(iter(dm.train_dataloader()))
+        assert batch["y"].shape == (4, 1, 11, 11)
+
+    def test_permeability_unchanged_by_coords(self):
+        """Channel 0 with coords matches the 1-channel version without coords."""
+        kwargs = dict(
+            data_root=DARCY_BINARY_ROOT,
+            n_train=10,
+            n_tests=[5],
+            batch_size=10,
+            test_batch_sizes=[5],
+            test_resolutions=[11],
+            train_resolution=11,
+            source_resolution=421,
+            encode_input=False,
+            encode_output=False,
+        )
+        dm_no = DarcyDataModule(**kwargs, input_coord_channels=False)
+        dm_yes = DarcyDataModule(**kwargs, input_coord_channels=True)
+        dm_no.setup()
+        dm_yes.setup()
+        batch_no = next(iter(dm_no.train_dataloader()))
+        batch_yes = next(iter(dm_yes.train_dataloader()))
+        assert torch.equal(batch_no["x"][:, 0], batch_yes["x"][:, 0])
+
+    def test_default_no_coord_channels(self):
+        dm = DarcyDataModule(
+            data_root=DARCY_BINARY_ROOT,
+            n_train=10,
+            n_tests=[5],
+            batch_size=4,
+            test_batch_sizes=[4],
+            test_resolutions=[11],
+            train_resolution=11,
+            source_resolution=421,
+            encode_input=False,
+            encode_output=False,
+        )
+        dm.setup()
+        batch = next(iter(dm.train_dataloader()))
+        assert batch["x"].shape == (4, 1, 11, 11)

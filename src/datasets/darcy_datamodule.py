@@ -47,6 +47,7 @@ class DarcyDataModule(L.LightningDataModule):
         train_resolution: int = 16,
         source_resolution: int = 421,
         pde_resolution: Optional[int] = None,
+        input_coord_channels: bool = False,
 
     ) -> None:
         super().__init__()
@@ -63,6 +64,7 @@ class DarcyDataModule(L.LightningDataModule):
         self.train_resolution = train_resolution
         self.source_resolution = source_resolution
         self.pde_resolution = pde_resolution
+        self.input_coord_channels = input_coord_channels
 
         # Stride divisibility checks
         if (self.source_resolution - 1) % (self.train_resolution - 1) != 0:
@@ -113,6 +115,7 @@ class DarcyDataModule(L.LightningDataModule):
             channel_dim=self.channel_dim,
             train_resolution=self.train_resolution,
             source_resolution=self.source_resolution,
+            input_coord_channels=self.input_coord_channels,
         )
         if self.data_root is not None:
             load_kwargs["root_dir"] = self.data_root

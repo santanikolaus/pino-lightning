@@ -107,14 +107,14 @@ class DarcyLitModule(L.LightningModule):
         """Apply the input normalizer (if present) to an arbitrary-resolution input."""
         dp = self.data_processor
         if hasattr(dp, "in_normalizer") and dp.in_normalizer is not None:
-            return dp.in_normalizer.transform(x)
+            return dp.in_normalizer(x)
         return x
 
     def _normalize_output(self, y: torch.Tensor) -> torch.Tensor:
         """Apply the output normalizer (if present) to labels."""
         dp = self.data_processor
         if hasattr(dp, "out_normalizer") and dp.out_normalizer is not None:
-            return dp.out_normalizer.transform(y)
+            return dp.out_normalizer(y)
         return y
 
     def _shared_step(self, batch: Dict[str, Any], stage: str, suffix: Optional[str] = None) -> torch.Tensor:
@@ -129,7 +129,7 @@ class DarcyLitModule(L.LightningModule):
         if (train_mode and self.darcy_loss is not None
                 and "a_highres" in batch and self._subsample_factor is not None):
             self.data_processor.train(True)
-            a_hires_raw = batch["a_highres"].to(self.device)
+            a_hires_raw = batch["a_highres"][:, :1].to(self.device)
 
             # Forward pass at pde_resolution (native FNO output)
             a_hires_norm = self._normalize_input(a_hires_raw)
@@ -191,7 +191,7 @@ class DarcyLitModule(L.LightningModule):
                         f"permeability for the native forward pass."
                     )
                 u_phys = self._denormalize_for_physics(preds)
-                a = batch["x"].to(preds.device)
+                a = batch["x"][:, :1].to(preds.device)
                 if self._bc_mollifier is not None:
                     u_phys = u_phys * self._bc_mollifier
                     # Mollified prediction — data loss in physical space
