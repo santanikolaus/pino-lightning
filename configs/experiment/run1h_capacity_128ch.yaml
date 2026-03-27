@@ -1,0 +1,27 @@
+# @package _global_
+# Run 1h — Model capacity test: hidden_channels=128 (2x paper's 64)
+# Tests if more spectral capacity closes the super-resolution gap
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: data_only
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+
+model:
+  data_channels: 3
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+  hidden_channels: 128
+
+trainer:
+  max_epochs: 300
+
+logger:
+  wandb:
+    project: lowres-binary-paper
+    name: run1h_capacity_128ch
