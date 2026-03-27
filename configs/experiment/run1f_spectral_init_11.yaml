@@ -1,0 +1,27 @@
+# @package _global_
+# Run 1f — Spectral init matching paper: 1/(in*out) uniform
+# Tests if smaller init fixes super-resolution collapse (48% → 9% at val_61)
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: data_only
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+
+model:
+  data_channels: 3
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+  spectral_init_scale: paper
+
+trainer:
+  max_epochs: 300
+
+logger:
+  wandb:
+    project: lowres-binary-paper
+    name: run1f_spectral_init_11
