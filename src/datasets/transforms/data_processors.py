@@ -19,9 +19,9 @@ class DefaultDataProcessor(torch.nn.Module):
         y = data_dict["y"].to(self.device)
 
         if self.in_normalizer is not None:
-            x = self.in_normalizer.transform(x)
+            x = self.in_normalizer(x)
         if self.out_normalizer is not None and self.training:
-            y = self.out_normalizer.transform(y)
+            y = self.out_normalizer(y)
 
         return {**data_dict, "x": x, "y": y}
 

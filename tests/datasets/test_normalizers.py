@@ -31,18 +31,16 @@ def test_transform_inverse_roundtrip():
     n = UnitGaussianNormalizer(dim=dim, eps=1e-7)
     n.fit(x)
 
-    y = n.transform(x)
+    y = n(x)
     x2 = n.inverse_transform(y)
     assert torch.allclose(x2, x, atol=1e-5, rtol=1e-5)
-
-    assert torch.allclose(n.forward(x), y)
 
 
 def test_transform_produces_approx_zero_mean_unit_std():
     x = torch.randn(100, 1, 8, 8)
     n = UnitGaussianNormalizer(dim=[0, 2, 3], eps=1e-7)
     n.fit(x)
-    y = n.transform(x)
+    y = n(x)
 
     assert torch.allclose(y.mean(dim=[0, 2, 3]), torch.zeros(1), atol=0.01)
     assert torch.allclose(y.std(dim=[0, 2, 3]), torch.ones(1), atol=0.01)

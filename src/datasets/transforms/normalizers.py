@@ -16,11 +16,8 @@ class UnitGaussianNormalizer(torch.nn.Module):
         self.mean = torch.mean(data, dim=self.dim, keepdim=True)
         self.std = torch.std(data, dim=self.dim, keepdim=True)
 
-    def transform(self, x):
+    def forward(self, x):
         return (x - self.mean) / (self.std + self.eps)
 
     def inverse_transform(self, x):
         return x * (self.std + self.eps) + self.mean
-
-    def forward(self, x):
-        return self.transform(x)

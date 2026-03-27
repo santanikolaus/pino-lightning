@@ -111,7 +111,7 @@ class TestPreprocessPostprocessRoundtrip:
         result = processor.preprocess({"x": x, "y": y.clone()})
         assert torch.equal(result["y"], y), "eval preprocess should not touch y"
 
-        normalized_y = processor.out_normalizer.transform(y.clone())
+        normalized_y = processor.out_normalizer(y.clone())
         recovered_y = processor.postprocess(normalized_y)
         assert torch.allclose(recovered_y, y, atol=1e-5)
 
