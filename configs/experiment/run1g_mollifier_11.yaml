@@ -1,6 +1,7 @@
 # @package _global_
-# Run 1f — Spectral init matching paper: 1/(in*out) uniform
-# Tests if smaller init fixes super-resolution collapse (48% → 9% at val_61)
+# Run 1g — BC mollifier (0.001 * sin(πx)sin(πy)) for data-only training
+# Paper applies mollifier to ALL outputs, even without PDE loss
+# Tests if mollifier fixes super-resolution collapse
 
 defaults:
   - override /data: darcy_binary
@@ -16,7 +17,10 @@ model:
   domain_padding: 0.0
   lifting_channel_ratio: 0
   positional_embedding: null
-  spectral_init_scale: paper
+
+loss:
+  bc_mollifier: true
+  mollifier_scale: 0.001
 
 trainer:
   max_epochs: 300
@@ -24,4 +28,4 @@ trainer:
 logger:
   wandb:
     project: lowres-binary-paper
-    name: run1f_spectral_init_11
+    name: run1g_mollifier_11

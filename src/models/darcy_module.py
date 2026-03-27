@@ -25,18 +25,7 @@ class DarcyLitModule(L.LightningModule):
     ) -> None:
         super().__init__()
         self.config = config
-        # neuralop's get_model passes every model-section key as an FNO kwarg;
-        # strip our custom flag before the call so FNO doesn't reject it.
-        # self.config keeps the original (with spectral_init_scale) for _reinit_spectral_weights.
-        _model_cfg = _get(config, "model")
-        if _get(_model_cfg, "spectral_init_scale", None) is not None:
-            from omegaconf import OmegaConf
-            _build_cfg = OmegaConf.to_container(config, resolve=True, throw_on_missing=False)
-            _build_cfg["model"].pop("spectral_init_scale", None)
-            self.model = get_model(OmegaConf.create(_build_cfg))
-        else:
-            self.model = get_model(self.config)
-        self._reinit_spectral_weights()
+        self.model = get_model(self.config)
         self.data_processor = data_processor
         self.lp_loss = LpLoss(d=2, p=2, reduction="mean")
         self.h1_loss = H1Loss(d=2, reduction="mean")
@@ -61,6 +50,7 @@ class DarcyLitModule(L.LightningModule):
         self.darcy_loss: Optional[DarcyLoss] = None
         self._pde_resolution: Optional[int] = None
         self._subsample_factor: Optional[int] = None
+        self._mollifier_scale: float = _get(loss_cfg, "mollifier_scale", 1.0)
         self.register_buffer("_bc_mollifier", None)
         if self._pde_weight > 0:
             pde_res = _get(loss_cfg, "pde_resolution", None)
@@ -86,36 +76,9 @@ class DarcyLitModule(L.LightningModule):
 
             if _get(loss_cfg, "bc_mollifier", False):
                 self._bc_mollifier = self._build_mollifier(pde_res)
-
-    def _reinit_spectral_weights(self) -> None:
-        """Re-initialize SpectralConv weights using the paper's uniform scheme.
-
-        Paper: scale = 1/(in_ch * out_ch), weights ~ Uniform[0, scale) (complex).
-        Only fires when model.spectral_init_scale is set in config.
-        """
-        from neuralop.layers.spectral_convolution import SpectralConv
-        model_cfg = _get(self.config, "model")
-        spectral_init = _get(model_cfg, "spectral_init_scale", None)
-        if spectral_init is None:
-            return
-        count = 0
-        for module in self.model.modules():
-            if isinstance(module, SpectralConv):
-                scale = 1.0 / (module.in_channels * module.out_channels)
-                # module.weight is a DenseTensor (nn.Module); the actual nn.Parameter
-                # lives at module.weight.tensor — .data on DenseTensor does not exist.
-                with torch.no_grad():
-                    module.weight.tensor.data.copy_(
-                        scale * torch.rand_like(module.weight.tensor.data)
-                    )
-                if module.bias is not None:
-                    with torch.no_grad():
-                        module.bias.data.copy_(
-                            scale * torch.randn_like(module.bias.data)
-                        )
-                count += 1
-        print(f"[spectral_init] Re-initialized {count} SpectralConv weight(s) "
-              f"with paper scheme (scale=1/(in*out), uniform)")
+        elif _get(loss_cfg, "bc_mollifier", False):
+            # Data-only mode: build mollifier at train resolution
+            self._bc_mollifier = self._build_mollifier(self._train_resolution)
 
     @staticmethod
     def _build_mollifier(resolution: int) -> torch.Tensor:
@@ -252,14 +215,19 @@ class DarcyLitModule(L.LightningModule):
                 self.log("train_pde_loss_raw", raw_pde, on_step=True, on_epoch=True,
                          sync_dist=sync_dist)
             else:
-                loss = self._data_weight * self.train_loss(preds, data["y"])
+                if self._bc_mollifier is not None:
+                    mol = self._build_mollifier(preds.shape[-1]).to(preds.device)
+                    preds_mol = preds * (self._mollifier_scale * mol)
+                    loss = self._data_weight * self.train_loss(preds_mol, data["y"])
+                else:
+                    loss = self._data_weight * self.train_loss(preds, data["y"])
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
                      sync_dist=sync_dist)
             return loss
         else:
             if self._bc_mollifier is not None:
                 mol = self._build_mollifier(preds.shape[-1]).to(preds.device)
-                preds = preds * mol
+                preds = preds * (self._mollifier_scale * mol)
             l2 = self.lp_loss(preds, data["y"])
             h1 = self.h1_loss(preds, data["y"])
             self.log(f"{prefix}_l2", l2, on_step=False, on_epoch=True, prog_bar=True,
