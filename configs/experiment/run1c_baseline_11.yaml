@@ -1,0 +1,20 @@
+# @package _global_
+# Run 1c — Baseline: 11x11, no normalization
+# Hypothesis: without normalization at 11x11, errors rise closer to paper levels
+# Paper target (data-only binary): val_11=5.41%, val_61=9.01%, val_211=9.46%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: data_only
+
+data:
+  encode_input: false
+  encode_output: false
+
+model:
+  domain_padding: 0.0
+
+logger:
+  wandb:
+    project: lowres-binary-paper
+    name: run1c_baseline_11

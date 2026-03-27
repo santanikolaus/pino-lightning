@@ -1,24 +1,8 @@
-from abc import ABCMeta, abstractmethod
 import torch
 
 
-class DataProcessor(torch.nn.Module, metaclass=ABCMeta):
-    def __init__(self):
-        super().__init__()
+class DefaultDataProcessor(torch.nn.Module):
 
-    @abstractmethod
-    def to(self, device):
-        pass
-
-    @abstractmethod
-    def preprocess(self, x):
-        pass
-
-    @abstractmethod
-    def postprocess(self, x):
-        pass
-
-class DefaultDataProcessor(DataProcessor):
     def __init__(self, in_normalizer=None, out_normalizer=None):
         super().__init__()
         self.in_normalizer = in_normalizer
