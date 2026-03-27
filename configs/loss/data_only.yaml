@@ -2,3 +2,5 @@
 training: l2      # data loss function: l2 | h1
 data_weight: 1.0
 pde_weight: 0.0
+bc_mollifier: false
+mollifier_scale: 1.0

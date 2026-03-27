@@ -50,6 +50,7 @@ class DarcyLitModule(L.LightningModule):
         self.darcy_loss: Optional[DarcyLoss] = None
         self._pde_resolution: Optional[int] = None
         self._subsample_factor: Optional[int] = None
+        self._mollifier_scale: float = _get(loss_cfg, "mollifier_scale", 1.0)
         self.register_buffer("_bc_mollifier", None)
         if self._pde_weight > 0:
             pde_res = _get(loss_cfg, "pde_resolution", None)
@@ -75,6 +76,9 @@ class DarcyLitModule(L.LightningModule):
 
             if _get(loss_cfg, "bc_mollifier", False):
                 self._bc_mollifier = self._build_mollifier(pde_res)
+        elif _get(loss_cfg, "bc_mollifier", False):
+            # Data-only mode: build mollifier at train resolution
+            self._bc_mollifier = self._build_mollifier(self._train_resolution)
 
     @staticmethod
     def _build_mollifier(resolution: int) -> torch.Tensor:
@@ -211,14 +215,19 @@ class DarcyLitModule(L.LightningModule):
                 self.log("train_pde_loss_raw", raw_pde, on_step=True, on_epoch=True,
                          sync_dist=sync_dist)
             else:
-                loss = self._data_weight * self.train_loss(preds, data["y"])
+                if self._bc_mollifier is not None:
+                    mol = self._build_mollifier(preds.shape[-1]).to(preds.device)
+                    preds_mol = preds * (self._mollifier_scale * mol)
+                    loss = self._data_weight * self.train_loss(preds_mol, data["y"])
+                else:
+                    loss = self._data_weight * self.train_loss(preds, data["y"])
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
                      sync_dist=sync_dist)
             return loss
         else:
             if self._bc_mollifier is not None:
                 mol = self._build_mollifier(preds.shape[-1]).to(preds.device)
-                preds = preds * mol
+                preds = preds * (self._mollifier_scale * mol)
             l2 = self.lp_loss(preds, data["y"])
             h1 = self.h1_loss(preds, data["y"])
             self.log(f"{prefix}_l2", l2, on_step=False, on_epoch=True, prog_bar=True,
