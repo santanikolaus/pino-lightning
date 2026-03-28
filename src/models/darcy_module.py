@@ -144,6 +144,8 @@ class DarcyLitModule(L.LightningModule):
             # prediction so that the data and PDE objectives are consistent.
             u_hires_phys = self._denormalize_for_physics(u_hires_norm)
             if self._bc_mollifier is not None:
+                # TODO(PINO-parity): fold self._mollifier_scale into this native
+                # PDE branch so both losses match the paper's 0.001·sin·sin mask.
                 u_hires_phys = u_hires_phys * self._bc_mollifier
 
             # Data loss: subsample prediction to train_resolution
