@@ -1,0 +1,41 @@
+# @package _global_
+# Run 2c — n_modes=5 + mollifier: the combination the paper actually runs
+#
+# Hypothesis: val_61 gap (48% vs 9%) is caused by two compounding issues:
+#   1. n_modes=20 at 11x11 training → modes 6-20 never trained, inject noise at 61x61 test time
+#   2. bc_mollifier=false in run1e/1g → boundary violations compound at super-resolution
+#
+# This run tests both fixes together (exactly matching paper-pino Darcy-11x11-data-only config):
+#   - modes=5: max usable at 11x11 (rfft2 → 5 usable x-freqs), all modes get gradients
+#   - mollifier: sin(πx)sin(πy)*0.001 enforces zero BCs at every resolution
+#
+# Paper target (data-only binary): val_11=5.41%, val_61=9.01%, val_211=9.46%
+# paper-pino confirmed result:     val_11=5.12%, val_61=8.88%, val_211=9.45%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: data_only
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+
+model:
+  data_channels: 3
+  n_modes: [5, 5]
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  bc_mollifier: true
+  mollifier_scale: 0.001
+
+trainer:
+  max_epochs: 500
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run2c_modes5_mollifier_11
