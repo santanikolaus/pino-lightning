@@ -506,7 +506,7 @@ class TestPhysicsNumerical:
         m.model = _FixedOutputModel(out_norm(u_exact).clone())
 
         batch = {"x": torch.ones(1, 1, N, N), "y": u_exact.clone()}
-        loss = m._shared_step(batch, "train")
+        m._shared_step(batch, "train")
 
         pde_log = next(c for c in m.log.call_args_list if c.args[0] == "train_pde_loss")
         data_log = next(c for c in m.log.call_args_list if c.args[0] == "train_data_loss")
@@ -518,7 +518,7 @@ class TestPhysicsNumerical:
         """A constant prediction violates -∇·(a∇u)=1, so PDE loss must be large."""
         N = 16
         mean, std = 0.0, 1.0
-        m, out_norm = _make_pino_module_with_normalizer(mean=mean, std=std, eps=0.0)
+        m, _ = _make_pino_module_with_normalizer(mean=mean, std=std, eps=0.0)
         m.model = _FixedOutputModel(torch.full((1, 1, N, N), 5.0))
 
         batch = {"x": torch.ones(1, 1, N, N), "y": torch.randn(1, 1, N, N)}
@@ -675,6 +675,7 @@ class TestBCMollifier:
 def _make_native_pino_module(pde_resolution: int = 61, train_resolution: int = 16,
                               pde_weight: float = 1.0, data_weight: float = 1.0,
                               bc_mollifier: bool = False,
+                              mollifier_scale: float = 1.0,
                               forcing: float = 1.0,
                               forcing_is_coeff_scaled: bool = False):
     """Create a PINO module configured for the native high-res forward pass path."""
@@ -685,6 +686,7 @@ def _make_native_pino_module(pde_resolution: int = 61, train_resolution: int = 1
         "pde_weight": pde_weight,
         "pde_resolution": pde_resolution,
         "bc_mollifier": bc_mollifier,
+        "mollifier_scale": mollifier_scale,
         "forcing": forcing,
         "forcing_is_coeff_scaled": forcing_is_coeff_scaled,
     }
@@ -1040,7 +1042,7 @@ class TestPairedResolutionDataset:
 
     def test_wraps_base_and_adds_a_highres(self):
         from src.datasets.darcy_datamodule import PairedResolutionDataset
-        from src.datasets.tensor_dataset import TensorDataset
+        from src.datasets.darcy_dataset import TensorDataset
 
         x = torch.randn(10, 1, 16, 16)
         y = torch.randn(10, 1, 16, 16)
@@ -1489,3 +1491,349 @@ class TestDataOnlyMollifier:
             l2_vals[scale] = m._shared_step(batch, "val").item()
 
         assert l2_vals[0.001] != pytest.approx(l2_vals[1.0], rel=0.01)
+
+
+# ─── Input-capturing model stub ──────────────────────────────────────────────
+
+class _InputCapturingModel(torch.nn.Module):
+    """Stub that records the tensor passed to forward() and returns a fixed output.
+
+    Unlike _FixedOutputModel it exposes captured_input so tests can assert on
+    exactly what the FNO *receives*, not just what it returns.  No learnable
+    parameters — do not use where loss.backward() is required.
+    """
+
+    def __init__(self, output: torch.Tensor) -> None:
+        super().__init__()
+        self._output = output
+        self.captured_input = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self.captured_input = x.detach().clone()
+        return self._output
+
+
+# ─── Native-path coord-channel helper ────────────────────────────────────────
+
+def _make_native_pino_module_with_coords(
+    pde_resolution: int = 61,
+    train_resolution: int = 11,
+    pde_weight: float = 1.0,
+    data_weight: float = 1.0,
+    bc_mollifier: bool = False,
+    mollifier_scale: float = 1.0,
+):
+    """Native PINO module with input_coord_channels=True and a 3-channel FNO.
+
+    Mirrors _make_native_pino_module but sets data_channels=3 in the model config
+    and input_coord_channels=True in the data config, matching run3a.
+    """
+    base = OmegaConf.to_container(_make_config())
+    base["model"]["data_channels"] = 3          # permeability + x-coord + y-coord
+    base["loss"] = {
+        "training": "l2",
+        "data_weight": data_weight,
+        "pde_weight": pde_weight,
+        "pde_resolution": pde_resolution,
+        "bc_mollifier": bc_mollifier,
+        "mollifier_scale": mollifier_scale,
+        "forcing": 1.0,
+        "forcing_is_coeff_scaled": False,
+    }
+    base["data"] = {
+        "train_resolution": train_resolution,
+        "input_coord_channels": True,
+    }
+    cfg = OmegaConf.create(base)
+    m = DarcyLitModule(cfg, data_processor=_make_processor())
+    mock_trainer = MagicMock()
+    mock_trainer.world_size = 1
+    m._trainer = mock_trainer
+    m.log = MagicMock()
+    return m
+
+
+# ─── Coord channels in native PINO path (Bug 1 fix) ──────────────────────────
+
+class TestCoordChannelsNativePath:
+    """Tests for the input_coord_channels=True code path in the native PINO forward pass.
+
+    Covers the fix: when input_coord_channels=True, a vertex-centred [x,y] coord grid
+    must be concatenated to the normalised permeability *at pde_resolution* before the
+    model call.  The raw 1-channel a_highres must still reach DarcyLoss unchanged.
+    """
+
+    def test_input_coord_channels_flag_defaults_to_false(self):
+        """Without input_coord_channels in data config, _input_coord_channels must be False."""
+        m = _make_native_pino_module()
+        assert m._input_coord_channels is False
+
+    def test_input_coord_channels_flag_stored_true(self):
+        """With input_coord_channels=True in data config, _input_coord_channels must be True."""
+        m = _make_native_pino_module_with_coords()
+        assert m._input_coord_channels is True
+
+    def test_model_receives_3_channel_input_when_coords_enabled(self):
+        """With input_coord_channels=True, the FNO must be called with (N, 3, pde_H, pde_W),
+        not with the raw 1-channel permeability."""
+        N_pde, N_train = 31, 16
+        m = _make_native_pino_module_with_coords(pde_resolution=N_pde, train_resolution=N_train)
+        stub = _InputCapturingModel(torch.zeros(2, 1, N_pde, N_pde))
+        m.model = stub
+
+        batch = _make_native_batch(batch_size=2, train_res=N_train, pde_res=N_pde)
+        m._shared_step(batch, "train")
+
+        assert stub.captured_input is not None
+        assert stub.captured_input.shape == (2, 3, N_pde, N_pde), (
+            f"Model received {stub.captured_input.shape}, expected (2, 3, {N_pde}, {N_pde}). "
+            "coord channels were not injected into the native PINO input."
+        )
+
+    def test_model_receives_1_channel_input_when_coords_disabled(self):
+        """With input_coord_channels=False (default), the FNO must be called with (N, 1, H, W)."""
+        N_pde, N_train = 31, 16
+        m = _make_native_pino_module(pde_resolution=N_pde, train_resolution=N_train)
+        stub = _InputCapturingModel(torch.zeros(2, 1, N_pde, N_pde))
+        m.model = stub
+
+        batch = _make_native_batch(batch_size=2, train_res=N_train, pde_res=N_pde)
+        m._shared_step(batch, "train")
+
+        assert stub.captured_input is not None
+        assert stub.captured_input.shape == (2, 1, N_pde, N_pde), (
+            f"Model received {stub.captured_input.shape}, expected (2, 1, {N_pde}, {N_pde})."
+        )
+
+    def test_coord_grid_is_at_pde_resolution_not_train(self):
+        """The coord channels appended to the model input must have spatial extent
+        matching pde_resolution (61), NOT train_resolution (11)."""
+        N_pde, N_train = 61, 11
+        m = _make_native_pino_module_with_coords(pde_resolution=N_pde, train_resolution=N_train)
+        stub = _InputCapturingModel(torch.zeros(1, 1, N_pde, N_pde))
+        m.model = stub
+
+        batch = _make_native_batch(batch_size=1, train_res=N_train, pde_res=N_pde)
+        m._shared_step(batch, "train")
+
+        inp = stub.captured_input              # (1, 3, N_pde, N_pde)
+        assert inp is not None, "Model was never called — captured_input is still None"
+        assert inp.shape[-2:] == (N_pde, N_pde), (
+            f"Coord-augmented input has spatial size {inp.shape[-2:]}, "
+            f"expected ({N_pde}, {N_pde}).  Grid was probably built at train_resolution."
+        )
+        x_coord = inp[0, 1]                   # x-channel: shape (N_pde, N_pde)
+        y_coord = inp[0, 2]                   # y-channel: shape (N_pde, N_pde)
+        assert x_coord.shape == (N_pde, N_pde)
+        assert y_coord.shape == (N_pde, N_pde)
+
+    def test_coord_values_span_zero_to_one_vertex_centred(self):
+        """Coordinate channels must be vertex-centred: first value=0.0, last value=1.0
+        on each axis.  This matches the paper's grid convention and the
+        _build_coord_grid() function in darcy_dataset.py."""
+        N_pde, N_train = 61, 11
+        m = _make_native_pino_module_with_coords(pde_resolution=N_pde, train_resolution=N_train)
+        stub = _InputCapturingModel(torch.zeros(1, 1, N_pde, N_pde))
+        m.model = stub
+
+        batch = _make_native_batch(batch_size=1, train_res=N_train, pde_res=N_pde)
+        m._shared_step(batch, "train")
+
+        inp = stub.captured_input              # (1, 3, 61, 61)
+        assert inp is not None, "Model was never called — captured_input is still None"
+        x_coord = inp[0, 1]                   # varies along rows
+        y_coord = inp[0, 2]                   # varies along columns
+
+        assert x_coord[0, 0].item() == pytest.approx(0.0, abs=1e-6), "x-coord first row != 0"
+        assert x_coord[-1, 0].item() == pytest.approx(1.0, abs=1e-6), "x-coord last row != 1"
+        assert y_coord[0, 0].item() == pytest.approx(0.0, abs=1e-6), "y-coord first col != 0"
+        assert y_coord[0, -1].item() == pytest.approx(1.0, abs=1e-6), "y-coord last col != 1"
+
+    def test_darcy_loss_still_receives_1_channel_raw_permeability(self):
+        """Even with input_coord_channels=True, DarcyLoss must receive the original
+        1-channel permeability a_highres — coord channels must NOT reach the PDE operator."""
+        N_pde, N_train = 31, 16
+        m = _make_native_pino_module_with_coords(pde_resolution=N_pde, train_resolution=N_train)
+        batch = _make_native_batch(batch_size=2, train_res=N_train, pde_res=N_pde)
+        original_a = batch["a_highres"].clone()         # (2, 1, 31, 31)
+
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.5))
+        m._shared_step(batch, "train")
+
+        called_a = m.darcy_loss.call_args[0][1]
+        assert called_a.shape == (2, 1, N_pde, N_pde), (
+            f"DarcyLoss received a with shape {called_a.shape}, expected (2, 1, {N_pde}, {N_pde}). "
+            "coord channels appear to have contaminated the permeability tensor."
+        )
+        torch.testing.assert_close(called_a.cpu(), original_a)
+
+    def test_full_forward_backward_with_coords_and_mollifier(self):
+        """With input_coord_channels=True, bc_mollifier=True, mollifier_scale=0.001:
+        a complete forward+backward pass must not crash and must produce finite gradients.
+        This is the run3a configuration."""
+        m = _make_native_pino_module_with_coords(
+            pde_resolution=31, train_resolution=16,   # small resolution for speed
+            bc_mollifier=True, mollifier_scale=0.001,
+        )
+        batch = _make_native_batch(batch_size=2, train_res=16, pde_res=31)
+
+        loss = m._shared_step(batch, "train")
+        assert loss.dim() == 0
+        assert torch.isfinite(loss), f"Loss is not finite: {loss.item()}"
+
+        loss.backward()
+        grads = [p.grad for p in m.model.parameters() if p.grad is not None]
+        assert len(grads) > 0, "No gradients computed — model may be disconnected"
+        assert all(torch.isfinite(g).all() for g in grads), "Non-finite gradients detected"
+
+    def test_pde_loss_nonzero_with_coords(self):
+        """With input_coord_channels=True, the PDE loss must be > 0.
+        A random FNO initialisation does not satisfy the Darcy equation."""
+        m = _make_native_pino_module_with_coords(pde_resolution=31, train_resolution=16)
+        batch = _make_native_batch(batch_size=2, train_res=16, pde_res=31)
+        m._shared_step(batch, "train")
+
+        pde_log = next(c for c in m.log.call_args_list if c.args[0] == "train_pde_loss")
+        assert pde_log.args[1].item() > 0, (
+            "PDE loss is zero — physics wiring may be broken when coord channels are enabled"
+        )
+
+
+# ─── mollifier_scale in native PINO path (Bug 2 fix) ─────────────────────────
+
+class TestNativeMollifierScale:
+    """Tests for mollifier_scale applied in the native PINO forward pass.
+
+    Before the fix: u_hires_phys = u * bc_mollifier          (effective scale = 1)
+    After the fix:  u_hires_phys = u * (mollifier_scale * bc_mollifier)
+
+    All quantitative tests use _FixedOutputModel + DefaultDataProcessor() (null
+    normaliser) so every tensor value is deterministic and predictable.
+    """
+
+    def test_mollifier_scale_stored_from_native_loss_config(self):
+        """mollifier_scale in the loss config must be stored on the module."""
+        m = _make_native_pino_module(bc_mollifier=True, mollifier_scale=0.001)
+        assert m._mollifier_scale == pytest.approx(0.001)
+
+    def test_scale_multiplies_u_before_darcy_loss(self):
+        """The tensor u passed to DarcyLoss must equal mollifier_scale * mollifier * raw_u.
+
+        Uses a constant model output (2.0 everywhere) and no normaliser so the
+        comparison is exact.  At the interior mid-point where mollifier ≈ 1,
+        u with scale=1.0 must be 10× larger than u with scale=0.1."""
+        N_pde, N_train = 31, 16
+        fixed_out = torch.full((2, 1, N_pde, N_pde), 2.0)
+        batch = _make_native_batch(batch_size=2, train_res=N_train, pde_res=N_pde)
+
+        captured_u = {}
+        for scale in (1.0, 0.1):
+            m = _make_native_pino_module(
+                bc_mollifier=True, mollifier_scale=scale,
+                pde_resolution=N_pde, train_resolution=N_train,
+            )
+            m.model = _FixedOutputModel(fixed_out.clone())
+            m.data_processor = DefaultDataProcessor()
+            m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+            m._shared_step(batch, "train")
+            captured_u[scale] = m.darcy_loss.call_args[0][0].detach().clone()
+
+        mid = N_pde // 2
+        u_s1 = captured_u[1.0][:, :, mid, mid].mean().item()
+        u_s01 = captured_u[0.1][:, :, mid, mid].mean().item()
+        assert u_s1 == pytest.approx(u_s01 * 10.0, rel=0.02), (
+            f"Interior u at scale=1.0 ({u_s1:.4f}) is not 10× "
+            f"interior u at scale=0.1 ({u_s01:.4f}). "
+            "mollifier_scale is not being applied in the native forward path."
+        )
+
+    def test_scale_changes_data_loss_in_native_path(self):
+        """Data loss must differ between mollifier_scale=1.0 and mollifier_scale=0.001.
+
+        Confirms that mollifier_scale reaches the data-loss comparison via the
+        subsampled mollified prediction in the native path.  Uses a constant model
+        output and mocked darcy_loss so PDE loss = 0 and total loss = data loss."""
+        N_pde, N_train = 31, 16
+        fixed_out = torch.full((2, 1, N_pde, N_pde), 3.0)
+        batch = _make_native_batch(batch_size=2, train_res=N_train, pde_res=N_pde)
+
+        losses = {}
+        for scale in (1.0, 0.001):
+            m = _make_native_pino_module(
+                bc_mollifier=True, mollifier_scale=scale,
+                pde_resolution=N_pde, train_resolution=N_train,
+            )
+            m.model = _FixedOutputModel(fixed_out.clone())
+            m.data_processor = DefaultDataProcessor()
+            m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+            losses[scale] = m._shared_step(batch, "train").item()
+
+        assert losses[1.0] != pytest.approx(losses[0.001], rel=0.01), (
+            "Data loss is identical for mollifier_scale=1.0 and 0.001. "
+            "mollifier_scale is not being applied to the native path data loss."
+        )
+
+    def test_scale_matches_exact_lploss_computation(self):
+        """data loss must equal LpLoss(fixed_out * scale * mollifier_subsampled, y) exactly.
+
+        Pins the numerical value so any future refactor that silently drops or
+        misapplies the scale will be caught immediately."""
+        N_pde, N_train = 31, 16
+        scale = 0.5
+        s = (N_pde - 1) // (N_train - 1)     # subsample factor = 2
+        model_val = 4.0
+        fixed_out = torch.full((2, 1, N_pde, N_pde), model_val)
+        y_true = torch.ones(2, 1, N_train, N_train)
+        batch = {
+            "x": torch.zeros(2, 1, N_train, N_train),
+            "y": y_true.clone(),
+            "a_highres": torch.ones(2, 1, N_pde, N_pde),
+        }
+
+        m = _make_native_pino_module(
+            bc_mollifier=True, mollifier_scale=scale,
+            pde_resolution=N_pde, train_resolution=N_train,
+        )
+        m.model = _FixedOutputModel(fixed_out.clone())
+        m.data_processor = DefaultDataProcessor()
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+        actual = m._shared_step(batch, "train").item()
+
+        # Expected: LpLoss(fixed_out * scale * mollifier, subsampled to train_res vs y)
+        mol_full = DarcyLitModule._build_mollifier(N_pde)          # (1,1,31,31)
+        pred_mol = fixed_out * (scale * mol_full)                   # (2,1,31,31)
+        pred_sub = pred_mol[:, :, ::s, ::s]                         # (2,1,16,16)
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        expected = lp(pred_sub, y_true).item()
+
+        assert actual == pytest.approx(expected, rel=1e-4), (
+            f"Native data loss ({actual:.6f}) differs from expected ({expected:.6f}). "
+            "mollifier_scale may be applied in the wrong place or with wrong operands."
+        )
+
+    def test_boundaries_still_zero_with_sub_unit_scale(self):
+        """Even with mollifier_scale=0.001, boundary values passed to DarcyLoss
+        must be exactly zero — the bc_mollifier zeros them before the scale is applied."""
+        N_pde, N_train = 31, 16
+        fixed_out = torch.full((2, 1, N_pde, N_pde), 5.0)
+
+        m = _make_native_pino_module(
+            bc_mollifier=True, mollifier_scale=0.001,
+            pde_resolution=N_pde, train_resolution=N_train,
+        )
+        m.model = _FixedOutputModel(fixed_out.clone())
+        m.data_processor = DefaultDataProcessor()
+
+        captured = {}
+        m.darcy_loss = MagicMock(side_effect=lambda u, _a: (
+            captured.__setitem__("u", u.detach().clone()) or torch.tensor(0.0)
+        ))
+
+        batch = _make_native_batch(batch_size=2, train_res=N_train, pde_res=N_pde)
+        m._shared_step(batch, "train")
+
+        u = captured["u"]
+        assert u[:, :, 0, :].abs().max().item() < 1e-6,  "top boundary not zero with scale=0.001"
+        assert u[:, :, -1, :].abs().max().item() < 1e-6, "bottom boundary not zero"
+        assert u[:, :, :, 0].abs().max().item() < 1e-6,  "left boundary not zero"
+        assert u[:, :, :, -1].abs().max().item() < 1e-6, "right boundary not zero"
