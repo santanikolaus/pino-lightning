@@ -1,6 +1,7 @@
 # @package _global_
-# Run 1h — Model capacity test: hidden_channels=128 (2x paper's 64)
-# Tests if more spectral capacity closes the super-resolution gap
+# Run 1h — BC mollifier (paper scale=0.001) + hidden_channels=128
+# Combines 1g (mollifier) and capacity increase to test if more spectral capacity
+# sustains the early val_61 improvement the mollifier achieves at epoch 2-3
 
 defaults:
   - override /data: darcy_binary
@@ -18,10 +19,14 @@ model:
   positional_embedding: null
   hidden_channels: 128
 
+loss:
+  bc_mollifier: true
+  mollifier_scale: 0.001
+
 trainer:
   max_epochs: 300
 
 logger:
   wandb:
     project: lowres-binary-paper
-    name: run1h_capacity_128ch
+    name: run1h_mollifier_128ch

@@ -52,7 +52,7 @@ with torch.no_grad():
             preds = dm.data_processor.postprocess(preds)
             if model._bc_mollifier is not None:
                 mol   = DarcyLitModule._build_mollifier(preds.shape[-1]).to(device)
-                preds = preds * mol
+                preds = preds * (model._mollifier_scale * mol)
             num   += lp(preds, data['y']).item() * data['y'].shape[0]
             denom += data['y'].shape[0]
         print(f'val_{res}_l2 = {num/denom*100:.4f}%')
