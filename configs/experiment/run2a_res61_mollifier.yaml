@@ -30,5 +30,5 @@ trainer:
 
 logger:
   wandb:
-    project: lowres-binary-paper
+    project: lowres64-binary-paper
     name: run2a_res61_mollifier
