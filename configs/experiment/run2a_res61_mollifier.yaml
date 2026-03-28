@@ -1,0 +1,34 @@
+# @package _global_
+# Run 2a — Tier 1: train at 61×61 with paper data/loss setup
+# Same mollifier + coords as run1g, but training resolution lifted from 11 → 61.
+# Objective: reproduce paper's Table 1 data-only result trained at 61×61.
+# Paper targets (data-only binary): val_11 ≈ 5.41%, val_61 ≈ 9.01%, val_211 ≈ 9.46%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: data_only
+
+data:
+  train_resolution: 61
+  test_resolutions: [11, 61, 211]
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+
+model:
+  data_channels: 3
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  bc_mollifier: true
+  mollifier_scale: 0.001
+
+trainer:
+  max_epochs: 300
+
+logger:
+  wandb:
+    project: lowres-binary-paper
+    name: run2a_res61_mollifier
