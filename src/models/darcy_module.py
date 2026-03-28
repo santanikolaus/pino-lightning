@@ -3,6 +3,7 @@ import torch
 
 from typing import Any, Dict, Mapping, Optional
 from src.datasets.transforms.data_processors import DefaultDataProcessor
+from src.datasets.darcy_dataset import _build_coord_grid
 from src.pde.darcy import DarcyLoss
 from neuralop import get_model, LpLoss, H1Loss
 from neuralop.training import AdamW
@@ -46,6 +47,7 @@ class DarcyLitModule(L.LightningModule):
 
         data_cfg = _get(config, "data")
         self._train_resolution: int = _get(data_cfg, "train_resolution", 16)
+        self._input_coord_channels: bool = _get(data_cfg, "input_coord_channels", False)
 
         self.darcy_loss: Optional[DarcyLoss] = None
         self._pde_resolution: Optional[int] = None
@@ -137,16 +139,20 @@ class DarcyLitModule(L.LightningModule):
 
             # Forward pass at pde_resolution (native FNO output)
             a_hires_norm = self._normalize_input(a_hires_raw)
-            u_hires_norm = self.model(a_hires_norm)
+            if self._input_coord_channels:
+                grid = _build_coord_grid(a_hires_norm.shape[-1]).to(self.device)    # (2, H, W)
+                grid = grid.unsqueeze(0).expand(a_hires_norm.shape[0], -1, -1, -1) # (N, 2, H, W)
+                a_hires_input = torch.cat([a_hires_norm, grid], dim=1)              # (N, 3, H, W)
+            else:
+                a_hires_input = a_hires_norm
+            u_hires_norm = self.model(a_hires_input)
 
             # Denormalize to physical space and apply BC mollifier.
             # Paper: prediction = m · ũ; both losses use this mollified
             # prediction so that the data and PDE objectives are consistent.
             u_hires_phys = self._denormalize_for_physics(u_hires_norm)
             if self._bc_mollifier is not None:
-                # TODO(PINO-parity): fold self._mollifier_scale into this native
-                # PDE branch so both losses match the paper's 0.001·sin·sin mask.
-                u_hires_phys = u_hires_phys * self._bc_mollifier
+                u_hires_phys = u_hires_phys * (self._mollifier_scale * self._bc_mollifier)
 
             # Data loss: subsample prediction to train_resolution
             s = self._subsample_factor

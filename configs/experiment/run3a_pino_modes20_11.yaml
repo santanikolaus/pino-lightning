@@ -1,0 +1,34 @@
+# @package _global_
+# Run 3a — PINO: 11×11 data loss + 61×61 PDE loss, modes=20
+#
+# Key idea: data loss (11×11) trains modes 0–5 only (rfft of 11 points gives 6 bins).
+# PDE loss at 61×61 gives modes 6–20 their only gradient signal — the model learns
+# coarse structure from data and fine structure from physics.
+# pde_weight=0.1, data_weight=1.0 confirmed effective in a prior run.
+#
+# Paper PINO targets (data-only 11×11 baseline run): val_11=5.23%, val_61=4.77%, val_211=4.97%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+  pde_resolution: 61        # triggers PairedResolutionDataset in DarcyDataModule
+
+model:
+  data_channels: 3          # permeability + x-coord + y-coord
+  n_modes: [20, 20]         # modes 6–20 receive gradients from the 61×61 PDE loss
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+trainer:
+  max_epochs: 500
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run3a_pino_modes20_11
