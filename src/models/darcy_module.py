@@ -48,12 +48,14 @@ class DarcyLitModule(L.LightningModule):
         data_cfg = _get(config, "data")
         self._train_resolution: int = _get(data_cfg, "train_resolution", 16)
         self._input_coord_channels: bool = _get(data_cfg, "input_coord_channels", False)
+        self._dual_data_pass: bool = _get(loss_cfg, "dual_data_pass", False)
 
         self.darcy_loss: Optional[DarcyLoss] = None
         self._pde_resolution: Optional[int] = None
         self._subsample_factor: Optional[int] = None
         self._mollifier_scale: float = _get(loss_cfg, "mollifier_scale", 1.0)
         self.register_buffer("_bc_mollifier", None)
+        self.register_buffer("_bc_mollifier_train", None)
         if self._pde_weight > 0:
             pde_res = _get(loss_cfg, "pde_resolution", None)
             if pde_res is None:
@@ -78,6 +80,8 @@ class DarcyLitModule(L.LightningModule):
 
             if _get(loss_cfg, "bc_mollifier", False):
                 self._bc_mollifier = self._build_mollifier(pde_res)
+                if self._dual_data_pass:
+                    self._bc_mollifier_train = self._build_mollifier(self._train_resolution)
         elif _get(loss_cfg, "bc_mollifier", False):
             # Data-only mode: build mollifier at train resolution
             self._bc_mollifier = self._build_mollifier(self._train_resolution)
@@ -137,41 +141,62 @@ class DarcyLitModule(L.LightningModule):
             self.data_processor.train(True)
             a_hires_raw = batch["a_highres"][:, :1].to(self.device)
 
-            # Forward pass at pde_resolution (native FNO output)
-            a_hires_norm = self._normalize_input(a_hires_raw)
-            if self._input_coord_channels:
-                grid = _build_coord_grid(a_hires_norm.shape[-1]).to(self.device)    # (2, H, W)
-                grid = grid.unsqueeze(0).expand(a_hires_norm.shape[0], -1, -1, -1) # (N, 2, H, W)
-                a_hires_input = torch.cat([a_hires_norm, grid], dim=1)              # (N, 3, H, W)
-            else:
-                a_hires_input = a_hires_norm
-            u_hires_norm = self.model(a_hires_input)
+            if self._dual_data_pass:
+                # ── Pass 1: data loss at train_resolution (paper-faithful) ──────
+                # batch["x"] already has coord channels when input_coord_channels=True
+                # (added at dataset level); _prepare_batch normalizes it.
+                data = self._prepare_batch(batch, True)
+                u_train_norm = self.model(data["x"])
+                u_train_phys = self._denormalize_for_physics(u_train_norm)
+                if self._bc_mollifier_train is not None:
+                    u_train_mol = u_train_phys * (
+                        self._mollifier_scale * self._bc_mollifier_train
+                    )
+                    raw_data = self.train_loss(u_train_mol, batch["y"].to(self.device))
+                else:
+                    raw_data = self.train_loss(u_train_norm, data["y"])
 
-            # Denormalize to physical space and apply BC mollifier.
-            # Paper: prediction = m · ũ; both losses use this mollified
-            # prediction so that the data and PDE objectives are consistent.
-            u_hires_phys = self._denormalize_for_physics(u_hires_norm)
-            if self._bc_mollifier is not None:
-                u_hires_phys = u_hires_phys * (self._mollifier_scale * self._bc_mollifier)
+                # ── Pass 2: PDE loss at pde_resolution ──────────────────────────
+                a_hires_norm = self._normalize_input(a_hires_raw)
+                if self._input_coord_channels:
+                    grid = _build_coord_grid(a_hires_norm.shape[-1]).to(self.device)
+                    grid = grid.unsqueeze(0).expand(a_hires_norm.shape[0], -1, -1, -1)
+                    a_hires_input = torch.cat([a_hires_norm, grid], dim=1)
+                else:
+                    a_hires_input = a_hires_norm
+                u_hires_norm = self.model(a_hires_input)
+                u_hires_phys = self._denormalize_for_physics(u_hires_norm)
+                if self._bc_mollifier is not None:
+                    u_hires_phys = u_hires_phys * (self._mollifier_scale * self._bc_mollifier)
+                raw_pde = self.darcy_loss(u_hires_phys, a_hires_raw)
 
-            # Data loss: subsample prediction to train_resolution
-            s = self._subsample_factor
-            if self._bc_mollifier is not None:
-                # Mollified prediction — compare in physical space
-                u_pred_train = u_hires_phys[:, :, ::s, ::s]
-                y_true = batch["y"].to(self.device)
-                raw_data = self.train_loss(u_pred_train, y_true)
             else:
-                # No mollifier — compare in normalized space (original)
-                u_lowres_norm = u_hires_norm[:, :, ::s, ::s]
-                y_norm = self._normalize_output(batch["y"].to(self.device))
-                raw_data = self.train_loss(u_lowres_norm, y_norm)
+                # ── Original single-pass: forward at pde_resolution, subsample for data ──
+                a_hires_norm = self._normalize_input(a_hires_raw)
+                if self._input_coord_channels:
+                    grid = _build_coord_grid(a_hires_norm.shape[-1]).to(self.device)
+                    grid = grid.unsqueeze(0).expand(a_hires_norm.shape[0], -1, -1, -1)
+                    a_hires_input = torch.cat([a_hires_norm, grid], dim=1)
+                else:
+                    a_hires_input = a_hires_norm
+                u_hires_norm = self.model(a_hires_input)
+                u_hires_phys = self._denormalize_for_physics(u_hires_norm)
+                if self._bc_mollifier is not None:
+                    u_hires_phys = u_hires_phys * (self._mollifier_scale * self._bc_mollifier)
+                s = self._subsample_factor
+                if self._bc_mollifier is not None:
+                    raw_data = self.train_loss(
+                        u_hires_phys[:, :, ::s, ::s], batch["y"].to(self.device)
+                    )
+                else:
+                    raw_data = self.train_loss(
+                        u_hires_norm[:, :, ::s, ::s],
+                        self._normalize_output(batch["y"].to(self.device)),
+                    )
+                raw_pde = self.darcy_loss(u_hires_phys, a_hires_raw)
+
             data_loss = self._data_weight * raw_data
-
-            # PDE loss at pde_resolution
-            raw_pde = self.darcy_loss(u_hires_phys, a_hires_raw)
-            pde_loss = self._pde_weight * raw_pde
-
+            pde_loss  = self._pde_weight  * raw_pde
             loss = data_loss + pde_loss
             self.log("train_data_loss", data_loss, on_step=True, on_epoch=True,
                      sync_dist=sync_dist)
