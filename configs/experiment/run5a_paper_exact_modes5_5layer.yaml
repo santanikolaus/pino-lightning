@@ -1,0 +1,56 @@
+# @package _global_
+# Run 5a — paper-exact: modes=5, n_layers=5, pde_weight=1.0, MultiStepLR, 500 epochs
+#
+# Isolates the two remaining unmatched elements vs paper-pino config:
+#   1. n_modes=[5,5]:  paper uses modes1/2=[5,5,5,5] — at 11×11 input, rfft2 yields
+#      only 6 usable frequencies, so modes=20 means modes 6–19 receive PDE gradient
+#      (61×61) but NO data gradient. modes=5 ensures every spectral mode gets signal
+#      from both passes, eliminating the gradient conflict that caused pde_loss_raw
+#      to stagnate at ~6.4 in runs 4a/4b.
+#   2. n_layers=5: paper uses layers=[64,64,64,64,64] — 5 spectral blocks vs our
+#      default 4. Paper-pino Run B (5-layer) gives 47.68% from scratch vs 3b's 72%.
+#
+# Everything else already matches the paper:
+#   - bc_mollifier=true, mollifier_scale=0.001 (from configs/loss/pino.yaml defaults)
+#   - dual_data_pass=true, data_weight=5.0, pde_weight=1.0
+#   - MultiStepLR milestones=[100,200,300], input_coord_channels=true
+#
+# Hypothesis: modes=5 fixes the gradient conflict → pde_loss_raw descends below 1.0
+# and val_61/211 follow the paper toward ~1.56%/1.58%.
+#
+# Run 4a (modes=20, n_layers=4): val_11=5.49%, val_61=21.82%, val_211=21.44% (ep994)
+# Paper PINO targets: val_11=5.23%, val_61=1.56%, val_211=1.58%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+  pde_resolution: 61
+
+model:
+  data_channels: 3
+  n_modes: [5, 5]
+  n_layers: 5
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  dual_data_pass: true
+  data_weight: 5.0
+  pde_weight: 1.0
+
+opt:
+  milestones: [100, 200, 300]
+
+trainer:
+  max_epochs: 500
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run5a_paper_exact_modes5_5layer
