@@ -677,7 +677,8 @@ def _make_native_pino_module(pde_resolution: int = 61, train_resolution: int = 1
                               bc_mollifier: bool = False,
                               mollifier_scale: float = 1.0,
                               forcing: float = 1.0,
-                              forcing_is_coeff_scaled: bool = False):
+                              forcing_is_coeff_scaled: bool = False,
+                              dual_data_pass: bool = False):
     """Create a PINO module configured for the native high-res forward pass path."""
     base = OmegaConf.to_container(_make_config())
     base["loss"] = {
@@ -689,6 +690,7 @@ def _make_native_pino_module(pde_resolution: int = 61, train_resolution: int = 1
         "mollifier_scale": mollifier_scale,
         "forcing": forcing,
         "forcing_is_coeff_scaled": forcing_is_coeff_scaled,
+        "dual_data_pass": dual_data_pass,
     }
     base["data"] = {"train_resolution": train_resolution}
     cfg = OmegaConf.create(base)
@@ -1522,11 +1524,12 @@ def _make_native_pino_module_with_coords(
     data_weight: float = 1.0,
     bc_mollifier: bool = False,
     mollifier_scale: float = 1.0,
+    dual_data_pass: bool = False,
 ):
     """Native PINO module with input_coord_channels=True and a 3-channel FNO.
 
     Mirrors _make_native_pino_module but sets data_channels=3 in the model config
-    and input_coord_channels=True in the data config, matching run3a.
+    and input_coord_channels=True in the data config, matching run3a/run3b.
     """
     base = OmegaConf.to_container(_make_config())
     base["model"]["data_channels"] = 3          # permeability + x-coord + y-coord
@@ -1539,6 +1542,7 @@ def _make_native_pino_module_with_coords(
         "mollifier_scale": mollifier_scale,
         "forcing": 1.0,
         "forcing_is_coeff_scaled": False,
+        "dual_data_pass": dual_data_pass,
     }
     base["data"] = {
         "train_resolution": train_resolution,
@@ -1837,3 +1841,503 @@ class TestNativeMollifierScale:
         assert u[:, :, -1, :].abs().max().item() < 1e-6, "bottom boundary not zero"
         assert u[:, :, :, 0].abs().max().item() < 1e-6,  "left boundary not zero"
         assert u[:, :, :, -1].abs().max().item() < 1e-6, "right boundary not zero"
+
+
+# ─── Resolution-dispatching model stub ───────────────────────────────────────
+
+class _ResolutionDispatchModel(torch.nn.Module):
+    """Returns a fixed output tensor keyed by the spatial resolution of the input.
+
+    Captures every call's input tensor for per-call assertions.
+    No learnable parameters — do not use where loss.backward() is required.
+
+    Example::
+        model = _ResolutionDispatchModel({
+            11: torch.zeros(2, 1, 11, 11),
+            31: torch.zeros(2, 1, 31, 31),
+        })
+    """
+
+    def __init__(self, outputs_by_resolution: dict) -> None:
+        super().__init__()
+        self._outputs = outputs_by_resolution   # {int(res): Tensor}
+        self.captured_inputs: list = []
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self.captured_inputs.append(x.detach().clone())
+        return self._outputs[x.shape[-1]]
+
+
+def _make_dual_pass_batch(batch_size: int = 2, train_res: int = 16, pde_res: int = 31,
+                           train_channels: int = 1):
+    """Training batch for dual-pass tests.
+
+    train_channels=3 when input_coord_channels=True (dataset would have added coords).
+    """
+    return {
+        "x": torch.randn(batch_size, train_channels, train_res, train_res),
+        "y": torch.randn(batch_size, 1, train_res, train_res),
+        "a_highres": torch.randn(batch_size, 1, pde_res, pde_res).abs() + 0.1,
+    }
+
+
+# ─── Dual forward pass tests ─────────────────────────────────────────────────
+
+class TestDualDataPass:
+    """Tests for the paper-faithful dual forward pass (dual_data_pass=True).
+
+    The paper runs two separate model calls per training step:
+      Pass 1 — data loss at train_resolution (batch["x"] → model → mollify → L2 vs y)
+      Pass 2 — PDE loss at pde_resolution   (a_highres → model → mollify → DarcyLoss)
+
+    All numerical tests use DefaultDataProcessor (no normalizers) and synthetic
+    tensors with analytically-known values to avoid real-data dependency.
+    """
+
+    # ── Flag / init ────────────────────────────────────────────────────────
+
+    def test_dual_data_pass_flag_defaults_false(self):
+        """Default module has dual_data_pass=False (backwards compat)."""
+        m = _make_native_pino_module()
+        assert m._dual_data_pass is False
+
+    def test_dual_data_pass_flag_stored_true(self):
+        """Module with dual_data_pass=True stores the flag correctly."""
+        m = _make_native_pino_module(dual_data_pass=True)
+        assert m._dual_data_pass is True
+
+    def test_train_mollifier_buffer_built_at_train_res(self):
+        """_bc_mollifier_train must be built at train_resolution, not pde_resolution."""
+        N_train, N_pde = 16, 31
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train,
+            bc_mollifier=True, dual_data_pass=True,
+        )
+        assert m._bc_mollifier_train is not None
+        assert m._bc_mollifier_train.shape == (1, 1, N_train, N_train), (
+            f"Expected (1,1,{N_train},{N_train}), got {m._bc_mollifier_train.shape}"
+        )
+
+    def test_train_mollifier_not_built_when_dual_pass_false(self):
+        """_bc_mollifier_train stays None when dual_data_pass=False."""
+        m = _make_native_pino_module(
+            bc_mollifier=True, dual_data_pass=False,
+        )
+        assert m._bc_mollifier_train is None
+
+    # ── Call-count / resolution ────────────────────────────────────────────
+
+    def test_dual_pass_makes_two_model_calls(self):
+        """dual_data_pass=True must invoke model.forward() exactly twice per step."""
+        N_train, N_pde = 16, 31
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.zeros(2, 1, N_train, N_train),
+            N_pde:   torch.zeros(2, 1, N_pde,   N_pde),
+        })
+        m.model = dispatch
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+
+        m._shared_step(_make_dual_pass_batch(train_res=N_train, pde_res=N_pde), "train")
+        assert len(dispatch.captured_inputs) == 2, (
+            f"Expected 2 forward calls, got {len(dispatch.captured_inputs)}"
+        )
+
+    def test_single_pass_makes_one_model_call(self):
+        """dual_data_pass=False (default) calls the model exactly once."""
+        N_train, N_pde = 16, 31
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train, dual_data_pass=False,
+        )
+        m.data_processor = DefaultDataProcessor()
+        stub = _InputCapturingModel(torch.zeros(2, 1, N_pde, N_pde))
+        m.model = stub
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+
+        m._shared_step(_make_dual_pass_batch(train_res=N_train, pde_res=N_pde), "train")
+        # _InputCapturingModel only stores the last input; verify it was called at pde_res
+        assert stub.captured_input is not None
+        assert stub.captured_input.shape[-1] == N_pde
+
+    def test_first_call_has_train_resolution(self):
+        """In dual-pass mode the first forward call receives a train_resolution input."""
+        N_train, N_pde = 16, 31
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.zeros(2, 1, N_train, N_train),
+            N_pde:   torch.zeros(2, 1, N_pde,   N_pde),
+        })
+        m.model = dispatch
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+
+        m._shared_step(_make_dual_pass_batch(train_res=N_train, pde_res=N_pde), "train")
+        inp0 = dispatch.captured_inputs[0]
+        assert inp0.shape[-2] == N_train and inp0.shape[-1] == N_train, (
+            f"First call spatial shape {inp0.shape[-2:]} != ({N_train},{N_train})"
+        )
+
+    def test_second_call_has_pde_resolution(self):
+        """In dual-pass mode the second forward call receives a pde_resolution input."""
+        N_train, N_pde = 16, 31
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.zeros(2, 1, N_train, N_train),
+            N_pde:   torch.zeros(2, 1, N_pde,   N_pde),
+        })
+        m.model = dispatch
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+
+        m._shared_step(_make_dual_pass_batch(train_res=N_train, pde_res=N_pde), "train")
+        inp1 = dispatch.captured_inputs[1]
+        assert inp1.shape[-2] == N_pde and inp1.shape[-1] == N_pde, (
+            f"Second call spatial shape {inp1.shape[-2:]} != ({N_pde},{N_pde})"
+        )
+
+    def test_first_call_has_3_channels_with_coords(self):
+        """With input_coord_channels=True the data-pass input has 3 channels."""
+        N_train, N_pde = 11, 31
+        m = _make_native_pino_module_with_coords(
+            pde_resolution=N_pde, train_resolution=N_train, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.zeros(2, 1, N_train, N_train),
+            N_pde:   torch.zeros(2, 1, N_pde,   N_pde),
+        })
+        m.model = dispatch
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+
+        batch = _make_dual_pass_batch(train_res=N_train, pde_res=N_pde, train_channels=3)
+        m._shared_step(batch, "train")
+        assert dispatch.captured_inputs[0].shape[1] == 3, (
+            f"Expected 3-channel data-pass input, got {dispatch.captured_inputs[0].shape[1]}"
+        )
+
+    def test_first_call_has_1_channel_without_coords(self):
+        """Without coord channels the data-pass input has 1 channel (permeability only)."""
+        N_train, N_pde = 16, 31
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.zeros(2, 1, N_train, N_train),
+            N_pde:   torch.zeros(2, 1, N_pde,   N_pde),
+        })
+        m.model = dispatch
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+
+        m._shared_step(_make_dual_pass_batch(train_res=N_train, pde_res=N_pde), "train")
+        assert dispatch.captured_inputs[0].shape[1] == 1, (
+            f"Expected 1-channel data-pass input, got {dispatch.captured_inputs[0].shape[1]}"
+        )
+
+    # ── Numerical / analytical ─────────────────────────────────────────────
+
+    def test_data_loss_from_train_res_pass_not_pde_subsampled(self):
+        """Data loss must use the train_resolution forward pass output, not the
+        subsampled pde_resolution output.
+
+        We set model output at train_res = val_A and at pde_res = val_B (val_A != val_B).
+        With mock DarcyLoss=0, the logged train_data_loss_raw must equal
+        LpLoss(val_A * scale * mol_train, y), NOT LpLoss(val_B_subsampled * ..., y).
+        """
+        N_train, N_pde, B = 16, 31, 2
+        val_A, val_B = 2.0, 7.0     # deliberately very different
+        scale = 0.5
+        y_true = torch.ones(B, 1, N_train, N_train)
+
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train,
+            bc_mollifier=True, mollifier_scale=scale, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.full((B, 1, N_train, N_train), val_A),
+            N_pde:   torch.full((B, 1, N_pde,   N_pde),   val_B),
+        })
+        m.model = dispatch
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+
+        batch = _make_dual_pass_batch(batch_size=B, train_res=N_train, pde_res=N_pde)
+        batch["y"] = y_true.clone()
+        m._shared_step(batch, "train")
+
+        # Expected: data loss from val_A pass
+        mol_train = DarcyLitModule._build_mollifier(N_train)        # (1,1,16,16)
+        pred_mol_A = torch.full((B, 1, N_train, N_train), val_A) * (scale * mol_train)
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        expected = (lp(pred_mol_A, y_true) * m._data_weight).item()
+
+        logged = {c.args[0]: c.args[1] for c in m.log.call_args_list}
+        actual = logged["train_data_loss"].item()
+        assert actual == pytest.approx(expected, rel=1e-4), (
+            f"data loss {actual} != expected from train_res pass {expected}"
+        )
+
+        # Also confirm: val_B subsampled would give a different answer
+        s = (N_pde - 1) // (N_train - 1)
+        mol_pde_sub = DarcyLitModule._build_mollifier(N_pde)[:, :, ::s, ::s]
+        pred_mol_B_sub = torch.full((B, 1, N_train, N_train), val_B) * (scale * mol_pde_sub)
+        wrong = (lp(pred_mol_B_sub, y_true) * m._data_weight).item()
+        assert actual != pytest.approx(wrong, rel=0.01), (
+            "data loss coincidentally equals the subsampled-pde value — test is inconclusive"
+        )
+
+    def test_pde_loss_u_has_pde_resolution(self):
+        """The tensor u passed to DarcyLoss must have pde_resolution spatial dims."""
+        N_train, N_pde, B = 16, 31, 2
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train,
+            bc_mollifier=True, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.zeros(B, 1, N_train, N_train),
+            N_pde:   torch.randn(B, 1, N_pde,   N_pde),
+        })
+        m.model = dispatch
+        captured = {}
+        m.darcy_loss = MagicMock(side_effect=lambda u, _a: (
+            captured.__setitem__("u", u.detach().clone()) or torch.tensor(0.0)
+        ))
+
+        m._shared_step(_make_dual_pass_batch(batch_size=B, train_res=N_train, pde_res=N_pde), "train")
+        assert "u" in captured
+        assert captured["u"].shape[-1] == N_pde, (
+            f"DarcyLoss received u with spatial size {captured['u'].shape[-1]}, expected {N_pde}"
+        )
+
+    def test_pde_loss_u_is_mollified_at_pde_scale(self):
+        """The u passed to DarcyLoss must equal model_out * scale * mol_pde.
+
+        At the exact center of an odd-sized grid, sin(π*0.5)=1, so the mollifier
+        value is 1.0 and the interior u value = model_out_val * scale * 1.0² = val * scale.
+        """
+        N_train, N_pde, B = 16, 31, 2
+        val_pde, scale = 4.0, 0.5
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train,
+            bc_mollifier=True, mollifier_scale=scale, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.zeros(B, 1, N_train, N_train),
+            N_pde:   torch.full((B, 1, N_pde, N_pde), val_pde),
+        })
+        m.model = dispatch
+        captured = {}
+        m.darcy_loss = MagicMock(side_effect=lambda u, _a: (
+            captured.__setitem__("u", u.detach().clone()) or torch.tensor(0.0)
+        ))
+
+        m._shared_step(_make_dual_pass_batch(batch_size=B, train_res=N_train, pde_res=N_pde), "train")
+        u = captured["u"]
+        # Center of 31×31 grid: index 15, coord = 15/30 = 0.5 → sin(π*0.5)=1.0
+        center = N_pde // 2
+        expected_center = val_pde * scale * 1.0 * 1.0   # sin²(π*0.5) = 1
+        assert u[0, 0, center, center].item() == pytest.approx(expected_center, rel=1e-5), (
+            f"Interior center value {u[0,0,center,center].item()} != {expected_center}"
+        )
+
+    def test_exact_total_loss_dual_pass(self):
+        """Total loss = data_weight * raw_data + pde_weight * raw_pde, computed exactly.
+
+        Uses known constant model outputs at both resolutions and a mock pde_loss value.
+        """
+        N_train, N_pde, B = 16, 31, 2
+        val_A, val_B = 2.0, 3.0
+        scale = 0.5
+        data_w, pde_w = 5.0, 1.0
+        pde_val = 0.3
+        y_true = torch.ones(B, 1, N_train, N_train)
+
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train,
+            bc_mollifier=True, mollifier_scale=scale,
+            data_weight=data_w, pde_weight=pde_w, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.full((B, 1, N_train, N_train), val_A),
+            N_pde:   torch.full((B, 1, N_pde,   N_pde),   val_B),
+        })
+        m.model = dispatch
+        m.darcy_loss = MagicMock(return_value=torch.tensor(pde_val))
+
+        batch = _make_dual_pass_batch(batch_size=B, train_res=N_train, pde_res=N_pde)
+        batch["y"] = y_true.clone()
+        total = m._shared_step(batch, "train").item()
+
+        mol_train = DarcyLitModule._build_mollifier(N_train)
+        pred_mol_A = torch.full((B, 1, N_train, N_train), val_A) * (scale * mol_train)
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        raw_data = lp(pred_mol_A, y_true).item()
+        expected = data_w * raw_data + pde_w * pde_val
+        assert total == pytest.approx(expected, rel=1e-4), (
+            f"total loss {total} != {expected}"
+        )
+
+    def test_data_loss_zero_when_prediction_matches_labels_dual_pass(self):
+        """Data loss must be zero when model output * scale * mol_train == y exactly."""
+        N_train, N_pde, B = 16, 31, 2
+        scale = 1.0
+        val_out = 3.0
+        mol_train = DarcyLitModule._build_mollifier(N_train)  # (1,1,16,16)
+        y_true = torch.full((B, 1, N_train, N_train), val_out) * mol_train   # pred*mol == y
+
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train,
+            bc_mollifier=True, mollifier_scale=scale, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.full((B, 1, N_train, N_train), val_out),
+            N_pde:   torch.zeros(B, 1, N_pde, N_pde),
+        })
+        m.model = dispatch
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+
+        batch = _make_dual_pass_batch(batch_size=B, train_res=N_train, pde_res=N_pde)
+        batch["y"] = y_true.clone()
+        m._shared_step(batch, "train")
+
+        logged = {c.args[0]: c.args[1] for c in m.log.call_args_list}
+        raw_data = logged["train_data_loss_raw"].item()
+        assert raw_data < 1e-6, f"Data loss should be zero for exact match, got {raw_data}"
+
+    def test_pde_loss_nonzero_for_random_output(self):
+        """PDE loss must be nonzero when model outputs a random (non-physics) tensor."""
+        N_train, N_pde, B = 16, 31, 2
+        torch.manual_seed(42)
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train,
+            bc_mollifier=True, mollifier_scale=0.001, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.randn(B, 1, N_train, N_train),
+            N_pde:   torch.randn(B, 1, N_pde,   N_pde),
+        })
+        m.model = dispatch
+
+        m._shared_step(_make_dual_pass_batch(batch_size=B, train_res=N_train, pde_res=N_pde), "train")
+        logged = {c.args[0]: c.args[1] for c in m.log.call_args_list}
+        assert logged["train_pde_loss_raw"].item() > 0
+
+    def test_all_expected_keys_logged(self):
+        """dual_data_pass must log all five training metric keys."""
+        N_train, N_pde, B = 16, 31, 2
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        dispatch = _ResolutionDispatchModel({
+            N_train: torch.zeros(B, 1, N_train, N_train),
+            N_pde:   torch.zeros(B, 1, N_pde,   N_pde),
+        })
+        m.model = dispatch
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.1))
+
+        m._shared_step(_make_dual_pass_batch(batch_size=B, train_res=N_train, pde_res=N_pde), "train")
+        logged_keys = {c.args[0] for c in m.log.call_args_list}
+        expected = {"train_data_loss", "train_pde_loss",
+                    "train_data_loss_raw", "train_pde_loss_raw", "train_loss"}
+        assert expected <= logged_keys, f"Missing keys: {expected - logged_keys}"
+
+    # ── Gradient ───────────────────────────────────────────────────────────
+
+    def test_grad_flows_through_both_passes(self):
+        """loss.backward() must propagate finite gradients through both forward passes.
+
+        Confirms that both the train-resolution and pde-resolution paths share the same
+        model parameters and that both contribute to the gradient.
+        """
+        N_train, N_pde = 11, 31
+        m = _make_native_pino_module_with_coords(
+            pde_resolution=N_pde, train_resolution=N_train,
+            bc_mollifier=True, mollifier_scale=0.001,
+            dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+
+        batch = _make_dual_pass_batch(
+            batch_size=2, train_res=N_train, pde_res=N_pde, train_channels=3,
+        )
+        loss = m._shared_step(batch, "train")
+        loss.backward()
+
+        for name, p in m.model.named_parameters():
+            assert p.grad is not None, f"No gradient for {name}"
+            assert torch.isfinite(p.grad).all(), f"Non-finite gradient for {name}"
+
+    # ── Eval / backwards-compat ────────────────────────────────────────────
+
+    def test_eval_step_unchanged_by_dual_pass_flag(self):
+        """Validation step must be identical regardless of dual_data_pass setting."""
+        N_val = 11
+        m = _make_native_pino_module(
+            pde_resolution=31, train_resolution=16, dual_data_pass=True,
+        )
+        m.data_processor = DefaultDataProcessor()
+        m.model = _FixedOutputModel(torch.zeros(2, 1, N_val, N_val))
+
+        # Validation batch has no a_highres — goes through the standard eval path
+        batch_val = {"x": torch.randn(2, 1, N_val, N_val), "y": torch.randn(2, 1, N_val, N_val)}
+        m._shared_step(batch_val, "val", "val_11")
+
+        logged_keys = {c.args[0] for c in m.log.call_args_list}
+        assert "val_11_l2" in logged_keys
+        assert "val_11_h1" in logged_keys
+        assert not any(k.startswith("train_") for k in logged_keys), (
+            f"Eval step logged unexpected train keys: "
+            f"{[k for k in logged_keys if k.startswith('train_')]}"
+        )
+
+    def test_single_pass_data_loss_is_subsampled_pde_output(self):
+        """Regression guard: with dual_data_pass=False the data loss must equal
+        LpLoss(pde_output_subsampled * scale * mol_pde_sub, y).
+
+        This confirms the original single-pass path is not broken by the refactor.
+        """
+        N_train, N_pde, B = 16, 31, 2
+        val_B = 5.0
+        scale = 0.5
+        y_true = torch.ones(B, 1, N_train, N_train)
+        s = (N_pde - 1) // (N_train - 1)       # subsample factor = 2
+
+        m = _make_native_pino_module(
+            pde_resolution=N_pde, train_resolution=N_train,
+            bc_mollifier=True, mollifier_scale=scale, dual_data_pass=False,
+        )
+        m.data_processor = DefaultDataProcessor()
+        # Single-pass: only pde_res is called
+        stub = _FixedOutputModel(torch.full((B, 1, N_pde, N_pde), val_B))
+        m.model = stub
+        m.darcy_loss = MagicMock(return_value=torch.tensor(0.0))
+
+        batch = _make_dual_pass_batch(batch_size=B, train_res=N_train, pde_res=N_pde)
+        batch["y"] = y_true.clone()
+        m._shared_step(batch, "train")
+
+        # Expected: subsample pde output → apply mollifier at pde_res → subsample
+        mol_pde = DarcyLitModule._build_mollifier(N_pde)         # (1,1,31,31)
+        pred_pde_mol = torch.full((B, 1, N_pde, N_pde), val_B) * (scale * mol_pde)
+        pred_sub = pred_pde_mol[:, :, ::s, ::s]                  # (B,1,16,16)
+        lp = LpLoss(d=2, p=2, reduction="mean")
+        expected = (lp(pred_sub, y_true) * m._data_weight).item()
+
+        logged = {c.args[0]: c.args[1] for c in m.log.call_args_list}
+        actual = logged["train_data_loss"].item()
+        assert actual == pytest.approx(expected, rel=1e-4), (
+            f"Single-pass data loss {actual} != expected {expected}"
+        )
