@@ -22,3 +22,7 @@ forcing_is_coeff_scaled: false
 # the physics residual to exactly enforce zero Dirichlet BCs (PINO paper, App. A.2).
 bc_mollifier: true
 mollifier_scale: 0.001
+
+# When true, run a separate forward pass at train_resolution for the data loss
+# (paper-faithful dual pass). When false, subsample the pde_resolution output.
+dual_data_pass: false

@@ -1,0 +1,42 @@
+# @package _global_
+# Run 3b — PINO dual forward pass, paper-faithful
+#
+# Two forward passes per training step:
+#   Pass 1: model(a_11x11) → data loss at train resolution
+#   Pass 2: model(a_61x61) → PDE loss at pde resolution
+#
+# This matches paper-pino/train_darcy.py exactly.
+# modes=5 matches paper (max usable at 11×11 rfft).
+# Weights data=5.0, pde=1.0 match paper Darcy-11x11-pino.yaml.
+#
+# Paper PINO targets: val_11=5.23%, val_61=1.56%, val_211=1.58%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+  pde_resolution: 61
+
+model:
+  data_channels: 3
+  n_modes: [5, 5]
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  dual_data_pass: true
+  data_weight: 5.0
+  pde_weight: 1.0
+
+trainer:
+  max_epochs: 500
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run3b_pino_dual_pass_modes5
