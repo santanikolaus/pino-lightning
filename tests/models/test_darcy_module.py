@@ -2341,3 +2341,205 @@ class TestDualDataPass:
         assert actual == pytest.approx(expected, rel=1e-4), (
             f"Single-pass data loss {actual} != expected {expected}"
         )
+
+
+# ─── MultiStepLR scheduler ────────────────────────────────────────────────────
+
+def _make_config_with_milestones(milestones: list) -> "OmegaConf":
+    """Base config with milestones in opt block."""
+    base = OmegaConf.to_container(_make_config())
+    base["opt"]["milestones"] = milestones
+    return OmegaConf.create(base)
+
+
+def _make_config_without_milestones() -> "OmegaConf":
+    """Base config with no milestones key (uses StepLR fallback)."""
+    return _make_config()
+
+
+def _make_module_for_scheduler(milestones=None) -> DarcyLitModule:
+    if milestones is not None:
+        cfg = _make_config_with_milestones(milestones)
+    else:
+        cfg = _make_config_without_milestones()
+    m = DarcyLitModule(cfg, data_processor=_make_processor())
+    mock_trainer = MagicMock()
+    mock_trainer.world_size = 1
+    m._trainer = mock_trainer
+    m.log = MagicMock()
+    return m
+
+
+class TestMultiStepLR:
+    """Tests for the MultiStepLR scheduler path added for run4a/run4b.
+
+    When opt.milestones is set, configure_optimizers must return a MultiStepLR
+    scheduler; when absent (or empty), it must fall back to StepLR.
+    """
+
+    # ── scheduler type selection ──────────────────────────────────────────────
+
+    def test_no_milestones_uses_steplr(self):
+        """Without milestones, configure_optimizers returns a StepLR."""
+        m = _make_module_for_scheduler(milestones=None)
+        ret = m.configure_optimizers()
+        sched = ret["lr_scheduler"]["scheduler"]
+        assert isinstance(sched, torch.optim.lr_scheduler.StepLR)
+
+    def test_empty_milestones_uses_steplr(self):
+        """An empty milestones list also falls back to StepLR."""
+        m = _make_module_for_scheduler(milestones=[])
+        ret = m.configure_optimizers()
+        sched = ret["lr_scheduler"]["scheduler"]
+        assert isinstance(sched, torch.optim.lr_scheduler.StepLR)
+
+    def test_milestones_uses_multisteplr(self):
+        """With milestones=[100, 200, 300], configure_optimizers returns MultiStepLR."""
+        m = _make_module_for_scheduler(milestones=[100, 200, 300])
+        ret = m.configure_optimizers()
+        sched = ret["lr_scheduler"]["scheduler"]
+        assert isinstance(sched, torch.optim.lr_scheduler.MultiStepLR)
+
+    def test_milestones_stored_on_module(self):
+        """_milestones attribute holds the list passed in the config."""
+        m = _make_module_for_scheduler(milestones=[100, 200, 300])
+        assert m._milestones == [100, 200, 300]
+
+    def test_milestones_empty_when_key_absent(self):
+        """_milestones is an empty list when the key is absent from config."""
+        m = _make_module_for_scheduler(milestones=None)
+        assert m._milestones == []
+
+    # ── LR decay behaviour ────────────────────────────────────────────────────
+
+    def test_multisteplr_decays_at_milestones(self):
+        """LR halves exactly at each milestone epoch and not before."""
+        milestones = [3, 6, 9]
+        gamma = 0.5
+        base_lr = 1e-3
+
+        cfg = _make_config_with_milestones(milestones)
+        base = OmegaConf.to_container(cfg)
+        base["opt"]["gamma"] = gamma
+        base["opt"]["learning_rate"] = base_lr
+        m = DarcyLitModule(OmegaConf.create(base), data_processor=_make_processor())
+        ret = m.configure_optimizers()
+        optimizer = ret["optimizer"]
+        sched = ret["lr_scheduler"]["scheduler"]
+
+        def current_lr():
+            return optimizer.param_groups[0]["lr"]
+
+        # Before any step: base_lr
+        assert current_lr() == pytest.approx(base_lr)
+        # ep 1, 2: no decay yet
+        for _ in range(2):
+            sched.step()
+        assert current_lr() == pytest.approx(base_lr)
+        # ep 3: first milestone → lr * gamma
+        sched.step()
+        assert current_lr() == pytest.approx(base_lr * gamma)
+        # ep 4, 5: no further decay
+        for _ in range(2):
+            sched.step()
+        assert current_lr() == pytest.approx(base_lr * gamma)
+        # ep 6: second milestone → lr * gamma^2
+        sched.step()
+        assert current_lr() == pytest.approx(base_lr * gamma ** 2)
+        # ep 9: third milestone → lr * gamma^3
+        for _ in range(3):
+            sched.step()
+        assert current_lr() == pytest.approx(base_lr * gamma ** 3)
+
+    def test_multisteplr_plateaus_after_last_milestone(self):
+        """After the last milestone, LR stays constant for many extra epochs."""
+        milestones = [3, 6]
+        gamma = 0.5
+        base_lr = 1e-3
+        final_lr = base_lr * (gamma ** 2)
+
+        cfg = _make_config_with_milestones(milestones)
+        base = OmegaConf.to_container(cfg)
+        base["opt"]["gamma"] = gamma
+        base["opt"]["learning_rate"] = base_lr
+        m = DarcyLitModule(OmegaConf.create(base), data_processor=_make_processor())
+        ret = m.configure_optimizers()
+        optimizer = ret["optimizer"]
+        sched = ret["lr_scheduler"]["scheduler"]
+
+        # Advance past last milestone
+        for _ in range(6):
+            sched.step()
+
+        lr_at_6 = optimizer.param_groups[0]["lr"]
+        assert lr_at_6 == pytest.approx(final_lr)
+
+        # 500 more epochs: LR must remain flat
+        for _ in range(500):
+            sched.step()
+
+        lr_at_506 = optimizer.param_groups[0]["lr"]
+        assert lr_at_506 == pytest.approx(final_lr), (
+            "LR should plateau after last milestone but continued to decay"
+        )
+
+    def test_steplr_keeps_decaying_beyond_last_milestone(self):
+        """Without milestones, StepLR keeps halving every step_size epochs.
+
+        This is the regression guard: if milestones were accidentally applied to
+        StepLR, the decay would stop early.
+        """
+        step_size = 3
+        gamma = 0.5
+        base_lr = 1e-3
+
+        cfg = _make_config_without_milestones()
+        base = OmegaConf.to_container(cfg)
+        base["opt"]["step_size"] = step_size
+        base["opt"]["gamma"] = gamma
+        base["opt"]["learning_rate"] = base_lr
+        m = DarcyLitModule(OmegaConf.create(base), data_processor=_make_processor())
+        ret = m.configure_optimizers()
+        optimizer = ret["optimizer"]
+        sched = ret["lr_scheduler"]["scheduler"]
+
+        # Advance 12 epochs = 4 steps
+        for _ in range(12):
+            sched.step()
+
+        expected = base_lr * (gamma ** 4)
+        actual = optimizer.param_groups[0]["lr"]
+        assert actual == pytest.approx(expected), (
+            f"StepLR should still decay at ep12; got {actual}, expected {expected}"
+        )
+
+    def test_multisteplr_milestones_match_paper_config(self):
+        """paper milestones=[100,200,300], gamma=0.5, lr=0.001 → paper LR at ep300."""
+        milestones = [100, 200, 300]
+        gamma = 0.5
+        base_lr = 1e-3
+        expected_final = base_lr * (gamma ** 3)   # 0.000125
+
+        cfg = _make_config_with_milestones(milestones)
+        base = OmegaConf.to_container(cfg)
+        base["opt"]["gamma"] = gamma
+        base["opt"]["learning_rate"] = base_lr
+        m = DarcyLitModule(OmegaConf.create(base), data_processor=_make_processor())
+        ret = m.configure_optimizers()
+        optimizer = ret["optimizer"]
+        sched = ret["lr_scheduler"]["scheduler"]
+
+        for _ in range(300):
+            sched.step()
+
+        assert optimizer.param_groups[0]["lr"] == pytest.approx(expected_final), (
+            f"At ep300 paper LR should be {expected_final}"
+        )
+
+        # Runs 700 more epochs (total 1000): LR must not decay further
+        for _ in range(700):
+            sched.step()
+
+        assert optimizer.param_groups[0]["lr"] == pytest.approx(expected_final), (
+            "Paper LR should plateau at 0.000125 for all epochs beyond 300"
+        )
