@@ -37,6 +37,7 @@ class DarcyLitModule(L.LightningModule):
         self._scheduler: str = _get(opt_cfg, "scheduler")
         self._step_size: int = _get(opt_cfg, "step_size")
         self._gamma: float = _get(opt_cfg, "gamma")
+        self._milestones: list = _get(opt_cfg, "milestones") or []
 
         loss_cfg = _get(config, "loss")
         training_loss = _get(loss_cfg, "training")
@@ -283,8 +284,14 @@ class DarcyLitModule(L.LightningModule):
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self._learning_rate,
                           weight_decay=self._weight_decay)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=self._step_size,
-                                                    gamma=self._gamma)
+        if self._milestones and len(self._milestones) > 0:
+            scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                optimizer, milestones=self._milestones, gamma=self._gamma
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer, step_size=self._step_size, gamma=self._gamma
+            )
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler,
                                                          "interval": "epoch"}}
 

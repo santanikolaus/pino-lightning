@@ -1,0 +1,46 @@
+# @package _global_
+# Run 4a — dual pass, modes=20, paper LR schedule, 1000 epochs
+#
+# Same as run3c (dual pass, modes=20) but with two fixes:
+#   1. MultiStepLR(milestones=[100,200,300], gamma=0.5) — paper-faithful LR
+#      Our StepLR(step_size=100) kept decaying every 100 epochs; by ep900
+#      lr≈2e-6 (effectively frozen). Paper plateaus at 0.000125 from ep300.
+#   2. 1000 epochs — run3c was still converging (PDE loss 15.6→6.8) at ep499.
+#
+# Run3c final: val_11=5.47%, val_61=28.0%, val_211=28.1%
+# Hypothesis: with stable LR from ep300 onward, val_61/211 continue descent.
+#
+# Paper PINO targets: val_11=5.23%, val_61=1.56%, val_211=1.58%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+  pde_resolution: 61
+
+model:
+  data_channels: 3
+  n_modes: [20, 20]
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  dual_data_pass: true
+  data_weight: 5.0
+  pde_weight: 1.0
+
+opt:
+  milestones: [100, 200, 300]
+
+trainer:
+  max_epochs: 1000
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run4a_dual_modes20_multisteplr
