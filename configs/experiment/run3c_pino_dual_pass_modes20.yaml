@@ -1,0 +1,41 @@
+# @package _global_
+# Run 3c — PINO dual forward pass, modes=20
+#
+# Identical to run3b except n_modes=[20, 20].
+# Modes 0–4: gradient from both data pass (11×11) and PDE pass (61×61).
+# Modes 5–19: gradient from PDE pass only (61×61 rfft covers them).
+#
+# Question: do extra high-frequency modes trained by physics improve
+# val_61/211 beyond the paper-faithful modes=5 baseline (run3b)?
+#
+# Paper PINO targets: val_11=5.23%, val_61=1.56%, val_211=1.58%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+  pde_resolution: 61
+
+model:
+  data_channels: 3
+  n_modes: [20, 20]
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  dual_data_pass: true
+  data_weight: 5.0
+  pde_weight: 1.0
+
+trainer:
+  max_epochs: 500
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run3c_pino_dual_pass_modes20
