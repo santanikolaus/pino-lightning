@@ -1,0 +1,49 @@
+# @package _global_
+# Run 4b — 5-layer FNO, modes=20, paper LR, 1000 epochs
+#
+# Isolates the effect of depth (n_layers=5 vs run4a's n_layers=4) while keeping
+# everything else identical to run4a:
+#   - n_modes=[20,20]: enough spectral bandwidth for PDE loss to actually learn
+#     (run3b modes=5 failed because 5 modes can't represent 61x61 PDE residual)
+#   - n_layers=5: one extra spectral block vs our default 4
+#     (paper uses layers=[64,64,64,64,64] — 5 blocks)
+#   - MultiStepLR milestones=[100,200,300]: plateaus at 0.000125 from ep300
+#   - 1000 epochs: same budget as run4a for apples-to-apples comparison
+#
+# Question: does the extra FNO layer improve val_61/211 convergence beyond run4a?
+#
+# Paper PINO targets: val_11=5.23%, val_61=1.56%, val_211=1.58%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+  pde_resolution: 61
+
+model:
+  data_channels: 3
+  n_modes: [20, 20]
+  n_layers: 5
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  dual_data_pass: true
+  data_weight: 5.0
+  pde_weight: 0.1
+
+opt:
+  milestones: [100, 200, 300]
+
+trainer:
+  max_epochs: 1000
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run4b_5layer_modes20_multisteplr
