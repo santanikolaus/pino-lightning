@@ -1,0 +1,48 @@
+# @package _global_
+# Run 7a — single-pass PINO, 5000 epochs
+#
+# Direct extension of run3a (val_61=4.56% at ep499, still converging).
+# Single forward at 61×61; data loss subsampled (stride 6) to 11×11.
+# No dual-pass gradient conflict — modes=20 fully active for PDE path.
+#
+# Changes vs run3a:
+#   - 5000 epochs (10x longer — run3a was clearly still converging)
+#   - MultiStepLR milestones=[1000,2000,3000] so LR stabilises at 1.25e-4
+#     for the final 2000 epochs (StepLR would decay to ~0 by ep5000)
+#
+# Run3a result: val_61=4.56% at ep499, pde_loss_raw=0.72 (still descending)
+# Paper PINO target: val_61=1.56%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+  pde_resolution: 61
+
+model:
+  data_channels: 3
+  n_modes: [20, 20]
+  n_layers: 4
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  dual_data_pass: false
+  data_weight: 1.0
+  pde_weight: 0.1
+
+opt:
+  milestones: [1000, 2000, 3000]
+
+trainer:
+  max_epochs: 5000
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run7a_singlepass_5k
