@@ -26,3 +26,7 @@ mollifier_scale: 0.001
 # When true, run a separate forward pass at train_resolution for the data loss
 # (paper-faithful dual pass). When false, subsample the pde_resolution output.
 dual_data_pass: false
+
+# When true, disable automatic optimization and run two sequential optimizer
+# steps per batch: (1) data loss backward+step, (2) PDE loss backward+step.
+sequential_steps: false
