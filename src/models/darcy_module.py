@@ -50,6 +50,9 @@ class DarcyLitModule(L.LightningModule):
         self._train_resolution: int = _get(data_cfg, "train_resolution", 16)
         self._input_coord_channels: bool = _get(data_cfg, "input_coord_channels", False)
         self._dual_data_pass: bool = _get(loss_cfg, "dual_data_pass", False)
+        self._sequential_steps: bool = _get(loss_cfg, "sequential_steps", False)
+        if self._sequential_steps:
+            self.automatic_optimization = False
 
         self.darcy_loss: Optional[DarcyLoss] = None
         self._pde_resolution: Optional[int] = None
@@ -271,7 +274,63 @@ class DarcyLitModule(L.LightningModule):
             return l2
 
     def training_step(self, batch: Dict[str, Any], batch_idx: int) -> torch.Tensor:
+        if self._sequential_steps:
+            opt = self.optimizers()
+            sync_dist = bool(self.trainer and getattr(self.trainer, "world_size", 1) > 1)
+
+            a_hires_raw = batch["a_highres"][:, :1].to(self.device)
+            a_hires_norm = self._normalize_input(a_hires_raw)
+
+            if self._input_coord_channels:
+                grid = _build_coord_grid(a_hires_norm.shape[-1]).to(self.device)
+                grid = grid.expand(a_hires_norm.shape[0], -1, -1, -1)
+                a_hires_input = torch.cat([a_hires_norm, grid], dim=1)
+            else:
+                a_hires_input = a_hires_norm
+
+            s = self._subsample_factor
+
+            # ── Step 1: data loss ──────────────────────────────────────────
+            opt.zero_grad()
+            u_pred_norm = self.model(a_hires_input)
+            u_pred_phys = self._denormalize_for_physics(u_pred_norm)
+            if self._bc_mollifier is not None:
+                u_pred_phys = u_pred_phys * (self._mollifier_scale * self._bc_mollifier)
+                raw_data = self.train_loss(u_pred_phys[:, :, ::s, ::s], batch["y"].to(self.device))
+            else:
+                raw_data = self.train_loss(u_pred_norm[:, :, ::s, ::s],
+                                           self._normalize_output(batch["y"].to(self.device)))
+            data_loss = self._data_weight * raw_data
+            self.manual_backward(data_loss)
+            opt.step()
+
+            # ── Step 2: PDE loss ───────────────────────────────────────────
+            opt.zero_grad()
+            u_pred_norm = self.model(a_hires_input)
+            u_pred_phys = self._denormalize_for_physics(u_pred_norm)
+            if self._bc_mollifier is not None:
+                u_pred_phys = u_pred_phys * (self._mollifier_scale * self._bc_mollifier)
+            raw_pde = self.darcy_loss(u_pred_phys, a_hires_raw)
+            pde_loss = self._pde_weight * raw_pde
+            self.manual_backward(pde_loss)
+            opt.step()
+
+            # ── Logging ────────────────────────────────────────────────────
+            loss = data_loss + pde_loss
+            self.log("train_data_loss", data_loss, on_step=True, on_epoch=True, sync_dist=sync_dist)
+            self.log("train_pde_loss", pde_loss, on_step=True, on_epoch=True, sync_dist=sync_dist)
+            self.log("train_data_loss_raw", raw_data, on_step=True, on_epoch=True, sync_dist=sync_dist)
+            self.log("train_pde_loss_raw", raw_pde, on_step=True, on_epoch=True, sync_dist=sync_dist)
+            self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=sync_dist)
+            return loss
+
         return self._shared_step(batch, "train")
+
+    def on_train_epoch_end(self) -> None:
+        if self._sequential_steps:
+            sch = self.lr_schedulers()
+            if sch is not None:
+                sch.step()
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
         res = batch["x"].shape[-1]
