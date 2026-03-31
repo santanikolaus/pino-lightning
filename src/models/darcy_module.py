@@ -234,7 +234,7 @@ class DarcyLitModule(L.LightningModule):
                 u_phys = self._denormalize_for_physics(preds)
                 a = batch["x"][:, :1].to(preds.device)
                 if self._bc_mollifier is not None:
-                    u_phys = u_phys * self._bc_mollifier
+                    u_phys = u_phys * (self._mollifier_scale * self._bc_mollifier)
                     # Mollified prediction — data loss in physical space (stride-subsample if needed)
                     if u_phys.shape[-1] != batch["y"].shape[-1]:
                         s = (u_phys.shape[-1] - 1) // (batch["y"].shape[-1] - 1)
