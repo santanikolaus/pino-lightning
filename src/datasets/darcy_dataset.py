@@ -5,6 +5,7 @@ from typing import List, Optional, Union
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+from scipy.ndimage import gaussian_filter
 
 from src.datasets.pt_datasets import PTDataset, vertex_stride
 from src.datasets.transforms.data_processors import DefaultDataProcessor
@@ -64,6 +65,7 @@ class DarcyDataset(PTDataset):
         source_resolution: int = 421,
         input_coord_channels: bool = False,
         sparse_input_resolution: Optional[int] = None,
+        smooth_a_sigma: Optional[float] = None,
     ):
         if isinstance(root_dir, str):
             root_dir = Path(root_dir)
@@ -78,6 +80,7 @@ class DarcyDataset(PTDataset):
         self._source_resolution = source_resolution
         self._input_coord_channels = input_coord_channels
         self._sparse_input_resolution = sparse_input_resolution
+        self._smooth_a_sigma = smooth_a_sigma
         self._train_resolution = train_resolution  # needed in _process_test
 
         # Validate strides before any I/O
@@ -97,6 +100,18 @@ class DarcyDataset(PTDataset):
             test_resolutions=list(test_resolutions),
         )
 
+    def _smooth_x(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply Gaussian blur to the permeability channel (channel 0) of x.
+
+        x shape: (N, C, H, W) where C=1 (permeability only, before coord concat).
+        sigma applied to spatial dims only; batch and channel dims get sigma=0.
+        """
+        if self._smooth_a_sigma is None:
+            return x
+        x_np = x.numpy()
+        x_np = gaussian_filter(x_np, sigma=(0, 0, self._smooth_a_sigma, self._smooth_a_sigma))
+        return torch.from_numpy(x_np)
+
     def _process_train(self, data: dict, n_train: int, resolution: int):
         if self._sparse_input_resolution is not None:
             # Load x at sparse resolution, NN-fill to train_resolution (value replication,
@@ -105,6 +120,7 @@ class DarcyDataset(PTDataset):
             x_train = data["x"].type(torch.float32).clone().unsqueeze(self._channel_dim)
             x_train = x_train[:n_train, :, ::sparse_stride, ::sparse_stride]  # (N,1,11,11)
             x_train = F.interpolate(x_train, size=(resolution, resolution), mode='nearest')  # (N,1,61,61)
+            x_train = self._smooth_x(x_train)
             # Labels stay at sparse resolution
             y_train = data["y"].clone().unsqueeze(self._channel_dim)
             y_train = y_train[:n_train, :, ::sparse_stride, ::sparse_stride]  # (N,1,11,11)
@@ -113,6 +129,7 @@ class DarcyDataset(PTDataset):
             x_train = data["x"].type(torch.float32).clone()
             x_train = x_train.unsqueeze(self._channel_dim)
             x_train = x_train[:n_train, :, ::stride, ::stride]
+            x_train = self._smooth_x(x_train)
             y_train = data["y"].clone()
             y_train = y_train.unsqueeze(self._channel_dim)
             y_train = y_train[:n_train, :, ::stride, ::stride]
@@ -154,6 +171,7 @@ class DarcyDataset(PTDataset):
             x_test = data["x"].type(torch.float32).clone().unsqueeze(self._channel_dim)
             x_test = x_test[:n_test, :, ::sparse_stride, ::sparse_stride]
             x_test = F.interpolate(x_test, size=(self._train_resolution, self._train_resolution), mode='nearest')
+            x_test = self._smooth_x(x_test)
             y_test = data["y"].clone().unsqueeze(self._channel_dim)
             y_test = y_test[:n_test, :, ::sparse_stride, ::sparse_stride]
             coord_res = self._train_resolution
@@ -162,6 +180,7 @@ class DarcyDataset(PTDataset):
             x_test = data["x"].type(torch.float32).clone()
             x_test = x_test.unsqueeze(self._channel_dim)
             x_test = x_test[:n_test, :, ::stride, ::stride]
+            x_test = self._smooth_x(x_test)
             y_test = data["y"].clone()
             y_test = y_test.unsqueeze(self._channel_dim)
             y_test = y_test[:n_test, :, ::stride, ::stride]
