@@ -1,0 +1,40 @@
+# @package _global_
+# Run 8a-ext — sparse-input dense-grid, data-only, 500 epochs
+#
+# Extended version of run8a_sanity_data_only.
+# Matches run2c (data-only, res61, mollifier) but with NN-fill input:
+#   11×11 permeability → nearest-neighbor fill → 61×61
+#   Data loss: stride-6 subsample of 61×61 output vs 11×11 labels
+#
+# Baseline (run2c): val_11=5.44%, val_61=6.88%
+# Target: val_11≈5% (same), val_61<6.88% (model sees full 61×61 input during training)
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: data_only
+
+data:
+  train_resolution: 61
+  sparse_input_resolution: 11
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+
+model:
+  data_channels: 3
+  n_modes: [5, 5]
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+opt:
+  milestones: [100, 200, 300]
+  gamma: 0.5
+
+trainer:
+  max_epochs: 500
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run8a_ext_data_only
