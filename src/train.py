@@ -15,6 +15,14 @@ def main(cfg: DictConfig) -> None:
 
     module = DarcyLitModule(cfg, data_processor=datamodule.data_processor)
 
+    warm_start_ckpt = cfg.get("warm_start_ckpt", None)
+    if warm_start_ckpt:
+        import torch
+        ckpt = torch.load(warm_start_ckpt, weights_only=False)
+        model_state = {k[len("model."):]: v for k, v in ckpt["state_dict"].items() if k.startswith("model.")}
+        module.model.load_state_dict(model_state)
+        print(f"[warm-start] Loaded model weights from {warm_start_ckpt}")
+
     logger = instantiate_loggers(cfg.get("logger"))
 
     callbacks = instantiate_callbacks(cfg.get("callbacks"))
