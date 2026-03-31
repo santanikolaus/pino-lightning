@@ -1,0 +1,70 @@
+# @package _global_
+# Run 9a — warm-start from run8c best checkpoint + gentle PDE fine-tuning
+#
+# Hypothesis: loading a strong 61×61 sparse-input model (run8c, val_11=5.11%,
+# val_61=6.80%, val_211=7.87%) and adding a very small PDE weight can nudge the
+# solution toward physics consistency without disrupting the already-good data fit.
+#
+# Checkpoint source (run8c / W&B run uub9paa3):
+#   /system/user/studentwork/wehofer/pino-lightning/lowres64-binary-paper/uub9paa3/checkpoints/best.ckpt
+#
+# Key differences from run8b (the failed cold-start PINO on the same architecture):
+#   - Warm-start: model weights loaded from run8c best checkpoint, not random init.
+#     The model already satisfies the data loss well, so PDE corrections are small
+#     and do not destabilise training.
+#   - pde_weight=0.05 (half of run8b's 0.1): minimum viable physics pressure.
+#   - Protective LR=5e-5 (~40% of run8c's final LR of ~1.25e-4): avoids overwriting
+#     the learned representation during early fine-tuning epochs.
+#   - Late milestones [750, 1250] over 1500 epochs: LR is flat for most of the run,
+#     decaying only after the model has had time to adapt.
+#
+# Why NO dual_data_pass and NO data.pde_resolution:
+#   train_resolution=61 == pde_resolution=61 (pino.yaml default), so a single
+#   forward pass suffices.  The data loss subsamples the 61×61 output to 11×11;
+#   the PDE loss evaluates at the same 61×61 positions.  No gradient conflict.
+#   DarcyDataModule only loads a separate high-res coefficient when
+#   pde_resolution != train_resolution, so leaving data.pde_resolution unset is
+#   correct and avoids an unnecessary file I/O.
+#
+# Architecture is bit-for-bit identical to run8c so that load_state_dict succeeds:
+#   data_channels=3, n_modes=[5,5], n_layers=4, lifting_channel_ratio=0
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+warm_start_ckpt: /system/user/studentwork/wehofer/pino-lightning/lowres64-binary-paper/uub9paa3/checkpoints/best.ckpt
+
+data:
+  train_resolution: 61         # FNO grid — model always sees 61×61
+  sparse_input_resolution: 11  # observations loaded at 11×11, NN-filled to 61×61
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+
+model:
+  data_channels: 3             # NN-fill permeability + x-coord + y-coord
+  n_modes: [5, 5]              # must match run8c checkpoint exactly
+  n_layers: 4                  # must match run8c checkpoint exactly
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  pde_weight: 0.05             # gentle — half of run8b's 0.1 that caused catastrophe
+  data_weight: 1.0
+  bc_mollifier: true
+  dual_data_pass: false        # single forward pass — no gradient conflict
+
+opt:
+  learning_rate: 5e-5          # protective: ~40% of run8c's final LR (~1.25e-4)
+  milestones: [750, 1250]      # late decay — model stays in flat-LR regime most of run
+  gamma: 0.5
+
+trainer:
+  max_epochs: 1500
+
+logger:
+  wandb:
+    project: pino-baby
+    name: run9a_warmstart_gentle_pde
