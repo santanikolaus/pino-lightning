@@ -49,6 +49,7 @@ class DarcyDataModule(L.LightningDataModule):
         pde_resolution: Optional[int] = None,
         input_coord_channels: bool = False,
         sparse_input_resolution: Optional[int] = None,
+        smooth_a_sigma: Optional[float] = None,
 
     ) -> None:
         super().__init__()
@@ -67,6 +68,7 @@ class DarcyDataModule(L.LightningDataModule):
         self.pde_resolution = pde_resolution
         self.input_coord_channels = input_coord_channels
         self.sparse_input_resolution = sparse_input_resolution
+        self.smooth_a_sigma = smooth_a_sigma
 
         # Stride divisibility checks
         if (self.source_resolution - 1) % (self.train_resolution - 1) != 0:
@@ -130,6 +132,8 @@ class DarcyDataModule(L.LightningDataModule):
             load_kwargs["root_dir"] = self.data_root
         if self.sparse_input_resolution is not None:
             load_kwargs["sparse_input_resolution"] = self.sparse_input_resolution
+        if self.smooth_a_sigma is not None:
+            load_kwargs["smooth_a_sigma"] = self.smooth_a_sigma
 
         dataset = DarcyDataset(**load_kwargs)
 
