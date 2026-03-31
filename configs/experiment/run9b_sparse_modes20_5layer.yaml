@@ -1,0 +1,75 @@
+# @package _global_
+# Run 9b — sparse-input single-pass PINO at 61×61, modes=20, 5 layers
+#
+# Hypothesis: modes=20 fixes the spectral bottleneck that killed run8b.
+#
+# Run 8b used modes=5 with sparse-input (NN-fill 11×11 → 61×61). With only 5
+# modes, the PDE loss and the data loss competed over the exact same spectral
+# coefficients — the PDE gradient had no dedicated capacity to converge
+# independently. pde_loss_raw barely moved (10.81 → 8.08) and accuracy
+# stalled at val_11=14.21%, val_61=12.84% after 500 epochs.
+#
+# Run 9b fix: modes=20. Modes 0–4 receive gradient from both the data loss
+# (via the NN-filled 11×11 sparse input) and the PDE loss. Modes 5–19 receive
+# gradient ONLY from the PDE loss — dedicated PDE spectral capacity with no
+# data-loss interference. This is structurally different from run8b where the
+# spectral bottleneck was absolute.
+#
+# Why sparse-input is different from pure single-pass (run7b):
+#   run7b: standard 61×61 inputs, no sparse constraint → val_61 reaches 4.2%
+#   at ep3268 but val_11 degrades to ~34% (11×11 eval is out-of-distribution).
+#   run9b: training input a is loaded at 11×11, NN-filled to 61×61. The model
+#   always receives NN-filled inputs during training, anchoring low-frequency
+#   spectral structure to 11×11 information. This may partially preserve val_11.
+#
+# Key differences from run8b: modes=20 (was 5), n_layers=5 (was 4),
+#   pde_weight=1.0 (was 0.1), data_weight=5.0 (was 1.0), max_epochs=1500
+#   (was 500), milestones scaled accordingly.
+#
+# Key differences from run7b: sparse_input_resolution=11 (run7b had none),
+#   train_resolution=61 (same), shorter 1500-epoch budget (run7b was 5000).
+#
+# Comparison targets:
+#   run8b  (modes=5,  4L, sparse=11): val_11=14.21%, val_61=12.84% (ep499)
+#   run7b  (modes=20, 5L, sparse=none): val_11~34%,  val_61=4.2%   (ep3268)
+#   Paper PINO:                         val_11=5.23%, val_61=1.56%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  train_resolution: 61         # FNO always operates at 61×61; overrides default of 11
+  sparse_input_resolution: 11  # load a at 11×11, NN-fill to 61×61; not in darcy_binary defaults
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true   # vertex-centred [a, x, y]
+
+model:
+  data_channels: 3             # NN-fill permeability + x-coord + y-coord
+  n_modes: [20, 20]            # key change from run8b (was [5,5]); explicit despite being fno.yaml default
+  n_layers: 5                  # extra depth; fno.yaml default is 4
+  domain_padding: 0.0
+  lifting_channel_ratio: 0     # single linear lift (paper arch)
+  positional_embedding: null   # disable neuralop built-in; use coord channels instead
+
+loss:
+  pde_weight: 1.0              # paper ratio; pino.yaml default is 0.1
+  data_weight: 5.0             # paper ratio (xy_loss=5 in paper notation); pino.yaml default is 1.0
+  # bc_mollifier: true         # pino.yaml default — omitted
+  # dual_data_pass: false      # pino.yaml default — omitted
+  # pde_resolution: 61         # pino.yaml default equals train_resolution — omitted;
+                                # no PairedResolutionDataset triggered (data.pde_resolution stays null)
+
+opt:
+  learning_rate: 1e-3
+  milestones: [500, 1000]      # scaled for 1500-epoch budget; halve at ep500 and ep1000
+  gamma: 0.5
+
+trainer:
+  max_epochs: 1500
+
+logger:
+  wandb:
+    project: pino-baby
+    name: run9b_sparse_modes20_5layer
