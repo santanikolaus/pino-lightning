@@ -1,8 +1,9 @@
 import logging
 from pathlib import Path
-from typing import List, Union
+from typing import List, Optional, Union
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from src.datasets.pt_datasets import PTDataset, vertex_stride
@@ -62,6 +63,7 @@ class DarcyDataset(PTDataset):
         channel_dim: int = 1,
         source_resolution: int = 421,
         input_coord_channels: bool = False,
+        sparse_input_resolution: Optional[int] = None,
     ):
         if isinstance(root_dir, str):
             root_dir = Path(root_dir)
@@ -75,11 +77,15 @@ class DarcyDataset(PTDataset):
         self._channel_dim = channel_dim
         self._source_resolution = source_resolution
         self._input_coord_channels = input_coord_channels
+        self._sparse_input_resolution = sparse_input_resolution
+        self._train_resolution = train_resolution  # needed in _process_test
 
         # Validate strides before any I/O
         vertex_stride(source_resolution, train_resolution)
         for res in test_resolutions:
             vertex_stride(source_resolution, res)
+        if sparse_input_resolution is not None:
+            vertex_stride(source_resolution, sparse_input_resolution)
 
         super().__init__(
             root_dir=root_dir,
@@ -92,18 +98,27 @@ class DarcyDataset(PTDataset):
         )
 
     def _process_train(self, data: dict, n_train: int, resolution: int):
-        stride = vertex_stride(self._source_resolution, resolution)
-
-        x_train = data["x"].type(torch.float32).clone()
-        x_train = x_train.unsqueeze(self._channel_dim)
-        x_train = x_train[:n_train, :, ::stride, ::stride]
-
-        y_train = data["y"].clone()
-        y_train = y_train.unsqueeze(self._channel_dim)
-        y_train = y_train[:n_train, :, ::stride, ::stride]
+        if self._sparse_input_resolution is not None:
+            # Load x at sparse resolution, NN-fill to train_resolution (value replication,
+            # no blending — binary {3,12} preserved everywhere)
+            sparse_stride = vertex_stride(self._source_resolution, self._sparse_input_resolution)
+            x_train = data["x"].type(torch.float32).clone().unsqueeze(self._channel_dim)
+            x_train = x_train[:n_train, :, ::sparse_stride, ::sparse_stride]  # (N,1,11,11)
+            x_train = F.interpolate(x_train, size=(resolution, resolution), mode='nearest')  # (N,1,61,61)
+            # Labels stay at sparse resolution
+            y_train = data["y"].clone().unsqueeze(self._channel_dim)
+            y_train = y_train[:n_train, :, ::sparse_stride, ::sparse_stride]  # (N,1,11,11)
+        else:
+            stride = vertex_stride(self._source_resolution, resolution)
+            x_train = data["x"].type(torch.float32).clone()
+            x_train = x_train.unsqueeze(self._channel_dim)
+            x_train = x_train[:n_train, :, ::stride, ::stride]
+            y_train = data["y"].clone()
+            y_train = y_train.unsqueeze(self._channel_dim)
+            y_train = y_train[:n_train, :, ::stride, ::stride]
 
         if self._input_coord_channels:
-            grid = _build_coord_grid(resolution)  # (2, H, W)
+            grid = _build_coord_grid(resolution)  # (2, H, W) — always at train_resolution
             grid = grid.unsqueeze(0).expand(x_train.size(0), -1, -1, -1)
             x_train = torch.cat([x_train, grid], dim=1)  # (N, 3, H, W)
 
@@ -131,18 +146,29 @@ class DarcyDataset(PTDataset):
                       resolution: int) -> Dataset:
         logger.info("Loading test db for resolution %s with %s samples",
                     resolution, n_test)
-        stride = vertex_stride(self._source_resolution, resolution)
 
-        x_test = data["x"].type(torch.float32).clone()
-        x_test = x_test.unsqueeze(self._channel_dim)
-        x_test = x_test[:n_test, :, ::stride, ::stride]
-
-        y_test = data["y"].clone()
-        y_test = y_test.unsqueeze(self._channel_dim)
-        y_test = y_test[:n_test, :, ::stride, ::stride]
+        if self._sparse_input_resolution is not None and resolution == self._sparse_input_resolution:
+            # For the sparse-resolution test set: NN-fill x to train_resolution, keep y at sparse res.
+            # This matches the training distribution (model always sees 61×61 NN-filled inputs).
+            sparse_stride = vertex_stride(self._source_resolution, self._sparse_input_resolution)
+            x_test = data["x"].type(torch.float32).clone().unsqueeze(self._channel_dim)
+            x_test = x_test[:n_test, :, ::sparse_stride, ::sparse_stride]
+            x_test = F.interpolate(x_test, size=(self._train_resolution, self._train_resolution), mode='nearest')
+            y_test = data["y"].clone().unsqueeze(self._channel_dim)
+            y_test = y_test[:n_test, :, ::sparse_stride, ::sparse_stride]
+            coord_res = self._train_resolution
+        else:
+            stride = vertex_stride(self._source_resolution, resolution)
+            x_test = data["x"].type(torch.float32).clone()
+            x_test = x_test.unsqueeze(self._channel_dim)
+            x_test = x_test[:n_test, :, ::stride, ::stride]
+            y_test = data["y"].clone()
+            y_test = y_test.unsqueeze(self._channel_dim)
+            y_test = y_test[:n_test, :, ::stride, ::stride]
+            coord_res = resolution
 
         if self._input_coord_channels:
-            grid = _build_coord_grid(resolution)
+            grid = _build_coord_grid(coord_res)
             grid = grid.unsqueeze(0).expand(x_test.size(0), -1, -1, -1)
             x_test = torch.cat([x_test, grid], dim=1)
 
