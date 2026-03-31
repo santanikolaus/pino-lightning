@@ -235,10 +235,18 @@ class DarcyLitModule(L.LightningModule):
                 a = batch["x"][:, :1].to(preds.device)
                 if self._bc_mollifier is not None:
                     u_phys = u_phys * self._bc_mollifier
-                    # Mollified prediction — data loss in physical space
-                    raw_data = self.train_loss(u_phys, batch["y"].to(self.device))
+                    # Mollified prediction — data loss in physical space (stride-subsample if needed)
+                    if u_phys.shape[-1] != batch["y"].shape[-1]:
+                        s = (u_phys.shape[-1] - 1) // (batch["y"].shape[-1] - 1)
+                        raw_data = self.train_loss(u_phys[:, :, ::s, ::s], batch["y"].to(self.device))
+                    else:
+                        raw_data = self.train_loss(u_phys, batch["y"].to(self.device))
                 else:
-                    raw_data = self.train_loss(preds, data["y"])
+                    if preds.shape[-1] != data["y"].shape[-1]:
+                        s = (preds.shape[-1] - 1) // (data["y"].shape[-1] - 1)
+                        raw_data = self.train_loss(preds[:, :, ::s, ::s], data["y"])
+                    else:
+                        raw_data = self.train_loss(preds, data["y"])
                 data_loss = self._data_weight * raw_data
                 raw_pde = self.darcy_loss(u_phys, a)
                 pde_loss = self._pde_weight * raw_pde
@@ -255,9 +263,16 @@ class DarcyLitModule(L.LightningModule):
                 if self._bc_mollifier is not None:
                     mol = self._build_mollifier(preds.shape[-1]).to(preds.device)
                     preds_mol = preds * (self._mollifier_scale * mol)
+                    if preds_mol.shape[-1] != data["y"].shape[-1]:
+                        s = (preds_mol.shape[-1] - 1) // (data["y"].shape[-1] - 1)
+                        preds_mol = preds_mol[:, :, ::s, ::s]
                     loss = self._data_weight * self.train_loss(preds_mol, data["y"])
                 else:
-                    loss = self._data_weight * self.train_loss(preds, data["y"])
+                    preds_for_loss = preds
+                    if preds.shape[-1] != data["y"].shape[-1]:
+                        s = (preds.shape[-1] - 1) // (data["y"].shape[-1] - 1)
+                        preds_for_loss = preds_for_loss[:, :, ::s, ::s]
+                    loss = self._data_weight * self.train_loss(preds_for_loss, data["y"])
             self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True,
                      sync_dist=sync_dist)
             return loss
@@ -265,6 +280,9 @@ class DarcyLitModule(L.LightningModule):
             if self._bc_mollifier is not None:
                 mol = self._build_mollifier(preds.shape[-1]).to(preds.device)
                 preds = preds * (self._mollifier_scale * mol)
+            if preds.shape[-1] != data["y"].shape[-1]:
+                s = (preds.shape[-1] - 1) // (data["y"].shape[-1] - 1)
+                preds = preds[:, :, ::s, ::s]
             l2 = self.lp_loss(preds, data["y"])
             h1 = self.h1_loss(preds, data["y"])
             self.log(f"{prefix}_l2", l2, on_step=False, on_epoch=True, prog_bar=True,
@@ -333,12 +351,12 @@ class DarcyLitModule(L.LightningModule):
                 sch.step()
 
     def validation_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
-        res = batch["x"].shape[-1]
-        return self._shared_step(batch, "val", f"val_{res}")
+        label_res = batch["y"].shape[-1]  # use label resolution — x may be NN-filled to a larger size
+        return self._shared_step(batch, "val", f"val_{label_res}")
 
     def test_step(self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
-        res = batch["x"].shape[-1]
-        return self._shared_step(batch, "test", f"test_{res}")
+        label_res = batch["y"].shape[-1]
+        return self._shared_step(batch, "test", f"test_{label_res}")
 
     def configure_optimizers(self):
         optimizer = AdamW(self.parameters(), lr=self._learning_rate,

@@ -1,0 +1,53 @@
+# @package _global_
+# Run 8a — sparse-input dense-grid PINO
+#
+# Hypothesis: single forward pass at 61×61 with NN-fill input from 11×11 avoids
+# the dual-pass gradient conflict while keeping train/eval input distribution consistent.
+#
+# Input:     11×11 a → nearest-neighbor fill → 61×61 (binary {3,12} preserved)
+# Data loss: stride-6 subsample of 61×61 output vs 11×11 y_true
+# PDE loss:  -div(a_61 ∇u_61) = 1 at all 61×61 positions (one forward pass, no conflict)
+#
+# Baselines:
+#   run2c (data-only, modes=5):          val_11=5.44%,  val_61=6.88%
+#   run3a (dual-pass PINO, modes=20):    val_11=43%,    val_61=4.56%  ← gradient conflict
+# Target:
+#   run8a:                               val_11~5%,     val_61<6.88%
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  train_resolution: 61         # FNO grid — model always sees 61×61
+  sparse_input_resolution: 11  # observations loaded at 11×11, NN-filled to 61×61
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+
+model:
+  data_channels: 3             # NN-fill permeability + x-coord + y-coord
+  n_modes: [5, 5]              # same as run2c — all modes trained by 11×11 data
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  pde_resolution: 61           # same as train_resolution — single-resolution, no dual pass
+  pde_weight: 0.1
+  data_weight: 1.0
+  bc_mollifier: true
+  mollifier_scale: 0.001
+  dual_data_pass: false
+
+opt:
+  milestones: [100, 200, 300]
+  gamma: 0.5
+
+trainer:
+  max_epochs: 500
+
+logger:
+  wandb:
+    project: lowres64-binary-paper
+    name: run8a_sparse_dense_pino

@@ -48,6 +48,7 @@ class DarcyDataModule(L.LightningDataModule):
         source_resolution: int = 421,
         pde_resolution: Optional[int] = None,
         input_coord_channels: bool = False,
+        sparse_input_resolution: Optional[int] = None,
 
     ) -> None:
         super().__init__()
@@ -65,6 +66,7 @@ class DarcyDataModule(L.LightningDataModule):
         self.source_resolution = source_resolution
         self.pde_resolution = pde_resolution
         self.input_coord_channels = input_coord_channels
+        self.sparse_input_resolution = sparse_input_resolution
 
         # Stride divisibility checks
         if (self.source_resolution - 1) % (self.train_resolution - 1) != 0:
@@ -73,6 +75,13 @@ class DarcyDataModule(L.LightningDataModule):
                 f"({self.train_resolution}) not on same vertex grid: "
                 f"({self.source_resolution}-1) % ({self.train_resolution}-1) != 0"
             )
+        if self.sparse_input_resolution is not None:
+            if (self.source_resolution - 1) % (self.sparse_input_resolution - 1) != 0:
+                raise ValueError(
+                    f"source_resolution ({self.source_resolution}) and sparse_input_resolution "
+                    f"({self.sparse_input_resolution}) not on same vertex grid: "
+                    f"({self.source_resolution}-1) % ({self.sparse_input_resolution}-1) != 0"
+                )
         if self.pde_resolution is not None:
             if (self.source_resolution - 1) % (self.pde_resolution - 1) != 0:
                 raise ValueError(
@@ -119,6 +128,8 @@ class DarcyDataModule(L.LightningDataModule):
         )
         if self.data_root is not None:
             load_kwargs["root_dir"] = self.data_root
+        if self.sparse_input_resolution is not None:
+            load_kwargs["sparse_input_resolution"] = self.sparse_input_resolution
 
         dataset = DarcyDataset(**load_kwargs)
 
