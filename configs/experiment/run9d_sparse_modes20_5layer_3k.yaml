@@ -1,0 +1,41 @@
+# @package _global_
+# Run 9d — sparse-input single-pass PINO at 61×61, modes=20, 5 layers, 3k epochs
+#
+# Identical to run9b but with a 3000-epoch budget.
+# Milestones scaled proportionally: halve at ep1000 and ep2000.
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+data:
+  train_resolution: 61         # FNO always operates at 61×61; overrides default of 11
+  sparse_input_resolution: 11  # load a at 11×11, NN-fill to 61×61; not in darcy_binary defaults
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true   # vertex-centred [a, x, y]
+
+model:
+  data_channels: 3             # NN-fill permeability + x-coord + y-coord
+  n_modes: [20, 20]
+  n_layers: 5
+  domain_padding: 0.0
+  lifting_channel_ratio: 0     # single linear lift (paper arch)
+  positional_embedding: null   # disable neuralop built-in; use coord channels instead
+
+loss:
+  pde_weight: 1.0              # paper ratio
+  data_weight: 5.0             # paper ratio (xy_loss=5 in paper notation)
+
+opt:
+  learning_rate: 1e-3
+  milestones: [1000, 2000]     # scaled for 3000-epoch budget; halve at ep1000 and ep2000
+  gamma: 0.5
+
+trainer:
+  max_epochs: 3000
+
+logger:
+  wandb:
+    project: pino-baby
+    name: run9d_sparse_modes20_5layer_3k
