@@ -1,0 +1,44 @@
+# @package _global_
+# Run 9e — warm-start + sparse-input single-pass PINO at 61×61, modes=5, 4 layers, 3k epochs
+#
+# Identical to run9a architecture (modes=5, 4 layers) to match the run8c checkpoint,
+# but with a proper warm start (warm-start code now in codebase) and 3k epoch budget.
+# Checkpoint source: run8c best (same as run9a).
+
+defaults:
+  - override /data: darcy_binary
+  - override /loss: pino
+
+warm_start_ckpt: /system/user/studentwork/wehofer/pino-lightning/lowres64-binary-paper/uub9paa3/checkpoints/best.ckpt
+
+data:
+  train_resolution: 61
+  sparse_input_resolution: 11
+  encode_input: false
+  encode_output: false
+  input_coord_channels: true
+
+model:
+  data_channels: 3
+  n_modes: [5, 5]              # must match run8c checkpoint
+  n_layers: 4                  # must match run8c checkpoint
+  domain_padding: 0.0
+  lifting_channel_ratio: 0
+  positional_embedding: null
+
+loss:
+  pde_weight: 1.0
+  data_weight: 5.0
+
+opt:
+  learning_rate: 5e-5           # protective warm-start LR (same as run9a)
+  milestones: [1000, 2000]
+  gamma: 0.5
+
+trainer:
+  max_epochs: 3000
+
+logger:
+  wandb:
+    project: pino-baby
+    name: run9e_sparse_modes5_4layer_3k_warmstart
