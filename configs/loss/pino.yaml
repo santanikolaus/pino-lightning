@@ -3,12 +3,6 @@ training: l2      # data loss function: l2 | h1
 data_weight: 1.0
 pde_weight: 0.1
 
-# Physics loss resolution — may differ from data.train_resolution.
-# Needed to replicate the PINO paper, which trains at low resolution but
-# evaluates the physics loss at higher resolution for generalization experiments.
-# Set to null to inherit data.train_resolution; override e.g. pde_resolution: 61
-pde_resolution: 61
-
 # PDE forcing constant.  The 421×421 source data stores continuous permeability
 # a ∈ [0.3, 3.3] and physical-scale solution u.  The PDE satisfied by this data
 # is  -div(a ∇u) = 1  (constant forcing).
@@ -22,11 +16,3 @@ forcing_is_coeff_scaled: false
 # the physics residual to exactly enforce zero Dirichlet BCs (PINO paper, App. A.2).
 bc_mollifier: true
 mollifier_scale: 0.001
-
-# When true, run a separate forward pass at train_resolution for the data loss
-# (paper-faithful dual pass). When false, subsample the pde_resolution output.
-dual_data_pass: false
-
-# When true, disable automatic optimization and run two sequential optimizer
-# steps per batch: (1) data loss backward+step, (2) PDE loss backward+step.
-sequential_steps: false
