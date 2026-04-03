@@ -1,7 +1,6 @@
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Union
 
-import torch
 import lightning as L
 from torch.utils.data import DataLoader, Dataset
 
@@ -9,28 +8,8 @@ from src.datasets.darcy_dataset import DarcyDataset
 from src.datasets.transforms.data_processors import DefaultDataProcessor
 
 
-class PairedResolutionDataset(Dataset):
-    """Wraps a base dataset, adding a high-resolution permeability to each sample.
-
-    Used for the PINO native forward pass: the FNO evaluates at ``pde_resolution``
-    using the native high-res coefficient ``a``, while the data loss compares
-    against labels at the original (lower) resolution.
-    """
-
-    def __init__(self, base: Dataset, a_highres: torch.Tensor) -> None:
-        self.base = base
-        self.a_highres = a_highres
-
-    def __len__(self) -> int:
-        return len(self.base)
-
-    def __getitem__(self, idx):
-        sample = self.base[idx]
-        sample["a_highres"] = self.a_highres[idx]
-        return sample
-
-
 class DarcyDataModule(L.LightningDataModule):
+
     def __init__(
         self,
         *,
@@ -46,11 +25,9 @@ class DarcyDataModule(L.LightningDataModule):
         channel_dim: int = 1,
         train_resolution: int = 16,
         source_resolution: int = 421,
-        pde_resolution: Optional[int] = None,
         input_coord_channels: bool = False,
         sparse_input_resolution: Optional[int] = None,
         smooth_a_sigma: Optional[float] = None,
-
     ) -> None:
         super().__init__()
         self.n_train = n_train
@@ -65,7 +42,6 @@ class DarcyDataModule(L.LightningDataModule):
         self.channel_dim = channel_dim
         self.train_resolution = train_resolution
         self.source_resolution = source_resolution
-        self.pde_resolution = pde_resolution
         self.input_coord_channels = input_coord_channels
         self.sparse_input_resolution = sparse_input_resolution
         self.smooth_a_sigma = smooth_a_sigma
@@ -84,28 +60,11 @@ class DarcyDataModule(L.LightningDataModule):
                     f"({self.sparse_input_resolution}) not on same vertex grid: "
                     f"({self.source_resolution}-1) % ({self.sparse_input_resolution}-1) != 0"
                 )
-        if self.pde_resolution is not None:
-            if (self.source_resolution - 1) % (self.pde_resolution - 1) != 0:
-                raise ValueError(
-                    f"source_resolution ({self.source_resolution}) and pde_resolution "
-                    f"({self.pde_resolution}) not on same vertex grid: "
-                    f"({self.source_resolution}-1) % ({self.pde_resolution}-1) != 0"
-                )
-            if (self.pde_resolution - 1) % (self.train_resolution - 1) != 0:
-                raise ValueError(
-                    f"pde_resolution ({self.pde_resolution}) and train_resolution "
-                    f"({self.train_resolution}) not on same vertex grid: "
-                    f"({self.pde_resolution}-1) % ({self.train_resolution}-1) != 0"
-                )
 
         if len(self.n_tests) != len(self.test_resolutions):
-            raise ValueError(
-                "n_tests must have the same length as test_resolutions"
-            )
+            raise ValueError("n_tests must have the same length as test_resolutions")
         if len(self.test_batch_sizes) != len(self.test_resolutions):
-            raise ValueError(
-                "test_batch_sizes must have the same length as test_resolutions"
-            )
+            raise ValueError("test_batch_sizes must have the same length as test_resolutions")
 
         self._train_loader: Optional[DataLoader] = None
         self._test_loaders: Optional[Dict[int, DataLoader]] = None
@@ -137,35 +96,8 @@ class DarcyDataModule(L.LightningDataModule):
 
         dataset = DarcyDataset(**load_kwargs)
 
-        train_db: Dataset = dataset.train_db
-
-        # When pde_resolution differs from train_resolution, load native
-        # high-res permeability (stride from source) and pair it with each
-        # training sample.
-        if (self.pde_resolution is not None
-                and self.pde_resolution != self.train_resolution
-                and self.data_root is not None):
-            source_path = (
-                Path(self.data_root).expanduser()
-                / f"darcy_train_{self.source_resolution}.pt"
-            )
-            if not source_path.exists():
-                raise FileNotFoundError(
-                    f"Source Darcy training data not found at '{source_path}'. "
-                    f"Ensure darcy_train_{self.source_resolution}.pt is present in data_root."
-                )
-            source_data = torch.load(source_path.as_posix(), weights_only=False)
-            a_full = source_data["x"].type(torch.float32).clone()[:self.n_train]
-            del source_data
-
-            pde_stride = (self.source_resolution - 1) // (self.pde_resolution - 1)
-            a_highres = a_full[:, ::pde_stride, ::pde_stride]
-            a_highres = a_highres.unsqueeze(self.channel_dim)  # (N, 1, H, W)
-            del a_full
-            train_db = PairedResolutionDataset(train_db, a_highres)
-
         self._train_loader = DataLoader(
-            train_db,
+            dataset.train_db,
             batch_size=self.batch_size,
             num_workers=0,
             pin_memory=True,

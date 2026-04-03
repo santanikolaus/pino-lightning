@@ -120,34 +120,6 @@ class TestValidation:
                 source_resolution=421,
             )
 
-    def test_incompatible_source_and_pde_raises(self):
-        with pytest.raises(ValueError, match="not on same vertex grid"):
-            DarcyDataModule(
-                n_train=N_TRAIN,
-                n_tests=N_TESTS,
-                batch_size=BATCH_SIZE,
-                test_batch_sizes=TEST_BATCH_SIZES,
-                test_resolutions=TEST_RESOLUTIONS,
-                train_resolution=11,
-                source_resolution=421,
-                pde_resolution=64,
-            )
-
-    def test_incompatible_pde_and_train_raises(self):
-        # pde=13: (421-1)%(13-1)=420%12=0 passes source check,
-        # but (13-1)%(11-1)=12%10=2 fails train check
-        with pytest.raises(ValueError, match="not on same vertex grid"):
-            DarcyDataModule(
-                n_train=N_TRAIN,
-                n_tests=N_TESTS,
-                batch_size=BATCH_SIZE,
-                test_batch_sizes=TEST_BATCH_SIZES,
-                test_resolutions=TEST_RESOLUTIONS,
-                train_resolution=11,
-                source_resolution=421,
-                pde_resolution=13,
-            )
-
     def test_valid_coord_channels_config_accepted(self):
         dm = DarcyDataModule(
             n_train=N_TRAIN,
@@ -160,22 +132,6 @@ class TestValidation:
             input_coord_channels=True,
         )
         assert dm.input_coord_channels is True
-
-    def test_valid_paper_config_accepted(self):
-        """PINO paper config: source=421, train=11, pde=61, test={11,61,211}."""
-        dm = DarcyDataModule(
-            n_train=N_TRAIN,
-            n_tests=[4, 4, 4],
-            batch_size=BATCH_SIZE,
-            test_batch_sizes=[4, 4, 4],
-            test_resolutions=[11, 61, 211],
-            train_resolution=11,
-            source_resolution=421,
-            pde_resolution=61,
-        )
-        assert dm.source_resolution == 421
-        assert dm.pde_resolution == 61
-
 
 DARCY_BINARY_ROOT = Path.home() / "data" / "darcy_binary"
 
