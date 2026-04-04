@@ -223,6 +223,11 @@ class DarcyLitModule(L.LightningModule):
             if preds.shape[-1] != data["y"].shape[-1]:
                 s = (preds.shape[-1] - 1) // (data["y"].shape[-1] - 1)
                 preds = preds[:, :, ::s, ::s]
+            # TODO: log PDE residual at val/test time per resolution.
+            # Requires a dict of DarcyLoss instances keyed by resolution (one per
+            # test_resolution + train_resolution) since FD grid spacing is baked in at
+            # construction. test_resolutions must be passed into __init__ from config.
+            # Also verify FiniteDiff device placement before enabling.
             l2 = self.lp_loss(preds, data["y"])
             h1 = self.h1_loss(preds, data["y"])
             self.log(f"{prefix}_l2",
