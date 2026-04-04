@@ -53,7 +53,8 @@ def generate(args):
         pbar.set_description(f"traj {j}")
 
     for i in range(bsize):
-        save_path = os.path.join(save_dir, f"NS-Re{int(re)}_T{T}_id{i}.npy")
+        part = args.part + i
+        save_path = os.path.join(save_dir, f"NS_fine_Re{int(re)}_T{t_res}_part{part}.npy")
         np.save(save_path, vor[i])
 
 
@@ -69,6 +70,7 @@ if __name__ == "__main__":
     parser.add_argument("--t_res", type=int, default=64)
     parser.add_argument("--batchsize", type=int, default=1)
     parser.add_argument("--burnin", type=float, default=100.0)
+    parser.add_argument("--part", type=int, default=0)
     args = parser.parse_args()
     torch.manual_seed(args.seed)
     generate(args)
