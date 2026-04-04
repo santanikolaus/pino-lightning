@@ -9,7 +9,7 @@ from src.data.generate_ns import generate
 
 
 def make_args(outdir, device="cpu", re=40.0, x_res=32, x_sub=1, T=2, t_res=4,
-              burnin=0.1, batchsize=1, seed=42):
+              burnin=0.1, batchsize=1, seed=42, part=0):
     return argparse.Namespace(
         device=device,
         re=re,
@@ -21,11 +21,13 @@ def make_args(outdir, device="cpu", re=40.0, x_res=32, x_sub=1, T=2, t_res=4,
         batchsize=batchsize,
         outdir=str(outdir),
         seed=seed,
+        part=part,
     )
 
 
 def output_file(tmp_path, args, batch_idx=0):
-    return tmp_path / f"NS-Re{int(args.re)}_T{args.T}_id{batch_idx}.npy"
+    part = args.part + batch_idx
+    return tmp_path / f"NS_fine_Re{int(args.re)}_T{args.t_res}_part{part}.npy"
 
 
 class TestGenerateOutputShape:
