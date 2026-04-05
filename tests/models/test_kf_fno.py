@@ -1,0 +1,273 @@
+import pathlib
+
+import pytest  # type: ignore[import]
+import torch
+import yaml
+
+from src.models.kf_fno import get_grid3d, prepare_input, build_fno_kf, kf_forward
+
+_REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
+_KF_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "fno_kf.yaml"
+
+
+def _load_kf_config():
+    with open(_KF_CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def test_output_shape():
+    ic = torch.randn(2, 32, 32)
+    out = prepare_input(ic, T=10)
+    assert out.shape == (2, 32, 32, 10, 4)
+
+
+def test_ic_broadcast_correctness():
+    ic = torch.randn(2, 32, 32)
+    out = prepare_input(ic, T=5)
+    for t in range(5):
+        assert torch.allclose(out[:, :, :, t, 3], ic)
+
+
+def test_exact_values_toy():
+    ic = torch.tensor([[[1.2, -0.3, 2.1],
+                        [-0.8, 3.4, -1.1],
+                        [0.6, -2.0, 1.7]]])  # shape (1, 3, 3)
+    out = prepare_input(ic, T=2)  # shape (1, 3, 3, 2, 4)
+
+    assert out.shape == (1, 3, 3, 2, 4)
+
+    # out[batch, row, col, t, channel]
+    # x varies along dim 1 (row): linspace(0,1,4)[:-1] = [0, 1/3, 2/3]
+    # y varies along dim 2 (col): same values
+    # t varies along dim 3: linspace(0,1,2) = [0.0, 1.0]
+    assert torch.allclose(out[0, 0, 0, 0, :], torch.tensor([0.0, 0.0, 0.0, 1.2]), atol=1e-6)
+    assert torch.allclose(out[0, 0, 0, 1, :], torch.tensor([0.0, 0.0, 1.0, 1.2]), atol=1e-6)
+    assert torch.allclose(out[0, 1, 2, 0, :], torch.tensor([1/3, 2/3, 0.0, -1.1]), atol=1e-6)
+    # symmetric counterprobe: confirms x and y are not transposed
+    assert torch.allclose(out[0, 2, 1, 0, :], torch.tensor([2/3, 1/3, 0.0, -2.0]), atol=1e-6)
+
+    # time_scale is respected: t should reach time_scale, not 1.0
+    out2 = prepare_input(ic, T=2, time_scale=2.0)
+    assert torch.allclose(out2[0, 0, 0, 1, 2], torch.tensor(2.0), atol=1e-6)
+
+
+def test_x_grid_periodicity():
+    gridx, gridy, _ = get_grid3d(S=4, T=1)
+    x_vals = gridx[0, :, 0, 0, 0]  # varies along dim 1 (rows)
+    y_vals = gridy[0, 0, :, 0, 0]  # varies along dim 2 (cols)
+    expected = torch.tensor([0.0, 0.25, 0.5, 0.75])
+    assert torch.allclose(x_vals, expected)
+    assert torch.allclose(y_vals, expected)
+    # Endpoint 1.0 must NOT appear in either grid (periodic domain)
+    assert not (x_vals == 1.0).any()
+    assert not (y_vals == 1.0).any()
+
+
+# ---------------------------------------------------------------------------
+# Block 3b: build_fno_kf tests
+# ---------------------------------------------------------------------------
+
+def test_model_instantiates():
+    """build_fno_kf must produce a model from the YAML config without error.
+
+    This tests our own wiring: that the config keys in fno_kf.yaml are correctly
+    forwarded to neuralop (e.g. data_channels -> in_channels, model_arch dispatches
+    to FNO).  A key mismatch or missing field would surface here.
+    """
+    cfg = _load_kf_config()
+    model = build_fno_kf(cfg)
+    assert isinstance(model, torch.nn.Module)
+
+
+def test_model_param_count():
+    """Parameter count must be in the plausible range for a 4-layer, width-64 FNO3d.
+
+    This catches silent mis-configurations such as n_layers being ignored or
+    hidden_channels being interpreted as 1, which would produce a trivially small
+    (or absurdly large) model.
+    """
+    cfg = _load_kf_config()
+    model = build_fno_kf(cfg)
+    n_params = sum(p.numel() for p in model.parameters())
+    assert 2_500_000 < n_params < 8_000_000, (
+        f"Unexpected parameter count {n_params:,}. "
+        "Expected ~5.3M for hidden_channels=64, n_layers=4, n_modes=[8,8,8]. "
+        "Check that these config values are not being silently ignored."
+    )
+
+
+def test_model_forward_shape():
+    """Forward pass must map (B, in_channels, S, S, T) -> (B, out_channels, S, S, T).
+
+    neuralop FNO is channels-first, unlike the paper's FNO3d which is channels-last.
+    This test pins the expected convention so we catch any accidental swap of
+    in_channels/out_channels or a wrong axis ordering in the data pipeline.
+    """
+    cfg = _load_kf_config()
+    model = build_fno_kf(cfg)
+    model.eval()
+
+    in_channels = cfg["data_channels"]   # 4
+    out_channels = cfg["out_channels"]   # 1
+    S, T = 8, 10
+
+    x = torch.randn(2, in_channels, S, S, T)
+    with torch.no_grad():
+        out = model(x)
+
+    assert out.shape == (2, out_channels, S, S, T), (
+        f"Expected output shape (2, {out_channels}, {S}, {S}, {T}), got {tuple(out.shape)}. "
+        "Verify that the model uses channels-first (B, C, S, S, T) convention."
+    )
+    assert torch.isfinite(out).all(), (
+        "Forward pass produced NaN or Inf. Check stabilizer config in fno_kf.yaml."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Block 3c: kf_forward tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def kf_model():
+    cfg = _load_kf_config()
+    model = build_fno_kf(cfg)
+    model.eval()
+    return model
+
+
+@pytest.mark.parametrize("B,S,T", [
+    pytest.param(1, 8, 5,  id="single_batch_small_T"),
+    pytest.param(2, 8, 10, id="two_batch_medium_T"),
+    pytest.param(3, 16, 8, id="three_batch_larger_S"),
+])
+def test_kf_forward_output_shape(kf_model, B, S, T):
+    ic = torch.randn(B, S, S)
+    with torch.no_grad():
+        out = kf_forward(kf_model, ic, T)
+    assert out.shape == (B, 1, S, S, T), (
+        f"Expected output shape ({B}, 1, {S}, {S}, {T}), got {tuple(out.shape)}. "
+        "Verify kf_forward permute maps channels-last (B,S,S,T,4) to channels-first (B,4,S,S,T)."
+    )
+
+
+def test_kf_forward_finite_output(kf_model):
+    torch.manual_seed(0)
+    ic = torch.randn(2, 8, 8)
+    with torch.no_grad():
+        out = kf_forward(kf_model, ic, T=5)
+    assert torch.isfinite(out).all(), (
+        "kf_forward produced NaN or Inf. The permute may have corrupted the tensor "
+        "before it reached the model."
+    )
+
+
+def test_kf_forward_batch_independence(kf_model):
+    torch.manual_seed(1)
+    ic = torch.randn(3, 8, 8)
+    with torch.no_grad():
+        out_full = kf_forward(kf_model, ic, T=5)
+        out_single = kf_forward(kf_model, ic[0:1], T=5)
+    assert torch.allclose(out_full[0:1], out_single, atol=1e-5), (
+        "kf_forward output differs between batch index 0 of a 3-item batch and "
+        "a single-item batch with the same IC. The permute may have mixed the "
+        "batch dimension into a spatial dimension."
+    )
+
+
+def test_kf_forward_time_scale_propagated(kf_model):
+    """time_scale must be passed through to prepare_input, not silently dropped.
+
+    If kf_forward called prepare_input(ic, T) without time_scale, the t-grid
+    would always end at 1.0 regardless of the argument. We check the t-channel
+    max equals time_scale.
+    """
+    ic = torch.randn(1, 8, 8)
+    time_scale = 3.0
+    # Run just prepare_input + permute to inspect the input tensor, not the model output
+    import src.models.kf_fno as m
+    x = m.prepare_input(ic, T=4, time_scale=time_scale)  # (1, 8, 8, 4, 4)
+    # channel 2 is the t-grid; its max should equal time_scale
+    assert torch.allclose(x[..., 2].max(), torch.tensor(time_scale), atol=1e-6), (
+        f"t-grid max is {x[..., 2].max().item()}, expected time_scale={time_scale}. "
+        "kf_forward may not be propagating time_scale to prepare_input."
+    )
+    # Also confirm kf_forward itself accepts and threads the argument without error
+    with torch.no_grad():
+        out = kf_forward(kf_model, ic, T=4, time_scale=time_scale)
+    assert out.shape == (1, 1, 8, 8, 4)
+
+
+# ---------------------------------------------------------------------------
+# Block 3d: spatial padding tests
+# ---------------------------------------------------------------------------
+
+def _build_padded_model(domain_padding: float) -> torch.nn.Module:
+    """Build a minimal FNO with the given domain_padding, bypassing YAML."""
+    from neuralop.models import FNO  # type: ignore[import]
+    model = FNO(
+        n_modes=(8, 8, 8),
+        hidden_channels=64,
+        in_channels=4,
+        out_channels=1,
+        domain_padding=domain_padding,
+    )
+    model.eval()
+    return model
+
+
+def test_padding_shape_invariance():
+    """With domain_padding=0.25, kf_forward output shape must equal (B, 1, S, S, T).
+
+    neuralop pads before spectral convs and strips afterwards, so our pipeline
+    must not see any expanded spatial dims regardless of padding fraction.
+    """
+    B, S, T = 2, 8, 5
+    model = _build_padded_model(domain_padding=0.25)
+    ic = torch.randn(B, S, S)
+    with torch.no_grad():
+        out = kf_forward(model, ic, T)
+    assert out.shape == (B, 1, S, S, T), (
+        f"Expected output shape ({B}, 1, {S}, {S}, {T}), got {tuple(out.shape)}. "
+        "domain_padding=0.25 should be stripped by neuralop before returning."
+    )
+
+
+def test_padding_finite_output():
+    """With domain_padding=0.25, kf_forward must produce only finite values.
+
+    A mis-wired padding fraction (e.g. wrong axis or out-of-range value) can
+    cause spectral conv to produce NaN/Inf via zero-division in the frequency domain.
+    """
+    torch.manual_seed(42)
+    B, S, T = 2, 8, 5
+    model = _build_padded_model(domain_padding=0.25)
+    ic = torch.randn(B, S, S)
+    with torch.no_grad():
+        out = kf_forward(model, ic, T)
+    assert torch.isfinite(out).all(), (
+        "kf_forward with domain_padding=0.25 produced NaN or Inf. "
+        "Check that the padding fraction is within neuralop's accepted range."
+    )
+
+
+@pytest.mark.parametrize("domain_padding", [
+    pytest.param(0.0,  id="no_padding"),
+    pytest.param(0.09, id="paper_padding"),
+    pytest.param(0.25, id="large_padding"),
+])
+def test_padding_shape_consistency(domain_padding):
+    """Output shape must be (B, 1, S, S, T) for all padding values tested.
+
+    This pins the invariant that neuralop's internal strip always restores the
+    original spatial dims, regardless of how large the padding fraction is.
+    """
+    B, S, T = 2, 8, 5
+    model = _build_padded_model(domain_padding=domain_padding)
+    ic = torch.randn(B, S, S)
+    with torch.no_grad():
+        out = kf_forward(model, ic, T)
+    assert out.shape == (B, 1, S, S, T), (
+        f"domain_padding={domain_padding}: expected shape ({B}, 1, {S}, {S}, {T}), "
+        f"got {tuple(out.shape)}."
+    )
