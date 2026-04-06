@@ -1,2 +1,0 @@
-experiment=pino-darcy
-run_id=fdezehwe_r3

@@ -63,6 +63,8 @@ class KFLitModule(L.LightningModule):
         y = target[..., 1:]
         l2 = LpLoss(d=3, p=2).rel(w, y)
         self.log("val_l2", l2, prog_bar=True, on_step=False, on_epoch=True)
+        # Stash one batch for KFVisualizerCallback (overwritten each step, last batch kept)
+        self._val_batch = {"pred": pred.detach().cpu(), "target": target.detach().cpu()}
         return l2
 
     def configure_optimizers(self):
