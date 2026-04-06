@@ -2,6 +2,7 @@ import lightning as L
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import wandb
 
 
 class KFVisualizerCallback(L.Callback):
@@ -22,6 +23,8 @@ class KFVisualizerCallback(L.Callback):
         if not hasattr(pl_module, "_val_batch"):
             return
         if trainer.logger is None:
+            return
+        if not trainer.is_global_zero:
             return
 
         batch = pl_module._val_batch
@@ -54,6 +57,10 @@ class KFVisualizerCallback(L.Callback):
         fig.suptitle(f"Vorticity at t=T  (epoch {trainer.current_epoch})", y=1.01)
         fig.tight_layout()
 
-        trainer.logger.log_image(key="val/vorticity", images=[fig])
+        trainer.logger.experiment.log(
+            {"val/vorticity": wandb.Image(fig)},
+            step=trainer.global_step,
+            commit=False,
+        )
 
         plt.close(fig)
