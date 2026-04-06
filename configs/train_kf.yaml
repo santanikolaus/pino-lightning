@@ -1,0 +1,20 @@
+defaults:
+  - data: kf
+  - model: fno_kf
+  - trainer: default
+  - logger: wandb
+  - callbacks: default
+  - optional experiment: null
+  - _self_
+
+opt:
+  learning_rate: 1e-3
+  weight_decay: 0.0
+  step_size: 100
+  gamma: 0.5
+
+loss:
+  re: 500
+  t_interval: 1.0
+  data_weight: 1.0
+  pde_weight: 0.0
