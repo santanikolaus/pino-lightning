@@ -28,8 +28,6 @@ class KFVisualizerCallback(L.Callback):
         if not trainer.is_global_zero:
             return
 
-        print(f"[KFVisualizer] LOGGING epoch={trainer.current_epoch} global_step={trainer.global_step}")
-
         batch = pl_module._val_batch
         pred = batch["pred"]    # (B, 1, S, S, T)
         target = batch["target"]  # (B, S, S, T+1)
