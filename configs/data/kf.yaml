@@ -1,0 +1,7 @@
+_target_: src.datasets.kf_datamodule.KFDataModule   # kept for reference, not used by train_kf.py
+data_path: /path/to/NS_fine_T128_part0.npy
+n_train: 80
+n_val: 20
+batch_size: 2
+num_workers: 0
+offset_train: 0
