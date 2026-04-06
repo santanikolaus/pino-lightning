@@ -5,8 +5,8 @@ defaults:
 
 logger:
   wandb:
-    project: data-kolmogorov
-    name: fno-re500-data-only
+    project: data-kol
+    name: fno-re500-data
 
 data:
   data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T64_part0.npy
