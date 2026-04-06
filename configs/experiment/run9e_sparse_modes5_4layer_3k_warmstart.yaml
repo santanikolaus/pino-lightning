@@ -7,7 +7,7 @@
 
 defaults:
   - override /data: darcy_binary
-  - override /loss: pino
+  - override /loss: darcy_pino
 
 warm_start_ckpt: /system/user/studentwork/wehofer/pino-lightning/lowres64-binary-paper/uub9paa3/checkpoints/best.ckpt
 
