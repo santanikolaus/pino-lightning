@@ -56,10 +56,7 @@ class KFVisualizerCallback(L.Callback):
 
         try:
             import wandb
-            trainer.logger.experiment.log(
-                {"val/vorticity": wandb.Image(fig)},
-                step=trainer.global_step,
-            )
+            trainer.logger.experiment.log({"val/vorticity": wandb.Image(fig)})
         except Exception:
             pass
 
