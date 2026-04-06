@@ -57,6 +57,9 @@ class KFVisualizerCallback(L.Callback):
         fig.suptitle(f"Vorticity at t=T  (epoch {trainer.current_epoch})", y=1.01)
         fig.tight_layout()
 
-        trainer.logger.experiment.log({"val/vorticity": wandb.Image(fig)})
+        trainer.logger.experiment.log(
+            {"val/vorticity": wandb.Image(fig), "trainer/global_step": trainer.global_step},
+            commit=False,
+        )
 
         plt.close(fig)
