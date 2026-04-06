@@ -1,5 +1,5 @@
 _target_: lightning.Trainer
-max_epochs: 500
+max_epochs: 501  # paper configs/operator/Re500-1s-FNO.yaml: epochs=501
 accelerator: gpu
 devices: 1
 enable_model_summary: false

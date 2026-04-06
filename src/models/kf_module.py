@@ -33,6 +33,7 @@ class KFLitModule(L.LightningModule):
         opt_cfg = _get(config, "opt")
         self._lr = _get(opt_cfg, "learning_rate", 1e-3)
         self._weight_decay = _get(opt_cfg, "weight_decay", 0.0)
+        self._milestones = _get(opt_cfg, "milestones", None)
         self._step_size = _get(opt_cfg, "step_size", 100)
         self._gamma = _get(opt_cfg, "gamma", 0.5)
 
@@ -70,9 +71,14 @@ class KFLitModule(L.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self._lr,
                                      weight_decay=self._weight_decay)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
-                                                     step_size=self._step_size,
-                                                     gamma=self._gamma)
+        if self._milestones:
+            scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                optimizer, milestones=list(self._milestones), gamma=self._gamma
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
+                                                         step_size=self._step_size,
+                                                         gamma=self._gamma)
         return {
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"},
