@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import torch
 
-from src.data.generate_ns import generate
+from src.solver.generate_kf import generate
 
 
 def make_args(outdir, device="cpu", re=40.0, x_res=32, x_sub=1, T=2, t_res=4,
