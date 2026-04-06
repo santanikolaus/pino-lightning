@@ -3,6 +3,11 @@
 defaults:
   - override /callbacks: kf
 
+logger:
+  wandb:
+    project: pino-kf
+    name: fno-re500-data-only
+
 data:
   data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_part0.npy
   n_train: 80
