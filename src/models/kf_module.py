@@ -23,10 +23,10 @@ class KFLitModule(L.LightningModule):
         self.model = build_fno_kf(config)
 
         loss_cfg = _get(config, "loss")
-        re = _get(loss_cfg, "re", 500)
-        t_interval = _get(loss_cfg, "t_interval", 1.0)
-        data_weight = _get(loss_cfg, "data_weight", 1.0)
-        pde_weight = _get(loss_cfg, "pde_weight", 0.0)
+        re = _get(loss_cfg, "re")
+        t_interval = _get(loss_cfg, "t_interval")
+        data_weight = _get(loss_cfg, "data_weight")
+        pde_weight = _get(loss_cfg, "pde_weight")
         self.loss_fn = KFLoss(re=re, t_interval=t_interval,
                               data_weight=data_weight, pde_weight=pde_weight)
 

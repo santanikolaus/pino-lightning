@@ -54,10 +54,6 @@ class KFVisualizerCallback(L.Callback):
         fig.suptitle(f"Vorticity at t=T  (epoch {trainer.current_epoch})", y=1.01)
         fig.tight_layout()
 
-        try:
-            import wandb
-            trainer.logger.experiment.log({"val/vorticity": wandb.Image(fig)})
-        except Exception:
-            pass
+        trainer.logger.log_image(key="val/vorticity", images=[fig])
 
         plt.close(fig)
