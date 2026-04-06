@@ -6,11 +6,9 @@ hidden_channels: 64
 n_layers: 4
 lifting_channel_ratio: 2
 projection_channel_ratio: 2
-domain_padding: 0.0   # Fraction of each spatial dim added as zero-padding before spectral convs
-                      # to suppress aliasing at the periodic boundary (paper uses ~0.09:
-                      # 128-grid → ~140 after padding).  0.0 = padding off.
-                      # neuralop strips the padding automatically so output shape always
-                      # matches input spatial dims — no manual strip needed in kf_forward.
+domain_padding: 0.0625  # paper Re500-1s-FNO.yaml: num_pad=4; 4/64=0.0625
+                        # neuralop strips the padding automatically so output shape always
+                        # matches input spatial dims — no manual strip needed in kf_forward.
 norm: null
 fno_skip: linear
 implementation: factorized
