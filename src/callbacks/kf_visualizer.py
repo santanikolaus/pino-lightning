@@ -2,7 +2,6 @@ import lightning as L
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import wandb
 
 
 class KFVisualizerCallback(L.Callback):
@@ -18,6 +17,8 @@ class KFVisualizerCallback(L.Callback):
         self.log_every_n_epochs = log_every_n_epochs
 
     def on_validation_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        if trainer.sanity_checking:
+            return
         if trainer.current_epoch % self.log_every_n_epochs != 0:
             return
         if not hasattr(pl_module, "_val_batch"):
@@ -26,6 +27,8 @@ class KFVisualizerCallback(L.Callback):
             return
         if not trainer.is_global_zero:
             return
+
+        print(f"[KFVisualizer] LOGGING epoch={trainer.current_epoch} global_step={trainer.global_step}")
 
         batch = pl_module._val_batch
         pred = batch["pred"]    # (B, 1, S, S, T)
@@ -57,9 +60,10 @@ class KFVisualizerCallback(L.Callback):
         fig.suptitle(f"Vorticity at t=T  (epoch {trainer.current_epoch})", y=1.01)
         fig.tight_layout()
 
-        trainer.logger.experiment.log(
-            {"val/vorticity": wandb.Image(fig), "trainer/global_step": trainer.global_step},
-            commit=False,
+        trainer.logger.log_image(
+            key="val/vorticity",
+            images=[fig],
+            step=trainer.global_step,
         )
 
         plt.close(fig)
