@@ -1,0 +1,5 @@
+# KF FNO data-only loss — baseline, no PDE term
+re: 500
+t_interval: 1.0
+data_weight: 1.0
+pde_weight: 0.0

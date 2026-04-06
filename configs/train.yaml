@@ -1,10 +1,10 @@
 defaults:
   - data: darcy_binary
-  - model: fno
+  - model: fno_darcy
   - trainer: default
   - logger: wandb
   - callbacks: default
-  - loss: data_only
+  - loss: darcy_data_only
   - optional experiment: null
   - _self_
 
