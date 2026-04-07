@@ -74,7 +74,7 @@ class KFLoss:
     def __init__(self, re: float, t_interval: float = 1.0,
                  data_weight: float = 1.0, pde_weight: float = 0.0):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
-        self.lp = LpLoss(d=3, p=2)
+        self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
         self.pde_weight = pde_weight
 

@@ -62,7 +62,7 @@ class KFLitModule(L.LightningModule):
         pred = self(ic, T=T)
         w = pred.squeeze(1)
         y = target[..., 1:]
-        l2 = LpLoss(d=3, p=2).rel(w, y)
+        l2 = LpLoss(d=3, p=2, reduction="mean").rel(w, y)
         self.log("val_l2", l2, prog_bar=True, on_step=False, on_epoch=True)
         # Stash one batch for KFVisualizerCallback (overwritten each step, last batch kept)
         self._val_batch = {"pred": pred.detach().cpu(), "target": target.detach().cpu()}

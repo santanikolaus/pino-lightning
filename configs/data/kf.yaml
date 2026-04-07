@@ -5,3 +5,4 @@ n_val: 20
 batch_size: 2
 num_workers: 0
 offset_train: 0
+sub_t: 1    # temporal subsampling stride; 1 = no subsampling (T64 files), 2 = paper Table 8 (T128 → effective T64)
