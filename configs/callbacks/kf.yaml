@@ -8,4 +8,4 @@ model_checkpoint:
 
 kf_visualizer:
   _target_: src.callbacks.kf_visualizer.KFVisualizerCallback
-  log_every_n_epochs: 5
+  log_every_n_epochs: 50
