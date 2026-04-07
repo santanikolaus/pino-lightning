@@ -17,6 +17,7 @@ def main(cfg: DictConfig) -> None:
         n_val=cfg.data.n_val,
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
+        sub_t=cfg.data.sub_t,
     )
     datamodule.setup(stage="fit")
 
