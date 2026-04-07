@@ -17,6 +17,8 @@ class KFDataModule(L.LightningDataModule):
         num_workers: int = 0,
         offset_train: int = 0,
         offset_val: Optional[int] = None,
+        *,
+        sub_t: int,
     ) -> None:
         super().__init__()
         self.data_path = data_path
@@ -26,12 +28,13 @@ class KFDataModule(L.LightningDataModule):
         self.num_workers = num_workers
         self.offset_train = offset_train
         self.offset_val = offset_val if offset_val is not None else offset_train + n_train
+        self.sub_t = sub_t
 
     def setup(self, stage: Optional[str] = None) -> None:
         if hasattr(self, "train_dataset"):
             return
-        self.train_dataset = KFDataset(self.data_path, self.n_train, offset=self.offset_train)
-        self.val_dataset = KFDataset(self.data_path, self.n_val, offset=self.offset_val)
+        self.train_dataset = KFDataset(self.data_path, self.n_train, offset=self.offset_train, sub_t=self.sub_t)
+        self.val_dataset = KFDataset(self.data_path, self.n_val, offset=self.offset_val, sub_t=self.sub_t)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
