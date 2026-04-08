@@ -47,7 +47,7 @@ class KFLitModule(L.LightningModule):
     def training_step(self, batch, batch_idx):
         ic = batch["x"].to(self.device)
         target = batch["y"].to(self.device)
-        T = target.shape[-1] - 1
+        T = target.shape[-1]  # include IC frame: full T+1 frames
         pred = self(ic, T=T)
         losses = self.loss_fn(pred, target)
         self.log("train_loss", losses["loss"], prog_bar=True, on_step=True, on_epoch=True)
@@ -58,10 +58,10 @@ class KFLitModule(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         ic = batch["x"].to(self.device)
         target = batch["y"].to(self.device)
-        T = target.shape[-1] - 1
+        T = target.shape[-1]  # include IC frame: full T+1 frames
         pred = self(ic, T=T)
         w = pred.squeeze(1)
-        y = target[..., 1:]
+        y = target  # supervise all T frames including IC at t=0
         l2 = LpLoss(d=3, p=2, reduction="mean").rel(w, y)
         self.log("val_l2", l2, prog_bar=True, on_step=False, on_epoch=True)
         # Stash one batch for KFVisualizerCallback (overwritten each step, last batch kept)
