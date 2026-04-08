@@ -133,7 +133,7 @@ class TestTrainingStep:
         # recompute independently
         ic = batch["x"]
         target = batch["y"]
-        T = target.shape[-1] - 1
+        T = target.shape[-1]
         with torch.no_grad():
             pred = module(ic, T=T)
         expected = module.loss_fn(pred, target)
@@ -217,6 +217,17 @@ class TestValidationStep:
         with torch.no_grad():
             val = module.validation_step(batch, 0)
         assert torch.isfinite(val)
+
+    def test_val_l2_is_zero_for_perfect_prediction(self, cfg):
+        """Ground truth fed as pred must give val_l2 ≈ 0."""
+        torch.manual_seed(0)
+        batch = _make_batch()
+        perfect_pred = batch["y"].unsqueeze(1)   # (B, 1, S, S, T+1)
+        w = perfect_pred.squeeze(1)              # (B, S, S, T+1)
+        y = batch["y"]                           # (B, S, S, T+1)
+        from neuralop import LpLoss
+        l2 = LpLoss(d=3, p=2, reduction="mean").rel(w, y)
+        assert l2.item() < 1e-6, f"Perfect prediction gave val_l2={l2.item():.6f}, expected ~0"
 
 
 # ---------------------------------------------------------------------------

@@ -81,11 +81,11 @@ class KFLoss:
     def __call__(self, pred: Tensor, target: Tensor) -> dict[str, Tensor]:
         """
         pred:   (B, 1, S, S, T)  — FNO output, channels-first
-        target: (B, S, S, T+1)   — ground truth from KFDataset
+        target: (B, S, S, T)     — ground truth from KFDataset (all T frames incl. IC)
         Returns: {'loss': scalar, 'data': scalar, 'pde': scalar}
         """
         w = pred.squeeze(1)        # (B, S, S, T)
-        y = target[..., 1:]        # (B, S, S, T) — drop IC frame
+        y = target                 # (B, S, S, T) — supervise all frames incl. IC at t=0
 
         data = self.lp.rel(w, y)
         pde = self.ns.residual(w).pow(2).mean()
