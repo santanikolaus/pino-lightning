@@ -13,7 +13,7 @@ callbacks:
 
 logger:
   wandb:
-    project: data-kol
+    project: finetune-kol
     name: null                # overridden per instance in train_kf_instance.py
 
 trainer:
@@ -41,7 +41,7 @@ opt:
 
 instance:
   start: 280                  # first test instance (our split: 0-239 train, 240-279 val, 280-299 test)
-  stop: 300                   # exclusive; 20 test instances total
+  stop: 285                  # exclusive; 20 test instances total
 
 # model: inherits fno_kf.yaml defaults
 #   hidden_channels: 64  (matches paper layers=[64,64,64,64,64])
