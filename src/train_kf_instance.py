@@ -42,7 +42,7 @@ def train_one_instance(cfg, instance_idx: int) -> float:
     if logger_cfg and logger_cfg.get("_target_"):
         logger = WandbLogger(
             project=logger_cfg.get("project", "data-kol"),
-            name=f"scratch-re500-data-i{instance_idx}",
+            name=f"1a_scratch_data_re500_i{instance_idx}",
         )
     else:
         logger = None
