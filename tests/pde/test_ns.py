@@ -129,7 +129,7 @@ class TestNSVorticityNumerics:
 class TestKFLossInterface:
 
     def _make_pred_target(self, b=B, s=S, t=T):
-        pred = torch.randn(b, 1, s, s, t)
+        pred = torch.randn(b, 1, s, s, t + 1)
         target = torch.randn(b, s, s, t + 1)
         return pred, target
 
@@ -167,7 +167,7 @@ class TestKFLossInterface:
     def test_gradients_flow_through_loss(self):
         loss_fn = KFLoss(re=40, data_weight=1.0, pde_weight=1.0)
         pred = torch.randn(B, 1, S, S, T, requires_grad=True)
-        target = torch.randn(B, S, S, T + 1)
+        target = torch.randn(B, S, S, T)
         out = loss_fn(pred, target)
         out["loss"].backward()
         assert pred.grad is not None
@@ -182,24 +182,24 @@ class TestKFLossInterface:
 class TestKFLossDataLoss:
 
     def test_perfect_prediction_gives_near_zero_data_loss(self):
-        """pred.squeeze(1) == target[..., 1:] → data ≈ 0."""
+        """pred == target → data ≈ 0 (NEW alignment: supervise all T frames)."""
         loss_fn = KFLoss(re=40, data_weight=1.0, pde_weight=0.0)
-        target = torch.randn(B, S, S, T + 1)
-        # pred must equal target[..., 1:] after squeeze
-        pred = target[..., 1:].unsqueeze(1)  # (B, 1, S, S, T)
+        target = torch.randn(B, S, S, T)
+        pred = target.unsqueeze(1)  # (B, 1, S, S, T)
         out = loss_fn(pred, target)
         assert out["data"].item() < 1e-6
 
     def test_ic_aligned_prediction_gives_nonzero_data_loss(self):
-        """pred.squeeze(1) == target[..., :-1] — wrong alignment → nonzero."""
+        """pred shifted by 1 frame relative to target → nonzero data loss."""
         loss_fn = KFLoss(re=40, data_weight=1.0, pde_weight=0.0)
-        # Build target whose frames differ meaningfully across time
         torch.manual_seed(7)
         target = torch.randn(B, S, S, T + 1)
         # Scale later frames to guarantee they differ from earlier ones
         target[..., T // 2 :] *= 10.0
-        pred = target[..., :-1].unsqueeze(1)  # aligned to IC (wrong)
-        out = loss_fn(pred, target)
+        # shift-by-1: pred has frames 0..T-1, target has frames 1..T → mismatch
+        pred = target[..., :-1].unsqueeze(1)
+        wrong_target = target[..., 1:]
+        out = loss_fn(pred, wrong_target)
         assert out["data"].item() > 0.01
 
 
@@ -211,7 +211,7 @@ class TestKFLossDataLoss:
 class TestKFLossAlignment:
 
     def test_correct_alignment_near_zero_wrong_alignment_large(self):
-        """Verify KFLoss uses target[..., 1:] not target[..., :-1]."""
+        """Verify KFLoss supervises all T frames: pred == target → 0, frame-shift → large."""
         loss_fn = KFLoss(re=40, data_weight=1.0, pde_weight=0.0)
 
         torch.manual_seed(99)
@@ -219,13 +219,13 @@ class TestKFLossAlignment:
         # Make later frames very different from earlier ones
         target[..., T // 2 :] = target[..., T // 2 :] + 100.0
 
-        # Correct alignment: pred == target[..., 1:]
-        pred_correct = target[..., 1:].unsqueeze(1)
+        # Correct: pred == target (same T+1 frames)
+        pred_correct = target.unsqueeze(1)
         loss_correct = loss_fn(pred_correct, target)["data"]
 
-        # Wrong alignment: pred == target[..., :-1]
+        # Wrong: pred is frames 0..T-1, target is frames 1..T (1-frame shift)
         pred_wrong = target[..., :-1].unsqueeze(1)
-        loss_wrong = loss_fn(pred_wrong, target)["data"]
+        loss_wrong = loss_fn(pred_wrong, target[..., 1:])["data"]
 
         assert loss_correct.item() < 1e-6
         assert loss_wrong.item() > 0.1
@@ -352,9 +352,8 @@ class TestKFLossDataDimensionality:
         w, y = self._make_tensors()
         loss_fn = KFLoss(re=40, data_weight=1.0, pde_weight=0.0)
         pred = w.unsqueeze(1)
-        target = torch.cat([torch.zeros_like(y[..., :1]), y], dim=-1)
-        out = loss_fn(pred, target)
-        expected = LpLoss(d=3, p=2).rel(w, y)
+        out = loss_fn(pred, y)
+        expected = LpLoss(d=3, p=2, reduction="mean").rel(w, y)
         torch.testing.assert_close(out["data"], expected, atol=1e-6, rtol=1e-6)
 
     def test_data_loss_differs_from_lp_d2(self):
@@ -362,9 +361,8 @@ class TestKFLossDataDimensionality:
         w, y = self._make_tensors()
         loss_fn = KFLoss(re=40, data_weight=1.0, pde_weight=0.0)
         pred = w.unsqueeze(1)
-        target = torch.cat([torch.zeros_like(y[..., :1]), y], dim=-1)
-        out = loss_fn(pred, target)
-        d2_val = LpLoss(d=2, p=2).rel(w, y)
+        out = loss_fn(pred, y)
+        d2_val = LpLoss(d=2, p=2, reduction="mean").rel(w, y)
         assert abs(out["data"].item() - d2_val.item()) > 1e-6, \
             "d=3 and d=2 give the same result — d parameter has no effect for this input"
 
@@ -503,7 +501,7 @@ class TestKFLossPDEPath:
         w = (cos_4y.reshape(1, 1, S, 1) * t_vals.reshape(1, 1, 1, T)).expand(1, S, S, T).clone()
 
         pred = w.unsqueeze(1)                                     # (1, 1, S, S, T)
-        target = torch.randn(1, S, S, T + 1)                     # data loss irrelevant
+        target = torch.randn(1, S, S, T)                         # data loss irrelevant (same T)
 
         loss_fn = KFLoss(re=float("inf"), t_interval=t_interval,
                          data_weight=0.0, pde_weight=1.0)
@@ -515,7 +513,7 @@ class TestKFLossPDEPath:
         torch.manual_seed(42)
         B, S, T = 2, 16, 10
         pred = torch.randn(B, 1, S, S, T)
-        target = torch.randn(B, S, S, T + 1)
+        target = torch.randn(B, S, S, T)
         loss_fn = KFLoss(re=40, data_weight=0.0, pde_weight=1.0)
         out = loss_fn(pred, target)
         assert out["pde"].item() > 0.1, f"PDE loss = {out['pde'].item():.4f}"
@@ -524,7 +522,7 @@ class TestKFLossPDEPath:
         """Gradients must flow when data_weight=0 and only the PDE branch is active."""
         B, S, T = 2, 16, 10
         pred = torch.randn(B, 1, S, S, T, requires_grad=True)
-        target = torch.randn(B, S, S, T + 1)
+        target = torch.randn(B, S, S, T)
         loss_fn = KFLoss(re=40, data_weight=0.0, pde_weight=1.0)
         out = loss_fn(pred, target)
         out["loss"].backward()
@@ -536,7 +534,7 @@ class TestKFLossPDEPath:
         torch.manual_seed(5)
         B, S, T = 2, 16, 10
         pred = torch.randn(B, 1, S, S, T)
-        target = torch.randn(B, S, S, T + 1)
+        target = torch.randn(B, S, S, T)
 
         dw, pw = 0.5, 2.0
         loss_fn = KFLoss(re=40, data_weight=dw, pde_weight=pw)
