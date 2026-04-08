@@ -6,9 +6,12 @@ hidden_channels: 64
 n_layers: 4
 lifting_channel_ratio: 2
 projection_channel_ratio: 2
-domain_padding: 0.0625  # paper Re500-1s-FNO.yaml: num_pad=4; 4/64=0.0625
-                        # neuralop strips the padding automatically so output shape always
-                        # matches input spatial dims — no manual strip needed in kf_forward.
+domain_padding: 0.0     # paper pads only temporal dim; neuralop domain_padding pads ALL
+                        # 3 dims (x,y,t) which breaks the periodic BCs of Kolmogorov flow.
+                        # paper's temporal padding handled differently (ablation: 1d)
+positional_embedding: null  # disable GridEmbeddingND: our prepare_input already injects
+                            # [gridx,gridy,gridt,ic] as 4 channels; neuralop's default
+                            # 'grid' embedding would append 3 more → 7-ch lifting vs paper's 4
 norm: null
 fno_skip: linear
 implementation: factorized
