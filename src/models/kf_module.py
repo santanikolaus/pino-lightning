@@ -27,8 +27,10 @@ class KFLitModule(L.LightningModule):
         t_interval = _get(loss_cfg, "t_interval")
         data_weight = _get(loss_cfg, "data_weight")
         pde_weight = _get(loss_cfg, "pde_weight")
+        ic_weight = _get(loss_cfg, "ic_weight", 0.0)
         self.loss_fn = KFLoss(re=re, t_interval=t_interval,
-                              data_weight=data_weight, pde_weight=pde_weight)
+                              data_weight=data_weight, pde_weight=pde_weight,
+                              ic_weight=ic_weight)
 
         opt_cfg = _get(config, "opt")
         self._lr = _get(opt_cfg, "learning_rate", 1e-3)
@@ -53,6 +55,7 @@ class KFLitModule(L.LightningModule):
         self.log("train_loss", losses["loss"], prog_bar=True, on_step=True, on_epoch=True)
         self.log("train_data_loss", losses["data"], on_step=True, on_epoch=True)
         self.log("train_pde_loss", losses["pde"], on_step=True, on_epoch=True)
+        self.log("train_ic_loss", losses["ic"], on_step=True, on_epoch=True)
         return losses["loss"]
 
     def validation_step(self, batch, batch_idx):
@@ -64,6 +67,8 @@ class KFLitModule(L.LightningModule):
         y = target  # supervise all T frames including IC at t=0
         l2 = LpLoss(d=3, p=2, reduction="mean").rel(w, y)
         self.log("val_l2", l2, prog_bar=True, on_step=False, on_epoch=True)
+        losses = self.loss_fn(pred, target)
+        self.log("val_ic_loss", losses["ic"], on_step=False, on_epoch=True)
         # Stash one batch for KFVisualizerCallback (overwritten each step, last batch kept)
         self._val_batch = {"pred": pred.detach().cpu(), "target": target.detach().cpu()}
         return l2
