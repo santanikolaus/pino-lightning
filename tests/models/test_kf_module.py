@@ -218,7 +218,7 @@ class TestValidationStep:
             val = module.validation_step(batch, 0)
         assert torch.isfinite(val)
 
-    def test_val_l2_is_zero_for_perfect_prediction(self, cfg):
+    def test_val_l2_is_zero_for_perfect_prediction(self):
         """Ground truth fed as pred must give val_l2 ≈ 0."""
         torch.manual_seed(0)
         batch = _make_batch()
@@ -274,7 +274,6 @@ class TestKFLitModuleICWeightWiring:
         batch = _make_batch()
         with torch.no_grad():
             module.validation_step(batch, 0)
-        ic_batch = module._val_batch
         ic = batch["x"]
         target = batch["y"]
         T = target.shape[-1]
@@ -289,7 +288,97 @@ class TestKFLitModuleICWeightWiring:
 # TestCheckpointRoundtrip
 # ---------------------------------------------------------------------------
 
-class TestCheckpointRoundtrip:
+# ---------------------------------------------------------------------------
+# TestMultiStepLRBranch  (Gap 1 — milestones code path)
+# ---------------------------------------------------------------------------
+
+class TestMultiStepLRBranch:
+
+    def test_multisteplr_scheduler_is_returned(self):
+        from torch.optim.lr_scheduler import MultiStepLR
+        cfg = _make_cfg()
+        cfg["opt"] = _Bunch(
+            learning_rate=0.001,
+            weight_decay=0.0,
+            milestones=[25, 50, 75, 100],
+            gamma=0.5,
+        )
+        module = KFLitModule(cfg)
+        result = module.configure_optimizers()
+        scheduler = result["lr_scheduler"]["scheduler"]
+        assert isinstance(scheduler, MultiStepLR)
+
+    def test_multisteplr_milestones_match_config(self):
+        from torch.optim.lr_scheduler import MultiStepLR
+        cfg = _make_cfg()
+        cfg["opt"] = _Bunch(
+            learning_rate=0.001,
+            weight_decay=0.0,
+            milestones=[25, 50, 75, 100],
+            gamma=0.5,
+        )
+        module = KFLitModule(cfg)
+        result = module.configure_optimizers()
+        scheduler = result["lr_scheduler"]["scheduler"]
+        assert isinstance(scheduler, MultiStepLR)
+        assert sorted(scheduler.milestones) == [25, 50, 75, 100]
+
+    def test_multisteplr_learning_rate_wired(self):
+        cfg = _make_cfg()
+        cfg["opt"] = _Bunch(
+            learning_rate=0.001,
+            weight_decay=0.0,
+            milestones=[25, 50, 75, 100],
+            gamma=0.5,
+        )
+        module = KFLitModule(cfg)
+        result = module.configure_optimizers()
+        optimizer = result["optimizer"]
+        assert abs(optimizer.param_groups[0]["lr"] - 0.001) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# TestThreeWeightLossArithmetic  (Gap 2 — Re=100 pretrain combination)
+# ---------------------------------------------------------------------------
+
+class TestThreeWeightLossArithmetic:
+
+    def test_re100_pretrain_combination_total_equals_weighted_sum(self):
+        """loss == 5.0*data + 1.0*pde + 1.0*ic for Re=100 pretrain weights."""
+        cfg = _make_cfg()
+        cfg["loss"] = _Bunch(
+            re=100.0, t_interval=1.0, data_weight=5.0, pde_weight=1.0, ic_weight=1.0
+        )
+        torch.manual_seed(0)
+        module = KFLitModule(cfg)
+        batch = _make_batch()
+        loss = module.training_step(batch, 0)
+
+        ic = batch["x"]
+        target = batch["y"]
+        T = target.shape[-1]
+        with torch.no_grad():
+            pred = module(ic, T=T)
+        losses = module.loss_fn(pred, target)
+
+        expected = 5.0 * losses["data"] + 1.0 * losses["pde"] + 1.0 * losses["ic"]
+        torch.testing.assert_close(loss.detach(), expected.detach(), atol=1e-5, rtol=1e-5)
+
+    def test_re100_pretrain_loss_is_finite_and_positive(self):
+        cfg = _make_cfg()
+        cfg["loss"] = _Bunch(
+            re=100.0, t_interval=1.0, data_weight=5.0, pde_weight=1.0, ic_weight=1.0
+        )
+        torch.manual_seed(0)
+        module = KFLitModule(cfg)
+        batch = _make_batch()
+        loss = module.training_step(batch, 0)
+        assert torch.isfinite(loss)
+        assert loss.item() > 0.0
+
+
+# ---------------------------------------------------------------------------
+# TestCheckpointRoundtrip
 
     def test_forward_outputs_match_after_load(self, cfg, tmp_path):
         torch.manual_seed(0)

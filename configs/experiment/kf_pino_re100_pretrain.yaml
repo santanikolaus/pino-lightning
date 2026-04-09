@@ -1,0 +1,47 @@
+# @package _global_
+# PINO pretraining on Re=100 Kolmogorov flow — Table 8 row 1 source operator.
+# Matches paper-pino configs/pretrain/Re100-pretrain-1s.yaml exactly.
+#
+# Loss assembly: total = data_weight*L2 + pde_weight*PDE + ic_weight*IC
+#   paper: xy_loss=5.0, f_loss=1.0, ic_loss=1.0
+#
+# After training, checkpoint is used as the operator ansatz for Re100→Re500 transfer.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: pino-re100-pretrain
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2          # raw 129 frames → 65 effective frames (matches paper sub_t=2)
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0  # paper xy_loss=5.0
+  pde_weight: 1.0   # paper f_loss=1.0
+  ic_weight: 1.0    # paper ic_loss=1.0
+
+opt:
+  learning_rate: 0.001   # paper base_lr=0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]   # paper milestones (4 halvings over 150 epochs)
+  gamma: 0.5
+
+# model: inherits fno_kf.yaml defaults
+#   hidden_channels: 64  (matches paper layers=[64,64,64,64,64])
+#   n_modes: [8,8,8]     (matches paper modes1/2/3=[8,8,8,8])
+#   n_layers: 4
+#   domain_padding: 0.0  (no padding, preserves periodic BCs)
+#   positional_embedding: null
