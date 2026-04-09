@@ -57,36 +57,33 @@ class TestNSVorticityPhysics:
         w = _rand()
         assert ns.residual(w).abs().mean().item() > 0.1
 
-    def test_constant_field_residual_equals_neg_forcing(self):
+    def test_constant_field_residual_equals_zero(self):
         """ω(x,y,t) = c everywhere → ∂ω/∂t=0, ∇ω=0, ∇²ω=0, u·∇ω=0.
-        Residual = 0 + 0 - forcing = -forcing.
+        residual() now returns Du (LHS), which = 0 for a constant field.
         """
         ns = NSVorticity(re=float("inf"))  # v=0, no viscosity
         c = 3.7
         w = torch.full((1, S, S, T), c)
         res = ns.residual(w)  # (1, S, S, T-2)
 
-        forcing = ns.get_forcing(S, "cpu")  # (1, S, S, 1)
-        expected = -forcing.expand(1, S, S, T - 2)
+        expected = torch.zeros_like(res)
         torch.testing.assert_close(res, expected, atol=1e-5, rtol=1e-5)
 
-    def test_forcing_included_matches_paper_minus_forcing(self):
-        """our_res = paper_res - forcing (paper does NOT subtract forcing)."""
+    def test_residual_matches_paper(self):
+        """our_res == paper_res: both return Du (LHS), no forcing subtracted."""
         ns = NSVorticity(re=40)
         torch.manual_seed(42)
         w = _rand()
 
         our_res = ns.residual(w)
         paper_res = FDM_NS_vorticity(w, v=1.0 / 40)
-        forcing = ns.get_forcing(S, w.device)  # (1, S, S, 1)
 
-        expected = paper_res - forcing
-        torch.testing.assert_close(our_res, expected, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(our_res, paper_res, atol=1e-5, rtol=1e-5)
 
-    def test_linear_in_time_field_residual_equals_alpha_minus_forcing(self):
+    def test_linear_in_time_field_residual_equals_alpha(self):
         """ω(x,y,t) = α·t (uniform in space, linear in time).
         With v=0: ∂ω/∂t = α, all spatial terms vanish.
-        Residual ≈ α - forcing.
+        residual() returns Du (LHS) = α everywhere (forcing NOT subtracted).
         """
         ns = NSVorticity(re=float("inf"))  # v=0
         alpha = 2.5
@@ -95,8 +92,7 @@ class TestNSVorticityPhysics:
         w = (alpha * t_vals).reshape(1, 1, 1, T).expand(1, S, S, T)
         res = ns.residual(w)  # (1, S, S, T-2)
 
-        forcing = ns.get_forcing(S, "cpu")  # (1, S, S, 1)
-        expected = torch.full_like(res, alpha) - forcing.expand(1, S, S, T - 2)
+        expected = torch.full_like(res, alpha)
         torch.testing.assert_close(res, expected, atol=1e-4, rtol=1e-4)
 
 
@@ -137,13 +133,13 @@ class TestKFLossInterface:
         loss_fn = KFLoss(re=40)
         pred, target = self._make_pred_target()
         out = loss_fn(pred, target)
-        assert set(out.keys()) == {"loss", "data", "pde"}
+        assert set(out.keys()) == {"loss", "data", "pde", "ic"}
 
     def test_all_values_are_scalars(self):
         loss_fn = KFLoss(re=40)
         pred, target = self._make_pred_target()
         out = loss_fn(pred, target)
-        for key in ("loss", "data", "pde"):
+        for key in ("loss", "data", "pde", "ic"):
             assert out[key].dim() == 0, f"{key} is not scalar"
 
     def test_pde_weight_zero_gives_loss_equal_data(self):
@@ -251,11 +247,11 @@ class TestNSVorticityDCSentinel:
         assert not torch.isinf(res).any(), "Inf in residual for constant (DC-only) field"
 
     def test_constant_field_zero_value(self):
+        """Constant field → Du = 0 (residual() no longer subtracts forcing)."""
         w = torch.ones(1, 16, 16, 10) * 5.0
         ns = NSVorticity(re=float("inf"))
         res = ns.residual(w)
-        forcing = ns.get_forcing(16, "cpu")
-        expected = -forcing.expand(1, 16, 16, 8)
+        expected = torch.zeros_like(res)
         torch.testing.assert_close(res, expected, atol=1e-5, rtol=1e-5)
 
 
@@ -418,17 +414,16 @@ def _fdm_ns_vorticity_inline(w, v=1.0 / 40, t_interval=1.0):
 
 class TestForcingInclusionInline:
 
-    def test_our_residual_equals_paper_minus_forcing_inline(self):
+    def test_our_residual_equals_paper_inline(self):
+        """our_res == paper_res: both return Du (LHS), no forcing subtracted."""
         ns = NSVorticity(re=40)
         torch.manual_seed(42)
         w = torch.randn(2, 16, 16, 10)
 
         our_res = ns.residual(w)
         paper_res = _fdm_ns_vorticity_inline(w, v=1.0 / 40)
-        forcing = ns.get_forcing(16, w.device)
 
-        expected = paper_res - forcing
-        torch.testing.assert_close(our_res, expected, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(our_res, paper_res, atol=1e-5, rtol=1e-5)
 
     def test_paper_inline_and_our_residual_same_shape(self):
         ns = NSVorticity(re=40)
@@ -451,7 +446,7 @@ class TestTIntervalParametrised:
     def test_linear_in_time_recovers_alpha(self, t_interval):
         """ω = α·t (spatially uniform, linear in time).
         With re=inf: ∂ω/∂t = α, all spatial terms vanish.
-        Residual ≈ α - forcing for all t_interval values.
+        residual() returns Du (LHS) = α everywhere (forcing NOT subtracted).
         """
         S = 16
         T = 10
@@ -463,8 +458,7 @@ class TestTIntervalParametrised:
         w = (alpha * t_vals).reshape(1, 1, 1, T).expand(1, S, S, T).clone()
 
         res = ns.residual(w)
-        forcing = ns.get_forcing(S, "cpu")
-        expected = torch.full_like(res, alpha) - forcing.expand(1, S, S, T - 2)
+        expected = torch.full_like(res, alpha)
         torch.testing.assert_close(res, expected, atol=1e-4, rtol=1e-4)
 
     @pytest.mark.parametrize("t_interval", [0.5, 1.0, 2.0],
@@ -545,3 +539,163 @@ class TestKFLossPDEPath:
         pde_val  = KFLoss(re=40, data_weight=0.0, pde_weight=1.0)(pred, target)["pde"]
 
         torch.testing.assert_close(out["loss"], dw * data_val + pw * pde_val)
+
+
+# ---------------------------------------------------------------------------
+# Class TestKFLossPDEMatchesPaper  — end-to-end numerical equivalence
+# ---------------------------------------------------------------------------
+
+
+class TestKFLossPDEMatchesPaper:
+    """Verify KFLoss['pde'] numerically equals paper's PINO_loss3d loss_f.
+
+    Chain tested: residual() == FDM_NS_vorticity AND lploss.rel(Du, forcing)
+    matches paper's lploss(Du, forcing.repeat(...)). Tests the full pipe, not
+    just the intermediate residual step.
+    """
+
+    def test_kfloss_pde_equals_paper_loss_f(self):
+        """KFLoss['pde'] must equal PINO_loss3d loss_f on the same input."""
+        from train_utils.losses import PINO_loss3d, get_forcing
+
+        torch.manual_seed(7)
+        B, S, T = 2, 16, 10
+        re = 40
+        t_interval = 1.0
+
+        w = torch.randn(B, S, S, T)
+        pred = w.unsqueeze(1)            # KFLoss expects (B, 1, S, S, T)
+        target = torch.randn(B, S, S, T)
+
+        # Paper's computation
+        u0 = w[:, :, :, 0]              # IC: first frame, matches paper's x extraction
+        forcing_paper = get_forcing(S).to(w.device)  # (1, S, S, 1)
+        _, loss_f_paper = PINO_loss3d(w, u0, forcing_paper, v=1.0 / re, t_interval=t_interval)
+
+        # Our computation
+        loss_fn = KFLoss(re=re, t_interval=t_interval, data_weight=0.0, pde_weight=1.0)
+        out = loss_fn(pred, target)
+
+        torch.testing.assert_close(out["pde"], loss_f_paper, atol=1e-5, rtol=1e-5)
+
+    def test_kfloss_pde_zero_on_analytical_solution_matches_paper_zero(self):
+        """Both KFLoss and paper give near-zero pde loss on the exact solution."""
+        from train_utils.losses import PINO_loss3d, get_forcing
+
+        import numpy as np
+        S, T = 16, 10
+        re = float("inf")
+        t_interval = 1.0
+
+        t_vals = torch.arange(T, dtype=torch.float) * (t_interval / (T - 1))
+        y_grid = torch.tensor(np.linspace(0, 2 * np.pi, S, endpoint=False), dtype=torch.float)
+        cos_4y = -4 * torch.cos(4 * y_grid)
+        w = (cos_4y.reshape(1, 1, S, 1) * t_vals.reshape(1, 1, 1, T)).expand(1, S, S, T).clone()
+
+        pred = w.unsqueeze(1)
+        target = torch.zeros(1, S, S, T)  # unused (data_weight=0)
+        u0 = w[:, :, :, 0]
+        forcing_paper = get_forcing(S)
+
+        _, loss_f_paper = PINO_loss3d(w, u0, forcing_paper, v=0.0, t_interval=t_interval)
+
+        loss_fn = KFLoss(re=re, t_interval=t_interval, data_weight=0.0, pde_weight=1.0)
+        out = loss_fn(pred, target)
+
+        assert out["pde"].item() < 1e-5, f"KFLoss pde = {out['pde'].item():.2e}"
+        assert loss_f_paper.item() < 1e-5, f"Paper loss_f = {loss_f_paper.item():.2e}"
+
+
+# ---------------------------------------------------------------------------
+# Class TestKFLossICLoss  (Block 1b-2)
+# ---------------------------------------------------------------------------
+
+
+class TestKFLossICLoss:
+
+    def _make(self, b=B, s=S, t=T):
+        pred = torch.randn(b, 1, s, s, t + 1)
+        target = torch.randn(b, s, s, t + 1)
+        return pred, target
+
+    def test_ic_key_present_even_when_ic_weight_zero(self):
+        """ic is always computed and returned regardless of ic_weight."""
+        loss_fn = KFLoss(re=40, data_weight=1.0, pde_weight=0.0, ic_weight=0.0)
+        pred, target = self._make()
+        out = loss_fn(pred, target)
+        assert "ic" in out
+        assert out["ic"].dim() == 0
+
+    def test_perfect_ic_gives_near_zero_ic_loss(self):
+        """pred[:,:,:,0] == target[:,:,:,0] → ic ≈ 0."""
+        torch.manual_seed(3)
+        target = torch.randn(B, S, S, T + 1)
+        pred = torch.randn(B, 1, S, S, T + 1)
+        pred[:, 0, :, :, 0] = target[:, :, :, 0]
+        loss_fn = KFLoss(re=40, data_weight=0.0, pde_weight=0.0, ic_weight=1.0)
+        out = loss_fn(pred, target)
+        assert out["ic"].item() < 1e-6, f"ic = {out['ic'].item():.2e}"
+
+    def test_wrong_ic_gives_large_ic_loss(self):
+        """pred t=0 far from target t=0 → ic is large."""
+        torch.manual_seed(7)
+        target = torch.zeros(B, S, S, T + 1)
+        pred = torch.ones(B, 1, S, S, T + 1) * 100.0
+        loss_fn = KFLoss(re=40, data_weight=0.0, pde_weight=0.0, ic_weight=1.0)
+        out = loss_fn(pred, target)
+        assert out["ic"].item() > 1.0, f"ic = {out['ic'].item():.4f}"
+
+    def test_ic_weight_only_loss_equals_ic_weight_times_ic(self):
+        """With data_weight=0, pde_weight=0: loss == ic_weight * ic."""
+        torch.manual_seed(11)
+        iw = 5.0
+        loss_fn = KFLoss(re=40, data_weight=0.0, pde_weight=0.0, ic_weight=iw)
+        pred, target = self._make()
+        out = loss_fn(pred, target)
+        torch.testing.assert_close(out["loss"], iw * out["ic"], atol=1e-6, rtol=1e-6)
+
+    @pytest.mark.parametrize("dw,pw,iw", [
+        (1.0, 0.5, 2.0),
+        (0.0, 1.0, 5.0),
+        (2.0, 0.0, 3.0),
+    ], ids=["dw=1_pw=0.5_iw=2", "dw=0_pw=1_iw=5", "dw=2_pw=0_iw=3"])
+    def test_all_four_weights_arithmetic(self, dw, pw, iw):
+        """loss == dw*data + pw*pde + iw*ic for arbitrary weight combinations."""
+        torch.manual_seed(13)
+        pred, target = self._make()
+        loss_fn = KFLoss(re=40, data_weight=dw, pde_weight=pw, ic_weight=iw)
+        out = loss_fn(pred, target)
+        expected = dw * out["data"] + pw * out["pde"] + iw * out["ic"]
+        torch.testing.assert_close(out["loss"], expected, atol=1e-5, rtol=1e-5)
+
+    def test_gradients_flow_through_ic_only_path(self):
+        """data_weight=0, pde_weight=0, ic_weight=1 → gradients still flow through IC branch."""
+        pred = torch.randn(B, 1, S, S, T + 1, requires_grad=True)
+        target = torch.randn(B, S, S, T + 1)
+        loss_fn = KFLoss(re=40, data_weight=0.0, pde_weight=0.0, ic_weight=1.0)
+        out = loss_fn(pred, target)
+        out["loss"].backward()
+        assert pred.grad is not None
+        assert torch.isfinite(pred.grad).all()
+        assert pred.grad.abs().sum().item() > 0.0
+
+    def test_ic_loss_numerical_match_to_paper(self):
+        """KFLoss['ic'] equals PINO_loss3d(...)[0] (loss_ic) on the same input."""
+        from train_utils.losses import PINO_loss3d, get_forcing
+
+        torch.manual_seed(17)
+        re = 40
+        t_interval = 1.0
+        w = torch.randn(B, S, S, T + 1)
+        u0 = w[:, :, :, 0]
+
+        pred = w.unsqueeze(1)
+        target = w
+
+        forcing_paper = get_forcing(S).to(w.device)
+        loss_ic_paper, _ = PINO_loss3d(w, u0, forcing_paper, v=1.0 / re, t_interval=t_interval)
+
+        loss_fn = KFLoss(re=re, t_interval=t_interval, data_weight=0.0, pde_weight=0.0, ic_weight=1.0)
+        out = loss_fn(pred, target)
+
+        torch.testing.assert_close(out["ic"], loss_ic_paper, atol=1e-3, rtol=1e-3)

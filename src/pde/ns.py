@@ -5,7 +5,8 @@ from neuralop import LpLoss
 
 
 class NSVorticity:
-    """NS vorticity residual: ∂ω/∂t + u·∇ω − ν∇²ω − f(x,y) = 0"""
+    """NS vorticity equation: ∂ω/∂t + u·∇ω − ν∇²ω = f(x,y).
+    residual() returns the LHS; for a true solution LHS == f."""
 
     def __init__(self, re: float, t_interval: float = 1.0):
         self.v = 1.0 / re
@@ -19,7 +20,9 @@ class NSVorticity:
     def residual(self, w: Tensor) -> Tensor:
         """
         w: (B, S, S, T) — vorticity trajectory, channels-last
-        Returns: (B, S, S, T-2) — PDE residual at interior time steps
+        Returns: (B, S, S, T-2) — LHS of NS vorticity eq at interior time steps.
+        For a true solution this equals get_forcing(S, device); target it against
+        forcing via lploss.rel(Du, forcing) (matches paper's PINO_loss3d).
         """
         batchsize = w.size(0)
         nx = w.size(1)
@@ -64,31 +67,37 @@ class NSVorticity:
         dt = self.t_interval / (nt - 1)
         wt = (w[:, :, :, 2:] - w[:, :, :, :-2]) / (2 * dt)
 
-        forcing = self.get_forcing(nx, device)
-
-        Du = wt + (ux * wx + uy * wy - v * wlap)[..., 1:-1] - forcing
+        Du = wt + (ux * wx + uy * wy - v * wlap)[..., 1:-1]
         return Du
 
 
 class KFLoss:
     def __init__(self, re: float, t_interval: float = 1.0,
-                 data_weight: float = 1.0, pde_weight: float = 0.0):
+                 data_weight: float = 1.0, pde_weight: float = 0.0,
+                 ic_weight: float = 0.0):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
         self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
         self.pde_weight = pde_weight
+        self.ic_weight = ic_weight
 
     def __call__(self, pred: Tensor, target: Tensor) -> dict[str, Tensor]:
         """
         pred:   (B, 1, S, S, T)  — FNO output, channels-first
         target: (B, S, S, T)     — ground truth from KFDataset (all T frames incl. IC)
-        Returns: {'loss': scalar, 'data': scalar, 'pde': scalar}
+        Returns: {'loss': scalar, 'data': scalar, 'pde': scalar, 'ic': scalar}
         """
         w = pred.squeeze(1)        # (B, S, S, T)
         y = target                 # (B, S, S, T) — supervise all frames incl. IC at t=0
 
         data = self.lp.rel(w, y)
-        pde = self.ns.residual(w).pow(2).mean()
+        forcing = self.ns.get_forcing(w.shape[1], w.device).expand(w.shape[0], w.shape[1], w.shape[2], w.shape[3] - 2)
+        Du = self.ns.residual(w)
+        pde = self.lp.rel(Du, forcing)
 
-        loss = self.data_weight * data + self.pde_weight * pde
-        return {"loss": loss, "data": data, "pde": pde}
+        u_in = w[:, :, :, 0]      # prediction at t=0, shape (B, S, S)
+        u0 = target[:, :, :, 0]   # true IC, shape (B, S, S)
+        ic = self.lp.rel(u_in, u0)
+
+        loss = self.data_weight * data + self.pde_weight * pde + self.ic_weight * ic
+        return {"loss": loss, "data": data, "pde": pde, "ic": ic}

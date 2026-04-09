@@ -44,7 +44,7 @@ def _make_cfg():
         fixed_rank_modes=False,
         stabilizer="None",
     )
-    loss_cfg = _Bunch(re=40.0, t_interval=1.0, data_weight=1.0, pde_weight=0.0)
+    loss_cfg = _Bunch(re=40.0, t_interval=1.0, data_weight=1.0, pde_weight=0.0, ic_weight=0.0)
     opt_cfg = _Bunch(learning_rate=1e-3, weight_decay=0.0, step_size=100, gamma=0.5)
     data_cfg = _Bunch(T=10, time_scale=1.0)
     return _Bunch(model=model_cfg, loss=loss_cfg, opt=opt_cfg, data=data_cfg)
@@ -228,6 +228,61 @@ class TestValidationStep:
         from neuralop import LpLoss
         l2 = LpLoss(d=3, p=2, reduction="mean").rel(w, y)
         assert l2.item() < 1e-6, f"Perfect prediction gave val_l2={l2.item():.6f}, expected ~0"
+
+
+# ---------------------------------------------------------------------------
+# TestKFLitModuleICWeightWiring  (Block 1b-2)
+# ---------------------------------------------------------------------------
+
+class TestKFLitModuleICWeightWiring:
+
+    def test_ic_weight_from_config_wired_to_loss_fn(self):
+        """ic_weight in config must be forwarded to KFLoss.ic_weight."""
+        cfg = _make_cfg()
+        cfg["loss"] = _Bunch(re=40.0, t_interval=1.0, data_weight=1.0,
+                             pde_weight=0.0, ic_weight=5.0)
+        module = KFLitModule(cfg)
+        assert module.loss_fn.ic_weight == 5.0
+
+    def test_ic_weight_default_zero_when_absent(self):
+        """Config with no ic_weight key → KFLoss.ic_weight defaults to 0.0."""
+        cfg = _make_cfg()
+        cfg["loss"] = _Bunch(re=40.0, t_interval=1.0, data_weight=1.0, pde_weight=0.0)
+        module = KFLitModule(cfg)
+        assert module.loss_fn.ic_weight == 0.0
+
+    def test_training_step_not_broken_by_ic_key(self):
+        """training_step must still return losses['loss'] (a scalar) when ic key is present."""
+        cfg = _make_cfg()
+        cfg["loss"] = _Bunch(re=40.0, t_interval=1.0, data_weight=1.0,
+                             pde_weight=0.0, ic_weight=1.0)
+        torch.manual_seed(0)
+        module = KFLitModule(cfg)
+        batch = _make_batch()
+        loss = module.training_step(batch, 0)
+        assert isinstance(loss, torch.Tensor)
+        assert loss.dim() == 0
+        assert torch.isfinite(loss)
+
+    def test_validation_step_ic_loss_is_scalar_and_finite(self):
+        """validation_step must expose val_ic_loss; verify the underlying ic value is finite."""
+        cfg = _make_cfg()
+        cfg["loss"] = _Bunch(re=40.0, t_interval=1.0, data_weight=1.0,
+                             pde_weight=0.0, ic_weight=2.0)
+        torch.manual_seed(0)
+        module = KFLitModule(cfg)
+        batch = _make_batch()
+        with torch.no_grad():
+            module.validation_step(batch, 0)
+        ic_batch = module._val_batch
+        ic = batch["x"]
+        target = batch["y"]
+        T = target.shape[-1]
+        pred = module(ic, T=T)
+        losses = module.loss_fn(pred, target)
+        assert "ic" in losses
+        assert losses["ic"].dim() == 0
+        assert torch.isfinite(losses["ic"])
 
 
 # ---------------------------------------------------------------------------
