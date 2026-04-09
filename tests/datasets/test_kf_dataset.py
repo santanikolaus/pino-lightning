@@ -311,3 +311,112 @@ class TestKFDatasetSubTWithOffset:
         path, _ = make_frame_index_npy(tmp_path, n=10)
         ds = KFDataset(path, n_samples=3, offset=2, sub_t=3)
         assert ds[0]["y"][..., 1].unique().item() == pytest.approx(3.0)
+
+
+# ---------------------------------------------------------------------------
+# TestKFDatasetNTrain200Boundary  (Gap 4 — n_train=200 offset boundary)
+# ---------------------------------------------------------------------------
+
+
+def make_large_npy(tmp_path, n=220, t=4, s=8):
+    """Write a (n, t+1, s, s) float32 .npy file large enough for n_train=200 splits.
+
+    Returns (path_str, raw_array).
+    """
+    rng = np.random.default_rng(42)
+    arr = rng.standard_normal((n, t + 1, s, s)).astype(np.float32)
+    path = tmp_path / "NS_large_boundary.npy"
+    np.save(path, arr)
+    return str(path), arr
+
+
+class TestKFDatasetNTrain200Boundary:
+
+    def test_val_offset_equals_n_train_when_offset_val_not_specified(self, tmp_path):
+        """KFDataModule default: offset_val = offset_train + n_train = 200."""
+        path, _ = make_large_npy(tmp_path, n=220, t=4, s=8)
+        dm = KFDataModule(
+            data_path=path,
+            n_train=200,
+            n_val=20,
+            batch_size=4,
+            offset_train=0,
+            sub_t=1,
+        )
+        assert dm.offset_val == 200
+
+    def test_val_ic_matches_raw_trajectory_200(self, tmp_path):
+        """First IC of val dataset must equal raw[200, 0, :, :] after permutation."""
+        path, raw = make_large_npy(tmp_path, n=220, t=4, s=8)
+        dm = KFDataModule(
+            data_path=path,
+            n_train=200,
+            n_val=20,
+            batch_size=4,
+            offset_train=0,
+            sub_t=1,
+        )
+        dm.setup()
+        val_ic = dm.val_dataset[0]["x"]
+        expected = torch.from_numpy(raw[200, 0, :, :])
+        torch.testing.assert_close(val_ic, expected, atol=1e-6, rtol=0.0)
+
+    def test_train_last_ic_matches_raw_trajectory_199(self, tmp_path):
+        """Last IC of train dataset must equal raw[199, 0, :, :]."""
+        path, raw = make_large_npy(tmp_path, n=220, t=4, s=8)
+        dm = KFDataModule(
+            data_path=path,
+            n_train=200,
+            n_val=20,
+            batch_size=4,
+            offset_train=0,
+            sub_t=1,
+        )
+        dm.setup()
+        train_last_ic = dm.train_dataset[199]["x"]
+        expected = torch.from_numpy(raw[199, 0, :, :])
+        torch.testing.assert_close(train_last_ic, expected, atol=1e-6, rtol=0.0)
+
+    def test_train_and_val_are_non_overlapping(self, tmp_path):
+        """No trajectory index appears in both train and val windows."""
+        path, raw = make_large_npy(tmp_path, n=220, t=4, s=8)
+        dm = KFDataModule(
+            data_path=path,
+            n_train=200,
+            n_val=20,
+            batch_size=4,
+            offset_train=0,
+            sub_t=1,
+        )
+        dm.setup()
+        train_last_ic = dm.train_dataset[199]["x"]
+        val_first_ic = dm.val_dataset[0]["x"]
+        assert not torch.equal(train_last_ic, val_first_ic), (
+            "Last train IC equals first val IC — train/val windows overlap"
+        )
+
+    def test_val_dataset_len_equals_n_val(self, tmp_path):
+        path, _ = make_large_npy(tmp_path, n=220, t=4, s=8)
+        dm = KFDataModule(
+            data_path=path,
+            n_train=200,
+            n_val=20,
+            batch_size=4,
+            offset_train=0,
+            sub_t=1,
+        )
+        dm.setup()
+        assert len(dm.val_dataset) == 20
+
+    def test_train_dataset_len_equals_n_train(self, tmp_path):
+        path, _ = make_large_npy(tmp_path, n=220, t=4, s=8)
+        dm = KFDataModule(
+            data_path=path,
+            n_train=200,
+            n_val=20,
+            batch_size=4,
+            offset_train=0,
+            sub_t=1,
+        )
+        dm.setup()
+        assert len(dm.train_dataset) == 200

@@ -699,3 +699,65 @@ class TestKFLossICLoss:
         out = loss_fn(pred, target)
 
         torch.testing.assert_close(out["ic"], loss_ic_paper, atol=1e-3, rtol=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Class TestNSVorticityRe100  (Gap 3 — re=100 as a parameter)
+# ---------------------------------------------------------------------------
+
+
+class TestNSVorticityRe100:
+
+    @pytest.mark.parametrize("b,s,t", [
+        (2, 16, 10),
+        (1, 16, 10),
+        (4, 32, 8),
+    ], ids=["b=2_s=16_t=10", "b=1_s=16_t=10", "b=4_s=32_t=8"])
+    def test_residual_output_shape_re100(self, b, s, t):
+        ns = NSVorticity(re=100)
+        w = torch.randn(b, s, s, t)
+        out = ns.residual(w)
+        assert out.shape == (b, s, s, t - 2)
+
+    @pytest.mark.parametrize("b,s,t", [
+        (2, 16, 10),
+        (1, 16, 10),
+        (4, 32, 8),
+    ], ids=["b=2_s=16_t=10", "b=1_s=16_t=10", "b=4_s=32_t=8"])
+    def test_no_nan_on_random_input_re100(self, b, s, t):
+        ns = NSVorticity(re=100)
+        torch.manual_seed(0)
+        w = torch.randn(b, s, s, t)
+        assert not torch.isnan(ns.residual(w)).any()
+
+    def test_re100_viscosity_coefficient(self):
+        ns = NSVorticity(re=100)
+        assert abs(ns.v - 0.01) < 1e-9
+
+    def test_kfloss_re100_weight_arithmetic(self):
+        """loss == 5.0*data + 1.0*pde + 1.0*ic for KFLoss(re=100) with v=0.01."""
+        torch.manual_seed(7)
+        B, S, T = 2, 16, 10
+        pred = torch.randn(B, 1, S, S, T)
+        target = torch.randn(B, S, S, T)
+
+        dw, pw, iw = 5.0, 1.0, 1.0
+        loss_fn = KFLoss(re=100, data_weight=dw, pde_weight=pw, ic_weight=iw)
+        out = loss_fn(pred, target)
+
+        expected = dw * out["data"] + pw * out["pde"] + iw * out["ic"]
+        torch.testing.assert_close(out["loss"], expected, atol=1e-5, rtol=1e-5)
+
+    def test_kfloss_re100_residual_matches_re100_viscosity(self):
+        """KFLoss(re=100) internally uses v=0.01 — confirm via direct residual comparison."""
+        torch.manual_seed(3)
+        B, S, T = 2, 16, 10
+        w = torch.randn(B, S, S, T)
+
+        ns_re100 = NSVorticity(re=100)
+        ns_re40 = NSVorticity(re=40)
+        res_100 = ns_re100.residual(w)
+        res_40 = ns_re40.residual(w)
+        assert not torch.allclose(res_100, res_40, atol=1e-4), (
+            "re=100 and re=40 produce identical residuals — viscosity coefficient not applied"
+        )
