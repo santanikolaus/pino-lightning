@@ -15,6 +15,7 @@ logger:
   wandb:
     project: finetune-kol
     name: null                # overridden per instance in train_kf_instance.py
+    run_prefix: "1b_scratch_data_re500"
 
 trainer:
   max_epochs: 8000            # n_train=1, batch=1 → 1 step/epoch → 8000 gradient steps total
