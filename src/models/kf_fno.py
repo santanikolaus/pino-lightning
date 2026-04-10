@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from typing import Union
 
@@ -89,7 +90,7 @@ def build_fno_kf(config) -> torch.nn.Module:
     return get_model(wrapped)
 
 
-def kf_forward(model: torch.nn.Module, ic: Tensor, T: int, time_scale: float = 1.0) -> Tensor:
+def kf_forward(model: torch.nn.Module, ic: Tensor, T: int, time_scale: float = 1.0, temporal_pad: int = 0) -> Tensor:
     """Run the full KF pipeline: IC → prepare_input → permute → FNO → output.
 
     Args:
@@ -97,10 +98,18 @@ def kf_forward(model: torch.nn.Module, ic: Tensor, T: int, time_scale: float = 1
         ic: initial condition vorticity, shape (B, S, S)
         T: number of time steps to predict
         time_scale: passed through to prepare_input
+        temporal_pad: number of zero frames to pad at the end of the time axis
+                      before the forward pass (Ablation A). Padded frames are
+                      removed from the output before returning.
 
     Returns:
         Tensor shape (B, 1, S, S, T) — predicted vorticity trajectory
     """
-    x = prepare_input(ic, T, time_scale)   # (B, S, S, T, 4)
-    x = x.permute(0, 4, 1, 2, 3)          # (B, 4, S, S, T)
-    return model(x)                         # (B, 1, S, S, T)
+    x = prepare_input(ic, T, time_scale)          # (B, S, S, T, 4)
+    x = x.permute(0, 4, 1, 2, 3)                 # (B, 4, S, S, T)
+    if temporal_pad > 0:
+        x = F.pad(x, (0, temporal_pad))           # (B, 4, S, S, T+pad)
+    out = model(x)                                # (B, 1, S, S, T+pad) or (B,1,S,S,T)
+    if temporal_pad > 0:
+        out = out[..., :-temporal_pad]            # (B, 1, S, S, T)
+    return out
