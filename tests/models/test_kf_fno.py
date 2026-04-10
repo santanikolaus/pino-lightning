@@ -271,3 +271,130 @@ def test_padding_shape_consistency(domain_padding):
         f"domain_padding={domain_padding}: expected shape ({B}, 1, {S}, {S}, {T}), "
         f"got {tuple(out.shape)}."
     )
+
+
+# ---------------------------------------------------------------------------
+# Block 3e: temporal zero-padding tests (Ablation A)
+# ---------------------------------------------------------------------------
+
+def _make_passthrough_model(B: int, S: int) -> torch.nn.Module:
+    """Stub model: returns the input tensor sliced to out_channels=1 on dim 1.
+
+    Accepts (B, 4, S, S, T_any) and returns (B, 1, S, S, T_any).
+    This lets tests run without neuralop installed and without GPU.
+    """
+    class _Passthrough(torch.nn.Module):
+        def forward(self, x):
+            return x[:, :1, ...]
+    return _Passthrough()
+
+
+@pytest.mark.parametrize("temporal_pad,B,S,T", [
+    pytest.param(5,  1, 4, 8,  id="pad5_B1_S4_T8"),
+    pytest.param(10, 2, 4, 6,  id="pad10_B2_S4_T6"),
+    pytest.param(1,  1, 4, 3,  id="pad1_B1_S4_T3"),
+])
+def test_kf_forward_temporal_pad_output_shape(temporal_pad, B, S, T):
+    """kf_forward with temporal_pad > 0 must return shape (B, 1, S, S, T), not T+pad."""
+    model = _make_passthrough_model(B, S)
+    ic = torch.zeros(B, S, S)
+    out = kf_forward(model, ic, T, temporal_pad=temporal_pad)
+    assert out.shape == (B, 1, S, S, T), (
+        f"temporal_pad={temporal_pad}: expected (B={B}, 1, S={S}, S={S}, T={T}), "
+        f"got {tuple(out.shape)}. Padded frames were not trimmed."
+    )
+
+
+@pytest.mark.parametrize("B,S,T", [
+    pytest.param(1, 4, 8,  id="B1_S4_T8"),
+    pytest.param(2, 4, 6,  id="B2_S4_T6"),
+    pytest.param(1, 4, 3,  id="B1_S4_T3"),
+])
+def test_kf_forward_no_temporal_pad_output_shape(B, S, T):
+    """kf_forward with temporal_pad=0 (default) must return shape (B, 1, S, S, T)."""
+    model = _make_passthrough_model(B, S)
+    ic = torch.zeros(B, S, S)
+    out = kf_forward(model, ic, T, temporal_pad=0)
+    assert out.shape == (B, 1, S, S, T), (
+        f"temporal_pad=0: expected ({B}, 1, {S}, {S}, {T}), got {tuple(out.shape)}."
+    )
+
+
+def test_kf_forward_zero_pad_does_not_produce_empty_output():
+    """temporal_pad=0 must NOT produce an empty tensor.
+
+    Without the `if temporal_pad > 0` guard, `out[..., :-0]` == `out[..., :0]`
+    which is an empty tensor with size 0 on the time axis.
+    """
+    B, S, T = 1, 4, 8
+    model = _make_passthrough_model(B, S)
+    ic = torch.zeros(B, S, S)
+    out = kf_forward(model, ic, T, temporal_pad=0)
+    assert out.shape[-1] == T, (
+        f"temporal_pad=0 produced time-axis size {out.shape[-1]}, expected {T}. "
+        "The `if temporal_pad > 0` guard may be missing."
+    )
+    assert out.numel() > 0, "Output tensor is empty — guard on temporal_pad=0 is broken."
+
+
+def test_kf_forward_padded_frames_are_zero():
+    """The frames appended to the time axis by F.pad must be exactly zero.
+
+    We record the raw tensor seen by the model by using a capturing stub, then
+    inspect the last `temporal_pad` time steps on all channels.
+    """
+    B, S, T, pad = 1, 4, 6, 3
+
+    captured = {}
+
+    class _CapturingModel(torch.nn.Module):
+        def forward(self, x):
+            captured["input"] = x.detach().clone()
+            return x[:, :1, ...]
+
+    model = _CapturingModel()
+    ic = torch.ones(B, S, S)
+    kf_forward(model, ic, T, temporal_pad=pad)
+
+    x_seen = captured["input"]
+    assert x_seen.shape == (B, 4, S, S, T + pad), (
+        f"Model saw input shape {tuple(x_seen.shape)}, expected (B={B}, 4, S={S}, S={S}, T+pad={T+pad})."
+    )
+    padded_frames = x_seen[..., T:]
+    assert torch.all(padded_frames == 0.0), (
+        f"Padded frames are not zero. max abs value: {padded_frames.abs().max().item():.6f}. "
+        "F.pad default fill must be 0."
+    )
+
+
+def test_kf_forward_original_frames_unchanged_by_padding():
+    """The first T frames seen by the model must be identical to the unpadded case.
+
+    This confirms that `F.pad(x, (0, temporal_pad))` only appends — it does not
+    shift or modify the existing time steps.
+    """
+    B, S, T, pad = 1, 4, 6, 3
+
+    seen_with_pad = {}
+    seen_no_pad = {}
+
+    class _Capture(torch.nn.Module):
+        def __init__(self, store):
+            super().__init__()
+            self._store = store
+        def forward(self, x):
+            self._store["input"] = x.detach().clone()
+            return x[:, :1, ...]
+
+    torch.manual_seed(7)
+    ic = torch.randn(B, S, S)
+    kf_forward(_Capture(seen_with_pad), ic, T, temporal_pad=pad)
+    kf_forward(_Capture(seen_no_pad),   ic, T, temporal_pad=0)
+
+    torch.testing.assert_close(
+        seen_with_pad["input"][..., :T],
+        seen_no_pad["input"],
+        atol=1e-6, rtol=0.0,
+        msg="First T frames with padding differ from unpadded run. "
+            "F.pad may have modified existing frames.",
+    )
