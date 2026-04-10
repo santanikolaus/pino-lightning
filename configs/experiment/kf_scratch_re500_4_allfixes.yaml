@@ -1,0 +1,59 @@
+# @package _global_
+# Full-scale Re500 from-scratch run — all three ablation fixes from series 3 applied:
+#   3a: temporal_pad=5  (inherited from configs/data/kf.yaml foundational default)
+#   3b: lifting_channel_ratio=0  (single linear fc0, matches paper)
+#   3d: hidden_channels=128      (4× spectral capacity, matches paper's 4-quadrant SpectralConv3d)
+#
+# 20 test instances (280–299), split across 4 GPUs via instance.start/stop overrides.
+# Run naming: 4a_allfixes_i{instance_idx}  (derived from IC index by train_kf_instance.py)
+#
+# Previous baseline: kf_scratch_re500_pde_only (2_scratch, instances 280–284)
+# Ablation confirmation: kf_scratch_re500_3e_all (single instance 295)
+
+defaults:
+  - override /callbacks: kf
+
+callbacks:
+  kf_visualizer:
+    log_every_n_epochs: 500
+
+logger:
+  wandb:
+    project: finetune_kol_2
+    name: null                # auto-set to {run_prefix}_i{instance_idx} by train_kf_instance.py
+    run_prefix: "4a_allfixes"
+
+trainer:
+  max_epochs: 8000            # 1 step/epoch (n_train=1, batch=1) → 8000 gradient steps
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_part0.npy
+  n_train: 1
+  n_val: 1
+  batch_size: 1
+  sub_t: 2                    # 129 raw frames → 65 effective (matches paper Table 8)
+  num_workers: 0
+  # temporal_pad: 5           # inherited from configs/data/kf.yaml default
+
+loss:
+  re: 500
+  t_interval: 1.0
+  data_weight: 0.0
+  pde_weight: 1.0
+  ic_weight: 5.0
+
+opt:
+  learning_rate: 0.0025
+  weight_decay: 0.0
+  milestones: [1000, 2000, 3000, 4000, 5000, 6000, 7000]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0    # single linear lift (paper fc0)
+  hidden_channels: 128        # 4× spectral capacity vs hidden=64 baseline
+
+# instance.start / instance.stop are set per GPU by the launch scripts:
+#   GPU 0: 280–284   GPU 1: 285–289   GPU 2: 290–294   GPU 3: 295–299
+instance:
+  start: 280
+  stop: 300
