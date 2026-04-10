@@ -1,6 +1,10 @@
 # @package _global_
 # PINO pretraining on Re=250 Kolmogorov flow — Table 8 source operator.
 # Matches paper-pino configs/pretrain/Re250-pretrain-1s.yaml.
+#
+# Architecture aligned with fine-tuning ablation (4a_allfixes):
+#   lifting_channel_ratio=0  (single linear fc0, matches paper)
+#   hidden_channels=128      (matches fine-tune warm-start target)
 
 defaults:
   - override /callbacks: kf
@@ -8,7 +12,7 @@ defaults:
 logger:
   wandb:
     project: pretrain-kol
-    name: pino-re250-pretrain
+    name: 1_pino-re250-pretrain
 
 trainer:
   max_epochs: 150
@@ -33,3 +37,7 @@ opt:
   weight_decay: 0.0
   milestones: [25, 50, 75, 100]
   gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0   # single linear lift (paper fc0); matches 4a_allfixes fine-tune
+  hidden_channels: 128       # matches 4a_allfixes fine-tune architecture for warm-start

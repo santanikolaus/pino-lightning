@@ -1,11 +1,15 @@
 # @package _global_
-# PINO pretraining on Re=100 Kolmogorov flow — Table 8 row 1 source operator.
-# Matches paper-pino configs/pretrain/Re100-pretrain-1s.yaml exactly.
+# PINO pretraining on Re=100 Kolmogorov flow — Table 8 source operator.
+# Matches paper-pino configs/pretrain/Re100-pretrain-1s.yaml.
 #
 # Loss assembly: total = data_weight*L2 + pde_weight*PDE + ic_weight*IC
 #   paper: xy_loss=5.0, f_loss=1.0, ic_loss=1.0
 #
-# After training, checkpoint is used as the operator ansatz for Re100→Re500 transfer.
+# Architecture aligned with fine-tuning ablation (4a_allfixes):
+#   lifting_channel_ratio=0  (single linear fc0, matches paper)
+#   hidden_channels=128      (matches fine-tune warm-start target)
+#
+# After training, checkpoint is used as warm-start for Re100 instance-wise fine-tuning.
 
 defaults:
   - override /callbacks: kf
@@ -13,7 +17,7 @@ defaults:
 logger:
   wandb:
     project: pretrain-kol
-    name: pino-re100-pretrain
+    name: 1_pino-re100-pretrain
 
 trainer:
   max_epochs: 150
@@ -34,14 +38,11 @@ loss:
   ic_weight: 1.0    # paper ic_loss=1.0
 
 opt:
-  learning_rate: 0.001   # paper base_lr=0.001
+  learning_rate: 0.001
   weight_decay: 0.0
-  milestones: [25, 50, 75, 100]   # paper milestones (4 halvings over 150 epochs)
+  milestones: [25, 50, 75, 100]
   gamma: 0.5
 
-# model: inherits fno_kf.yaml defaults
-#   hidden_channels: 64  (matches paper layers=[64,64,64,64,64])
-#   n_modes: [8,8,8]     (matches paper modes1/2/3=[8,8,8,8])
-#   n_layers: 4
-#   domain_padding: 0.0  (no padding, preserves periodic BCs)
-#   positional_embedding: null
+model:
+  lifting_channel_ratio: 0   # single linear lift (paper fc0); matches 4a_allfixes fine-tune
+  hidden_channels: 128       # matches 4a_allfixes fine-tune architecture for warm-start
