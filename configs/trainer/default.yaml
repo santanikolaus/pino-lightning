@@ -3,6 +3,7 @@ max_epochs: 501  # paper configs/operator/Re500-1s-FNO.yaml: epochs=501
 accelerator: gpu
 devices: 1
 enable_model_summary: false
+check_val_every_n_epoch: 50
 limit_train_batches: null
 limit_val_batches: null
 limit_test_batches: null
