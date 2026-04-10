@@ -42,9 +42,10 @@ class KFLitModule(L.LightningModule):
         data_cfg = _get(config, "data")
         self.T = _get(data_cfg, "T", 128)
         self.time_scale = _get(data_cfg, "time_scale", 1.0)
+        self.temporal_pad = _get(data_cfg, "temporal_pad", 0)
 
     def forward(self, ic, T=None, time_scale=None):
-        return kf_forward(self.model, ic, T or self.T, time_scale or self.time_scale)
+        return kf_forward(self.model, ic, T or self.T, time_scale or self.time_scale, temporal_pad=self.temporal_pad)
 
     def training_step(self, batch, batch_idx):
         ic = batch["x"].to(self.device)
