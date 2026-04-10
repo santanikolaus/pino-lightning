@@ -417,3 +417,89 @@ class TestThreeWeightLossArithmetic:
         batch = _make_batch()
         loss = module_b.training_step(batch, 0)
         assert torch.isfinite(loss)
+
+
+# ---------------------------------------------------------------------------
+# TestTemporalPadWiring  (Ablation A — temporal_pad threading)
+# ---------------------------------------------------------------------------
+
+class TestTemporalPadWiring:
+    """Verify that temporal_pad is read from config and propagated through forward."""
+
+    def test_temporal_pad_default_zero_when_key_absent(self):
+        """data_cfg without temporal_pad key → module.temporal_pad == 0."""
+        cfg = _make_cfg()
+        module = KFLitModule(cfg)
+        assert module.temporal_pad == 0, (
+            f"Expected temporal_pad=0 (default), got {module.temporal_pad}. "
+            "_get(data_cfg, 'temporal_pad', 0) may not be wired."
+        )
+
+    @pytest.mark.parametrize("pad_value", [
+        pytest.param(5,  id="pad5"),
+        pytest.param(10, id="pad10"),
+        pytest.param(1,  id="pad1"),
+    ])
+    def test_temporal_pad_stored_from_config(self, pad_value):
+        """module.temporal_pad must equal the value given in data_cfg."""
+        cfg = _make_cfg()
+        cfg["data"] = _Bunch(T=10, time_scale=1.0, temporal_pad=pad_value)
+        module = KFLitModule(cfg)
+        assert module.temporal_pad == pad_value, (
+            f"data_cfg.temporal_pad={pad_value} not stored on module. "
+            f"Got module.temporal_pad={module.temporal_pad}."
+        )
+
+    @pytest.mark.parametrize("pad_value,B,S,T", [
+        pytest.param(5,  1, 4, 8,  id="pad5_B1_S4_T8"),
+        pytest.param(10, 1, 4, 6,  id="pad10_B1_S4_T6"),
+        pytest.param(0,  1, 4, 8,  id="pad0_B1_S4_T8"),
+    ])
+    def test_forward_output_shape_with_temporal_pad(self, pad_value, B, S, T):
+        """module.forward must return (B, 1, S, S, T) regardless of temporal_pad.
+
+        Uses a monkey-patched stub model so no neuralop forward pass runs.
+        The stub echoes channel 0 of its input, matching the (B,1,S,S,T_any) contract.
+        """
+        cfg = _make_cfg()
+        cfg["data"] = _Bunch(T=T, time_scale=1.0, temporal_pad=pad_value)
+        module = KFLitModule(cfg)
+
+        class _Stub(torch.nn.Module):
+            def forward(self, x):
+                return x[:, :1, ...]
+
+        module.model = _Stub()
+
+        ic = torch.zeros(B, S, S)
+        with torch.no_grad():
+            out = module(ic, T=T)
+        assert out.shape == (B, 1, S, S, T), (
+            f"temporal_pad={pad_value}: expected ({B}, 1, {S}, {S}, {T}), "
+            f"got {tuple(out.shape)}. Pad trim may not be applied."
+        )
+
+    def test_temporal_pad_zero_guard_via_module_forward(self):
+        """module.forward with temporal_pad=0 must not produce an empty time axis.
+
+        Regression: without the `if temporal_pad > 0` guard in kf_forward,
+        `out[..., :-0]` slices to size 0.
+        """
+        B, S, T = 1, 4, 8
+        cfg = _make_cfg()
+        cfg["data"] = _Bunch(T=T, time_scale=1.0, temporal_pad=0)
+        module = KFLitModule(cfg)
+
+        class _Stub(torch.nn.Module):
+            def forward(self, x):
+                return x[:, :1, ...]
+
+        module.model = _Stub()
+
+        ic = torch.zeros(B, S, S)
+        with torch.no_grad():
+            out = module(ic, T=T)
+        assert out.shape[-1] == T and out.numel() > 0, (
+            f"temporal_pad=0 produced output with time-axis size {out.shape[-1]} "
+            f"(expected {T}). The guard in kf_forward is broken."
+        )
