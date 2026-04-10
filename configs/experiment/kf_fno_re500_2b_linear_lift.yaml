@@ -1,0 +1,29 @@
+# @package _global_
+# Ablation 2b — linear lifting only (paper-style: single Linear(4→64), no hidden layer, no GELU)
+# Fix: lifting_channel_ratio: 0 → neuralop uses n_layers=1 linear lifting, matching paper's fc0.
+# All other hyperparameters identical to kf_fno_re500 baseline.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: data-kol
+    name: re500-2b-linearlift
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T64_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 2
+  T: 64
+  time_scale: 1.0
+
+model:
+  lifting_channel_ratio: 0
+
+opt:
+  learning_rate: 1e-3
+  weight_decay: 0.0
+  milestones: [200, 400]
+  gamma: 0.5
