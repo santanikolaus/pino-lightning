@@ -44,7 +44,7 @@ def train_one_instance(cfg, instance_idx: int) -> float:
         ckpt = torch.load(warm_start_ckpt, weights_only=False)
         model_state = {k[len("model."):]: v for k, v in ckpt["state_dict"].items() if k.startswith("model.")}
         module.model.load_state_dict(model_state)
-        print(f"[warm-start] Loaded model weights from {warm_start_ckpt}")
+        print(f"[warm-start] operator={warm_start_ckpt}  re={cfg.loss.re}  instance={instance_idx}")
 
     logger_cfg = cfg.get("logger", {}).get("wandb", {})
     if logger_cfg and logger_cfg.get("_target_"):
