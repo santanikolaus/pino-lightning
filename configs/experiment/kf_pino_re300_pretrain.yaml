@@ -16,6 +16,7 @@ logger:
 
 trainer:
   max_epochs: 150
+  check_val_every_n_epoch: 5
 
 data:
   data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re300_T128_part0.npy
