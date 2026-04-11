@@ -1,0 +1,55 @@
+# @package _global_
+# RE100→RE100 warm-start fine-tune — Table 8 "Warm Start" entry.
+# Identical hyperparams to cold-start (kf_scratch_re100_4_allfixes.yaml),
+# but model weights are pre-loaded from the RE100 pretrain operator.
+#
+# Pretrain checkpoint: pretrain-kol/pvqq97sq (finished Apr 10, val_l2=0.393 @ ep79)
+#
+# Runs 4 specific instances (280, 285, 290, 295) sequentially on one GPU —
+# matches the cold-start instances for direct comparison.
+
+defaults:
+  - override /callbacks: kf
+
+callbacks:
+  kf_visualizer:
+    log_every_n_epochs: 500
+
+logger:
+  wandb:
+    project: kolmogorov_warm
+    name: null                # auto-set to {run_prefix}_i{instance_idx} by train_kf_instance.py
+    run_prefix: "warmstart_re100to100"
+
+trainer:
+  max_epochs: 8000            # 1 step/epoch (n_train=1, batch=1) → 8000 gradient steps
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 1
+  n_val: 1
+  batch_size: 1
+  sub_t: 2                    # 129 raw frames → 65 effective (matches paper Table 8)
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 0.0
+  pde_weight: 1.0
+  ic_weight: 5.0
+
+opt:
+  learning_rate: 0.0025
+  weight_decay: 0.0
+  milestones: [1000, 2000, 3000, 4000, 5000, 6000, 7000]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0    # single linear lift (paper fc0)
+  hidden_channels: 128        # 4× spectral capacity
+
+warm_start_ckpt: /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/pvqq97sq/checkpoints/best.ckpt
+
+instance:
+  indices: [280, 285, 290, 295]

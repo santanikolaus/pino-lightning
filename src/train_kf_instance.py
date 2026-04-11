@@ -23,7 +23,7 @@ from src.utils.utils import instantiate_callbacks
 
 
 def train_one_instance(cfg, instance_idx: int) -> float:
-    """Train a fresh model on instance i. Returns final val_l2."""
+    """Train a model on instance i, optionally warm-started from a checkpoint. Returns final val_l2."""
     datamodule = KFDataModule(
         data_path=cfg.data.data_path,
         n_train=1,
@@ -37,6 +37,14 @@ def train_one_instance(cfg, instance_idx: int) -> float:
     datamodule.setup(stage="fit")
 
     module = KFLitModule(cfg)
+
+    warm_start_ckpt = cfg.get("warm_start_ckpt", None)
+    if warm_start_ckpt:
+        import torch
+        ckpt = torch.load(warm_start_ckpt, weights_only=False)
+        model_state = {k[len("model."):]: v for k, v in ckpt["state_dict"].items() if k.startswith("model.")}
+        module.model.load_state_dict(model_state)
+        print(f"[warm-start] operator={warm_start_ckpt}  re={cfg.loss.re}  instance={instance_idx}")
 
     logger_cfg = cfg.get("logger", {}).get("wandb", {})
     if logger_cfg and logger_cfg.get("_target_"):
@@ -73,17 +81,22 @@ def main(cfg: DictConfig) -> None:
     cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
 
     instance_cfg = cfg.get("instance", {})
-    start = instance_cfg.get("start", 280)
-    stop  = instance_cfg.get("stop",  300)
-    n_total = stop - start
+    indices = instance_cfg.get("indices", None)
+    if indices is not None:
+        instance_list = list(indices)
+    else:
+        start = instance_cfg.get("start", 280)
+        stop  = instance_cfg.get("stop",  300)
+        instance_list = list(range(start, stop))
+    n_total = len(instance_list)
 
-    print(f"Running {n_total} instances: {start}..{stop - 1}")
+    print(f"Running {n_total} instances: {instance_list}")
     print(f"  max_epochs={cfg.trainer.max_epochs}, lr={cfg.opt.learning_rate}, "
           f"milestones={cfg.opt.milestones}")
 
     results = {}
-    for i in range(start, stop):
-        print(f"\n=== Instance {i}  ({i - start + 1}/{n_total}) ===")
+    for i in instance_list:
+        print(f"\n=== Instance {i}  ({instance_list.index(i) + 1}/{n_total}) ===")
         val_l2 = train_one_instance(cfg, i)
         results[i] = val_l2
         print(f"    val_l2 = {val_l2:.4f}")
