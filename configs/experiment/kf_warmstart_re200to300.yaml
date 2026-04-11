@@ -1,0 +1,50 @@
+# @package _global_
+# RE200→RE300 warm-start fine-tune — Table 8 "Warm Start" entry.
+# Warm-starts from Re200 pretrain operator (4em1mfrx, val_l2=0.400 @ ep149),
+# fine-tunes on Re300 test instances.
+
+defaults:
+  - override /callbacks: kf
+
+callbacks:
+  kf_visualizer:
+    log_every_n_epochs: 500
+
+logger:
+  wandb:
+    project: kolmogorov_warm
+    name: null
+    run_prefix: "warmstart_re200to300"
+
+trainer:
+  max_epochs: 8000
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re300_T128_part0.npy
+  n_train: 1
+  n_val: 1
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 300
+  t_interval: 1.0
+  data_weight: 0.0
+  pde_weight: 1.0
+  ic_weight: 5.0
+
+opt:
+  learning_rate: 0.0025
+  weight_decay: 0.0
+  milestones: [1000, 2000, 3000, 4000, 5000, 6000, 7000]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0
+  hidden_channels: 128
+
+warm_start_ckpt: /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/4em1mfrx/checkpoints/best.ckpt
+
+instance:
+  indices: [280, 285, 290, 295]
