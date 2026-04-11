@@ -1,8 +1,15 @@
 # @package _global_
 # PINO pretraining on Re=500 Kolmogorov flow — Table 8 source operator.
-# Matches paper-pino configs/pretrain/Re500-pretrain-1s.yaml.
-# Note: this is population-level pretrain (data+PDE+IC), distinct from
-# kf_scratch_re500_pde_only.yaml which is instance-wise fine-tuning.
+# Kept fully consistent with Re100–Re400: sub_t=2, data+PDE+IC, same loss weights.
+# Deliberately deviates from paper-pino Re500-pretrain-1s.yaml (sub_t=1, xy_loss=0)
+# — paper config appears to be an experimental artifact, not the Table 8 setup.
+# Ablate loss structure separately if Re500 operator quality is poor.
+#
+# Architecture aligned with fine-tuning ablation (4a_allfixes):
+#   lifting_channel_ratio=0  (single linear fc0, matches paper)
+#   hidden_channels=128      (matches fine-tune warm-start target)
+#
+# After training, checkpoint is used as warm-start for Re500 instance-wise fine-tuning.
 
 defaults:
   - override /callbacks: kf
@@ -10,7 +17,7 @@ defaults:
 logger:
   wandb:
     project: pretrain-kol
-    name: pino-re500-pretrain
+    name: 1_pino-re500-pretrain
 
 trainer:
   max_epochs: 150
@@ -35,3 +42,7 @@ opt:
   weight_decay: 0.0
   milestones: [25, 50, 75, 100]
   gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0   # single linear lift (paper fc0); matches 4a_allfixes fine-tune
+  hidden_channels: 128       # matches 4a_allfixes fine-tune architecture for warm-start
