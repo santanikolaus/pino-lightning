@@ -1,0 +1,49 @@
+# @package _global_
+# PINO pretraining on Re=1000 Kolmogorov flow — Table 8 source operator.
+# Kept fully consistent with Re100–Re500: sub_t=2, data+PDE+IC, same loss weights.
+#
+# Architecture aligned with fine-tuning ablation (4a_allfixes):
+#   lifting_channel_ratio=0  (single linear fc0, matches paper)
+#   hidden_channels=128      (matches fine-tune warm-start target)
+#
+# Data file shape: (300, 129, 128, 128) float32 — same as Re500 T128.
+# After sub_t=2: effective (300, 65, 128, 128) → permuted (300, 128, 128, 65).
+#
+# After training, checkpoint is used as warm-start for Re1000 instance-wise fine-tuning.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: 1_pino-re1000-pretrain
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re1000_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 1000
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0   # single linear lift (paper fc0); matches 4a_allfixes fine-tune
+  hidden_channels: 128       # matches 4a_allfixes fine-tune architecture for warm-start
