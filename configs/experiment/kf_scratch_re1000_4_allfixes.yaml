@@ -51,5 +51,4 @@ model:
   hidden_channels: 128        # 4× spectral capacity vs hidden=64 baseline
 
 instance:
-  start: 280
-  stop: 300
+  indices: [280, 285, 290, 295]
