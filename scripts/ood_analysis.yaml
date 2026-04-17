@@ -1,5 +1,5 @@
 output_dir: scripts/outputs
-max_lag: 1500
+max_lag: 5000
 t_res: 128
 x_res: 128
 
