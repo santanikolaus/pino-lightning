@@ -32,11 +32,14 @@ def main():
     parser.add_argument("--config", default="scripts/ood_analysis.yaml")
     parser.add_argument("--re", default="re100", help="key in yaml, e.g. re100")
     parser.add_argument("--n_traj", type=int, default=5, help="trajectories to plot")
-    parser.add_argument("--out", default="scripts/enstrophy_re100.png")
     args = parser.parse_args()
 
     with open(args.config) as f:
-        cfg = yaml.safe_load(f)[args.re]
+        full_cfg = yaml.safe_load(f)
+
+    cfg = full_cfg[args.re]
+    out_dir = Path(full_cfg["output_dir"])
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     path = Path(cfg["path"])
     print(f"Loading {path}")
@@ -48,7 +51,7 @@ def main():
     print(f"  mean enstrophy: {Z.mean():.4f}  std: {Z.std():.4f}")
 
     # --- plot first n_traj trajectories ---
-    fig, ax = plt.subplots(figsize=(12, 4))
+    _, ax = plt.subplots(figsize=(12, 4))
     t = np.arange(Z.shape[1])
     for i in range(min(args.n_traj, Z.shape[0])):
         ax.plot(t, Z[i], lw=0.8, alpha=0.8, label=f"traj {i}")
@@ -58,9 +61,10 @@ def main():
     ax.set_title(f"Enstrophy — Re={cfg['re']}  ({Z.shape[0]} trajectories total)")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
+    out_path = out_dir / f"enstrophy_{args.re}.png"
     plt.tight_layout()
-    plt.savefig(args.out, dpi=150)
-    print(f"Saved → {args.out}")
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved → {out_path}")
 
 
 if __name__ == "__main__":

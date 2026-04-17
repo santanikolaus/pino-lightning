@@ -1,3 +1,5 @@
+output_dir: scripts/outputs
+
 re100:
   path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
   re: 100
