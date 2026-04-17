@@ -48,7 +48,7 @@ def radial_power_spectrum(field2d: np.ndarray) -> np.ndarray:
 
 def get_independent_snapshots(data: np.ndarray, tau_corr: int) -> np.ndarray:
     """Stitched-segment data → one continuous trajectory; stride globally."""
-    N, T, H, W = data.shape
+    H, W = data.shape[2], data.shape[3]
     flat = data[:, :-1, :, :].reshape(-1, H, W)
     indices = np.arange(0, len(flat), tau_corr)
     return flat[indices]
@@ -109,8 +109,8 @@ def pca_scatter(ax, emb: np.ndarray, y: np.ndarray, re_values: list,
     ax.grid(True, alpha=0.3)
 
 
-def compute_for_band(features_full: list, labels: list, k_min: int, k_hi: int):
-    """Slice spectrum to [k_min, k_hi], standardize, return X and per-Re subsets."""
+def compute_for_band(features_full: list, k_min: int, k_hi: int):
+    """Slice spectrum to [k_min, k_hi], standardize across samples."""
     feats = np.array([np.log1p(f[k_min: k_hi + 1]) for f in features_full])
     feats = (feats - feats.mean(0)) / (feats.std(0) + 1e-8)
     return feats
@@ -170,7 +170,7 @@ def main():
               for i, re in enumerate(re_values)}
 
     for col, (band_name, (k_lo, k_hi)) in enumerate(bands.items()):
-        X = compute_for_band(spectra_raw, labels, k_lo, k_hi)
+        X = compute_for_band(spectra_raw, k_lo, k_hi)
 
         # PCA
         pca = PCA(n_components=2).fit(X)
