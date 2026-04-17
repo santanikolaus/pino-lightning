@@ -73,6 +73,8 @@ def main():
     parser.add_argument("--n_neighbors", type=int, default=15)
     parser.add_argument("--min_dist", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--res", default=None,
+                        help="comma-separated Re values to include, e.g. 100,200,300,500,1000")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -81,6 +83,10 @@ def main():
     out_dir = Path(full_cfg["output_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
     runs = full_cfg["runs"]
+    if args.res:
+        wanted = {int(r) for r in args.res.split(",")}
+        runs = {k: v for k, v in runs.items() if v["re"] in wanted}
+        print(f"Filtered to Re's: {sorted(wanted)}")
 
     features, labels = [], []
 
@@ -134,6 +140,8 @@ def main():
     plt.tight_layout()
 
     suffix = f"k{args.k_min}to{args.k_max or 'full'}"
+    if args.res:
+        suffix += "_" + args.res.replace(",", "-")
     out_path = out_dir / f"umap_{suffix}.png"
     plt.savefig(out_path, dpi=150)
     print(f"Saved → {out_path}")
