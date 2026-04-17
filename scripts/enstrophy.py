@@ -1,9 +1,10 @@
 """
-Step 0 — Enstrophy time series per RE.
+Step 0 — Enstrophy time series and decorrelation time per RE.
 
 Loads a vorticity dataset from the path specified in ood_analysis.yaml,
-computes enstrophy Z(t) = sum_{x,y} w(x,y,t)^2 for every frame of every
-trajectory segment, and saves a plot of the raw time series.
+computes enstrophy Z(t) = mean_{x,y} w^2 for every frame, concatenates all
+trajectory segments into one continuous time series, and computes the ACF to
+find the decorrelation time tau_corr (first lag where ACF drops below 1/e).
 
 Usage:
     python scripts/enstrophy.py --config scripts/ood_analysis.yaml --re re100
@@ -17,6 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
+from statsmodels.tsa.stattools import acf
 
 
 def compute_enstrophy(data: np.ndarray) -> np.ndarray:
@@ -27,11 +29,17 @@ def compute_enstrophy(data: np.ndarray) -> np.ndarray:
     return (data ** 2).mean(axis=(-1, -2))
 
 
+def decorrelation_time(acf_vals: np.ndarray) -> int:
+    """First lag where ACF drops below 1/e. Returns -1 if never reached."""
+    below = np.where(acf_vals < 1.0 / np.e)[0]
+    return int(below[0]) if len(below) > 0 else -1
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="scripts/ood_analysis.yaml")
     parser.add_argument("--re", default="re100", help="key in yaml, e.g. re100")
-    parser.add_argument("--n_traj", type=int, default=5, help="trajectories to plot")
+    parser.add_argument("--max_lag", type=int, default=500, help="max ACF lag to compute")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -47,21 +55,35 @@ def main():
     print(f"  shape: {data.shape}  dtype: {data.dtype}")
 
     Z = compute_enstrophy(data)                  # (N, T+1)
-    print(f"  enstrophy shape: {Z.shape}")
-    print(f"  mean enstrophy: {Z.mean():.4f}  std: {Z.std():.4f}")
 
-    # --- plot first n_traj trajectories ---
-    _, ax = plt.subplots(figsize=(12, 4))
-    t = np.arange(Z.shape[1])
-    for i in range(min(args.n_traj, Z.shape[0])):
-        ax.plot(t, Z[i], lw=0.8, alpha=0.8, label=f"traj {i}")
+    # Concatenate segments into one continuous series, dropping duplicate
+    # boundary frames (last frame of seg j == first frame of seg j+1).
+    Z_cat = np.concatenate([Z[:-1, :-1].reshape(-1), Z[-1]])   # (N*T+1,)
+    print(f"  concatenated series length: {len(Z_cat)}")
+    print(f"  mean enstrophy: {Z_cat.mean():.4f}  std: {Z_cat.std():.4f}")
 
-    ax.set_xlabel("Frame index")
-    ax.set_ylabel("Enstrophy Z(t)")
-    ax.set_title(f"Enstrophy — Re={cfg['re']}  ({Z.shape[0]} trajectories total)")
+    # ACF
+    nlags = min(args.max_lag, len(Z_cat) // 2)
+    acf_vals = acf(Z_cat, nlags=nlags, fft=True)
+
+    tau = decorrelation_time(acf_vals)
+    n_eff = len(Z_cat) // tau if tau > 0 else -1
+    print(f"  tau_corr (1/e crossing): {tau} frames")
+    print(f"  N_eff independent samples: {n_eff}")
+
+    # --- ACF plot ---
+    _, ax = plt.subplots(figsize=(10, 4))
+    lags = np.arange(len(acf_vals))
+    ax.plot(lags, acf_vals, lw=1.0, color="steelblue")
+    ax.axhline(1.0 / np.e, color="red", linestyle="--", lw=1.0, label="1/e threshold")
+    if tau > 0:
+        ax.axvline(tau, color="orange", linestyle="--", lw=1.0, label=f"τ_corr = {tau} frames")
+    ax.set_xlabel("Lag (frames)")
+    ax.set_ylabel("ACF")
+    ax.set_title(f"Enstrophy ACF — Re={cfg['re']}  |  τ_corr={tau} frames  |  N_eff={n_eff}")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
-    out_path = out_dir / f"enstrophy_{args.re}.png"
+    out_path = out_dir / f"acf_{args.re}.png"
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     print(f"Saved → {out_path}")
