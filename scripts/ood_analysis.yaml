@@ -1,0 +1,5 @@
+re100:
+  path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  re: 100
+  t_res: 128   # frames per trajectory segment (T_res+1 = 129 on disk)
+  x_res: 128
