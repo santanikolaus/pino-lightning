@@ -87,7 +87,7 @@ def main():
 
     # k^-3 reference line (2D enstrophy cascade), anchored at k=6 of last Re
     if k is not None and power is not None:
-        k_ref = k[1:]
+        k_ref = k[1:].astype(float)
         ref = k_ref[5] ** 3 * power[6] * k_ref ** -3
         ax_log.semilogy(k_ref, ref, "k--", lw=0.8, alpha=0.5, label="k⁻³ ref")
 
