@@ -34,11 +34,9 @@ def radial_power_spectrum(field2d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     K = np.round(np.sqrt(KX**2 + KY**2)).astype(int)
 
     k_max = min(H, W) // 2
-    power = np.zeros(k_max + 1)
-    for k in range(k_max + 1):
-        power[k] = power2d[K == k].mean()
-
-    return np.arange(k_max + 1), power
+    bins = np.arange(k_max + 1)
+    power = np.array([power2d[K == ki].sum() for ki in bins])
+    return bins, power
 
 
 def process_one(key: str, cfg: dict, n_snapshots: int) -> tuple[np.ndarray, np.ndarray]:
@@ -50,10 +48,9 @@ def process_one(key: str, cfg: dict, n_snapshots: int) -> tuple[np.ndarray, np.n
     snapshots = data.reshape(N * T, H, W)[:n_snapshots]
     print(f"  using {len(snapshots)} snapshots from {N*T} total")
 
+    k, _ = radial_power_spectrum(snapshots[0])
     spectra = np.stack([radial_power_spectrum(s)[1] for s in snapshots])
-    mean_power = spectra.mean(axis=0)
-    k = radial_power_spectrum(snapshots[0])[0]
-    return k, mean_power
+    return k, spectra.mean(axis=0)
 
 
 def main():
@@ -72,17 +69,48 @@ def main():
     runs = full_cfg["runs"]
     keys = [args.re] if args.re else list(runs.keys())
 
-    _, ax = plt.subplots(figsize=(10, 5))
+    _, (ax_log, ax_cum, ax_comp) = plt.subplots(1, 3, figsize=(22, 5))
+    k, power = None, None
+    n_modes = 8  # current FNO n_modes
 
+    all_powers = {}
     for key in keys:
         k, power = process_one(key, runs[key], args.n_snapshots)
-        ax.semilogy(k[1:], power[1:], lw=1.2, label=f"Re={runs[key]['re']}")
+        all_powers[key] = (k, power)
+        re = runs[key]['re']
+        k1 = k[1:].astype(float)
+        p1 = power[1:]
+        ax_log.semilogy(k1, p1, lw=1.2, label=f"Re={re}")
+        cum = np.cumsum(p1) / p1.sum()
+        ax_cum.plot(k1, cum, lw=1.2, label=f"Re={re}")
+        ax_comp.plot(k1, k1**3 * p1, lw=1.2, label=f"Re={re}")
 
-    ax.set_xlabel("Wavenumber k")
-    ax.set_ylabel("Power (log scale)")
-    ax.set_title("Time-averaged radial energy spectrum per Re")
-    ax.legend(fontsize=8)
-    ax.grid(True, which="both", alpha=0.3)
+    # k^-3 reference line (2D enstrophy cascade), anchored at k=6 of last Re
+    if k is not None and power is not None:
+        k_ref = k[1:]
+        ref = k_ref[5] ** 3 * power[6] * k_ref ** -3
+        ax_log.semilogy(k_ref, ref, "k--", lw=0.8, alpha=0.5, label="k⁻³ ref")
+
+    for ax in (ax_log, ax_cum, ax_comp):
+        ax.axvline(n_modes, color="red", linestyle=":", lw=1.2, label=f"FNO n_modes={n_modes}")
+        ax.legend(fontsize=7)
+        ax.grid(True, which="both", alpha=0.3)
+        ax.set_xlabel("Wavenumber k")
+
+    ax_log.set_ylabel("Power (log scale)")
+    ax_log.set_title("Time-averaged radial energy spectrum")
+
+    if k is not None:
+        for thr, ls in [(0.90, "--"), (0.95, "-."), (0.99, ":")]:
+            ax_cum.axhline(thr, color="gray", linestyle=ls, lw=0.8, alpha=0.7)
+            ax_cum.text(k[-1] * 0.97, thr + 0.005, f"{int(thr*100)}%", ha="right", fontsize=7, color="gray")
+    ax_cum.set_ylabel("Cumulative energy fraction")
+    ax_cum.set_title("Cumulative energy vs wavenumber cutoff")
+
+    ax_comp.axhline(0, color="gray", linestyle="--", lw=0.8, alpha=0.5)
+    ax_comp.set_ylabel("k³ · E(k)")
+    ax_comp.set_title("Compensated spectrum — flat = k⁻³ enstrophy cascade")
+
     plt.tight_layout()
     out_path = out_dir / "energy_spectrum.png"
     plt.savefig(out_path, dpi=150)
