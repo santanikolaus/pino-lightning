@@ -14,7 +14,6 @@ Run from project root:
 
 import argparse
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -78,7 +77,7 @@ def parse_args():
 
 
 def load_model(ckpt_path: str, device: torch.device) -> torch.nn.Module:
-    model = build_fno_kf(SimpleNamespace(model=MODEL_CFG))
+    model = build_fno_kf(MODEL_CFG)
     ckpt  = torch.load(ckpt_path, weights_only=False, map_location=device)
     state = {
         k[len("model."):]: v
