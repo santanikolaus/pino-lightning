@@ -26,7 +26,7 @@ trainer:
   max_epochs: 8000            # 1 step/epoch (n_train=1, batch=1) → 8000 gradient steps
 
 data:
-  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re1000_T128_part0.npy
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re1000_T128_indep.npy
   n_train: 1
   n_val: 1
   batch_size: 1
