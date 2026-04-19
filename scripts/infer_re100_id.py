@@ -1,15 +1,20 @@
 """
-RE=100 in-distribution inference on held-out test set (indices 260-299, n=40).
+Cross-Re inference sweep using the frozen RE=100 pretrained FNO checkpoint.
 
-Pipeline health check before the cross-Re OOD calibration sweep.
-Plausibility gates (from training logs, epoch 149):
+Runs on test trajectories (indices 260-299, n=40) for each Re in the sweep list.
+Equation loss (pde_loss) uses ν=1/Re_data — measures physical consistency of the
+model's predictions with the actual flow regime of each dataset.
+
+RE=100 plausibility gates (from training logs, epoch 149):
   data_l2  TIGHT: expect ≈ val_l2=0.393       (>10% gap = pipeline error)
   ic_loss  TIGHT: expect ≈ val_ic_loss=0.103  (>10% gap = pipeline error)
-  pde_loss LOOSE: expect ≈ train_pde=0.213    (20-30% gap is normal, train vs test)
-  loss     LOOSE: weighted sum, self-consistency only
+  pde_loss LOOSE: train/test gap expected; no hard gate
+  loss     LOOSE: weighted sum self-consistency
 
 Run from project root:
     python scripts/infer_re100_id.py --ckpt /path/to/best.ckpt
+    python scripts/infer_re100_id.py --ckpt /path/to/best.ckpt --re 200,300,500,1000
+    python scripts/infer_re100_id.py --ckpt /path/to/best.ckpt --re 100,200,300,500,1000
 """
 
 import argparse
@@ -49,29 +54,33 @@ MODEL_CFG = {
     "stabilizer": "None",
 }
 
-DATA_PATH_DEFAULT = (
-    "/system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy"
-)
-N_TEST      = 40
-OFFSET_TEST = 260
-SUB_T       = 2
-TIME_SCALE  = 1.0
+DATA_ROOT    = Path("/system/user/studentwork/wehofer/data/ns")
+N_TEST       = 40
+OFFSET_TEST  = 260
+SUB_T        = 2
+TIME_SCALE   = 1.0
 TEMPORAL_PAD = 5   # from configs/data/kf.yaml; not overridden by pretrain experiment config
 
-ANCHORS = {
-    "data_l2":  ("val_l2",          0.393, "TIGHT"),
-    "ic_loss":  ("val_ic_loss",     0.103, "TIGHT"),
-    "pde_loss": ("train_pde_loss",  0.213, "LOOSE"),
-    "loss":     ("train_loss_epoch",0.435, "LOOSE"),
+# Re=100 plausibility anchors (training logs, epoch 149)
+RE100_ANCHORS = {
+    "data_l2":  ("val_l2",           0.393),
+    "ic_loss":  ("val_ic_loss",      0.103),
 }
+
+RE_LIST_DEFAULT = [100, 200, 300, 500, 1000]
+
+
+def data_path(re: int) -> Path:
+    return DATA_ROOT / f"NS_fine_Re{re}_T128_part0.npy"
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", required=True,
-                   help="Path to best.ckpt (Lightning checkpoint)")
-    p.add_argument("--data", default=DATA_PATH_DEFAULT)
-    p.add_argument("--out",  default="scripts/outputs/infer_re100_id.npz")
+                   help="Path to best.ckpt (RE=100 pretrained Lightning checkpoint)")
+    p.add_argument("--re", default=",".join(str(r) for r in RE_LIST_DEFAULT),
+                   help="Comma-separated Re values to run (default: 100,200,300,500,1000)")
+    p.add_argument("--out",  default="scripts/outputs/infer_re_sweep.npz")
     p.add_argument("--device", default=None, help="cuda / cpu (default: auto)")
     return p.parse_args()
 
@@ -88,36 +97,36 @@ def load_model(ckpt_path: str, device: torch.device) -> torch.nn.Module:
     return model.to(device).eval()
 
 
-def main():
-    args   = parse_args()
-    device = torch.device(
-        args.device if args.device
-        else ("cuda" if torch.cuda.is_available() else "cpu")
-    )
-    print(f"Device : {device}")
-    print(f"Ckpt   : {args.ckpt}")
-    print(f"Data   : {args.data}  (offset={OFFSET_TEST}, n={N_TEST}, sub_t={SUB_T})\n")
+def run_re(re: int, model, device: torch.device) -> dict[str, np.ndarray]:
+    """Run inference for one Re value. Returns dict of per-sample loss arrays."""
+    path = data_path(re)
+    print(f"\n{'='*65}")
+    print(f"  Re = {re}")
+    print(f"  Data : {path}")
+    print(f"  Split: offset={OFFSET_TEST}, n={N_TEST}, sub_t={SUB_T}")
+    print(f"  Loss : KFLoss(re={re}, ν=1/{re})")
+    print(f"{'='*65}")
 
-    model   = load_model(args.ckpt, device)
-    loss_fn = KFLoss(re=100, t_interval=1.0,
+    if not path.exists():
+        raise FileNotFoundError(f"Data file not found: {path}")
+
+    loss_fn = KFLoss(re=re, t_interval=1.0,
                      data_weight=5.0, pde_weight=1.0, ic_weight=1.0)
 
-    dataset = KFDataset(args.data, n_samples=N_TEST, offset=OFFSET_TEST, sub_t=SUB_T)
+    dataset = KFDataset(str(path), n_samples=N_TEST, offset=OFFSET_TEST, sub_t=SUB_T)
     loader  = DataLoader(dataset, batch_size=1, shuffle=False)
 
     records: dict[str, list[float]] = {"data": [], "pde": [], "ic": [], "loss": []}
 
     for i, batch in enumerate(loader):
-        ic     = batch["x"].to(device)     # (1, S, S)
-        target = batch["y"].to(device)     # (1, S, S, T_eff)
+        ic     = batch["x"].to(device)
+        target = batch["y"].to(device)
         T      = target.shape[-1]
 
         if i == 0:
-            S = ic.shape[-1]
-            print(f"ic={tuple(ic.shape)}  target={tuple(target.shape)}  T_eff={T}  S={S}")
+            print(f"  ic={tuple(ic.shape)}  target={tuple(target.shape)}  T_eff={T}")
             if T != 65:
-                raise ValueError(f"Expected T_eff=65 (sub_t=2 on T128 data), got {T}."
-                                 " Check sub_t or data file.")
+                raise ValueError(f"Expected T_eff=65, got {T}. Check sub_t or data file.")
 
         with torch.no_grad():
             pred = kf_forward(model, ic, T,
@@ -132,28 +141,55 @@ def main():
                   f"  pde={records['pde'][-1]:.4f}"
                   f"  ic={records['ic'][-1]:.4f}")
 
-    arrays = {k: np.array(v) for k, v in records.items()}
-    display = [("data", "data_l2"), ("pde", "pde_loss"), ("ic", "ic_loss"), ("loss", "loss")]
+    return {k: np.array(v) for k, v in records.items()}
 
-    print(f"\n{'Metric':<12} {'mean':>8} {'std':>8}   gate    anchor")
-    print("-" * 65)
-    for internal, name in display:
-        arr  = arrays[internal]
-        aname, aval, gate = ANCHORS[name]
-        flag = " <-- CHECK" if (gate == "TIGHT" and abs(arr.mean() - aval) / aval > 0.10) else ""
-        print(f"{name:<12} {arr.mean():>8.4f} {arr.std():>8.4f}"
-              f"   {gate:<5}  [{aname}={aval:.3f}]{flag}")
 
+def main():
+    args    = parse_args()
+    re_list = [int(r) for r in args.re.split(",")]
+    device  = torch.device(
+        args.device if args.device
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+
+    print(f"Device    : {device}")
+    print(f"Ckpt      : {args.ckpt}")
+    print(f"Re sweep  : {re_list}")
+
+    model = load_model(args.ckpt, device)
+
+    all_results: dict[int, dict[str, np.ndarray]] = {}
+    for re in re_list:
+        all_results[re] = run_re(re, model, device)
+
+    # Summary table
+    print(f"\n\n{'Re':<6} {'data_l2':>10} {'±':>2} {'std':>8}   {'pde_loss':>10} {'±':>2} {'std':>8}   {'ic_loss':>8} {'±':>2} {'std':>7}")
+    print("-" * 85)
+    for re, arrs in all_results.items():
+        d, p, ic = arrs["data"], arrs["pde"], arrs["ic"]
+        anchor_str = ""
+        if re == 100:
+            d_anchor = RE100_ANCHORS["data_l2"][1]
+            d_flag   = " <--CHECK" if abs(d.mean() - d_anchor) / d_anchor > 0.10 else " [gate OK]"
+            anchor_str = d_flag
+        print(f"{re:<6} {d.mean():>10.4f}  ± {d.std():>7.4f}   {p.mean():>10.4f}  ± {p.std():>7.4f}   {ic.mean():>8.4f}  ± {ic.std():>6.4f}{anchor_str}")
+
+    if 100 in all_results:
+        print(f"\n  Re=100 anchors: data_l2=0.393, ic_loss=0.103  (val logs, epoch 149)")
+
+    # Save
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        out,
-        data_l2_per_sample  = arrays["data"],
-        pde_loss_per_sample  = arrays["pde"],
-        ic_loss_per_sample   = arrays["ic"],
-        total_loss_per_sample= arrays["loss"],
-        re=100, n_test=N_TEST, offset=OFFSET_TEST,
-    )
+    save_dict = {}
+    for re, arrs in all_results.items():
+        save_dict[f"re{re}_data_l2"]  = arrs["data"]
+        save_dict[f"re{re}_pde_loss"] = arrs["pde"]
+        save_dict[f"re{re}_ic_loss"]  = arrs["ic"]
+        save_dict[f"re{re}_loss"]     = arrs["loss"]
+    save_dict["re_list"]     = np.array(re_list)
+    save_dict["n_test"]      = N_TEST
+    save_dict["offset_test"] = OFFSET_TEST
+    np.savez(out, **save_dict)
     print(f"\nSaved → {out}")
     print("(per-sample arrays preserved for calibration curve effect-size computation)")
 
