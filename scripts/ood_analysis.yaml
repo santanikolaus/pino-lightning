@@ -12,3 +12,4 @@ runs:
   re400:  { re: 400,  path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re400_T128_part0.npy }
   re500:  { re: 500,  path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_part0.npy }
   re1000: { re: 1000, path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re1000_T128_part0.npy }
+  re1000_indep: { re: 1000, path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re1000_T128_indep.npy }
