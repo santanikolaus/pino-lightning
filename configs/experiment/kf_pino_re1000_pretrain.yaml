@@ -17,14 +17,14 @@ defaults:
 logger:
   wandb:
     project: pretrain-kol
-    name: 1_pino-re1000-pretrain
+    name: 1_pino-re1000-pretrain-indep
 
 trainer:
   max_epochs: 150
   check_val_every_n_epoch: 5
 
 data:
-  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re1000_T128_part0.npy
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re1000_T128_indep.npy
   n_train: 200
   n_val: 60
   batch_size: 1
