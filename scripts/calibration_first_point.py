@@ -85,6 +85,19 @@ def effect_size(a: np.ndarray, b: np.ndarray) -> float:
     return abs(a.mean() - b.mean()) / (pooled_std + 1e-12)
 
 
+def bootstrap_effect_size_ci(a: np.ndarray, b: np.ndarray,
+                              n_boot: int = 2000, ci: float = 0.95,
+                              rng: np.random.Generator | None = None) -> tuple[float, float]:
+    """Bootstrap percentile CI on effect_size. Returns (lo, hi)."""
+    if rng is None:
+        rng = np.random.default_rng(0)
+    boot = np.empty(n_boot)
+    for k in range(n_boot):
+        boot[k] = effect_size(rng.choice(a, len(a)), rng.choice(b, len(b)))
+    alpha = (1 - ci) / 2
+    return float(np.quantile(boot, alpha)), float(np.quantile(boot, 1 - alpha))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--npz", default="scripts/outputs/infer_re_sweep_fixednu.npz",
@@ -117,28 +130,30 @@ def main():
 
     # ── Pairwise metrics ─────────────────────────────────────────────────────
     pairs = list(combinations(RE_LIST, 2))
-    xs, ys, labels = [], [], []
+    xs, ys, y_lo, y_hi, labels = [], [], [], [], []
 
-    print(f"\n{'Pair':<16} {'WD_visible':>12}   {'effect_size (σ)':>16}")
-    print("-" * 50)
+    rng = np.random.default_rng(0)
+    print(f"\n{'Pair':<16} {'WD_visible':>12}   {'effect_size':>12}   {'95% CI':>16}")
+    print("-" * 65)
     for re_i, re_j in pairs:
         wd = wd_visible(spectra[re_i], spectra[re_j])
         es = effect_size(pde[re_i], pde[re_j])
+        lo, hi = bootstrap_effect_size_ci(pde[re_i], pde[re_j], rng=rng)
         lbl = f"{re_i}v{re_j}"
-        xs.append(wd)
-        ys.append(es)
+        xs.append(wd);  ys.append(es)
+        y_lo.append(lo); y_hi.append(hi)
         labels.append(lbl)
-        flag = "  ← Re=1000 (N_eff=5, wide CI)" if 1000 in (re_i, re_j) else ""
-        print(f"  Re={lbl:<12} {wd:>12.4f}   {es:>12.4f}σ{flag}")
+        print(f"  Re={lbl:<12} {wd:>12.4f}   {es:>8.4f}σ   [{lo:.4f}, {hi:.4f}]σ")
 
     # ── Plot ─────────────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(9, 6))
 
     # color by whether Re=100 is in the pair (structurally detectable) vs not
-    for x, y, lbl in zip(xs, ys, labels):
+    for x, y, lo, hi, lbl in zip(xs, ys, y_lo, y_hi, labels):
         contains_100 = lbl.startswith("100v")
         color = "tomato" if contains_100 else "steelblue"
-        ax.scatter(x, y, s=90, color=color, zorder=3)
+        ax.errorbar(x, y, yerr=[[y - lo], [hi - y]],
+                    fmt="o", color=color, ms=7, capsize=4, elinewidth=1.2, zorder=3)
         ax.annotate(f"Re {lbl.replace('v', ' vs ')}", (x, y),
                     textcoords="offset points", xytext=(6, 4), fontsize=8)
 
