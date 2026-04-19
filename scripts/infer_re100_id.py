@@ -2,8 +2,8 @@
 Cross-Re inference sweep using the frozen RE=100 pretrained FNO checkpoint.
 
 Runs on test trajectories (indices 260-299, n=40) for each Re in the sweep list.
-Equation loss (pde_loss) uses ν=1/Re_data — measures physical consistency of the
-model's predictions with the actual flow regime of each dataset.
+Equation loss (pde_loss) uses ν=1/100 (training Re) for ALL datasets — realistic
+OOD detector: incoming Re is unknown, residual measures "satisfies Re=100 physics?"
 
 RE=100 plausibility gates (from training logs, epoch 149):
   data_l2  TIGHT: expect ≈ val_l2=0.393       (>10% gap = pipeline error)
@@ -80,7 +80,7 @@ def parse_args():
                    help="Path to best.ckpt (RE=100 pretrained Lightning checkpoint)")
     p.add_argument("--re", default=",".join(str(r) for r in RE_LIST_DEFAULT),
                    help="Comma-separated Re values to run (default: 100,200,300,500,1000)")
-    p.add_argument("--out",  default="scripts/outputs/infer_re_sweep.npz")
+    p.add_argument("--out",  default="scripts/outputs/infer_re_sweep_fixednu.npz")
     p.add_argument("--device", default=None, help="cuda / cpu (default: auto)")
     return p.parse_args()
 
@@ -104,13 +104,15 @@ def run_re(re: int, model, device: torch.device) -> dict[str, np.ndarray]:
     print(f"  Re = {re}")
     print(f"  Data : {path}")
     print(f"  Split: offset={OFFSET_TEST}, n={N_TEST}, sub_t={SUB_T}")
-    print(f"  Loss : KFLoss(re={re}, ν=1/{re})")
+    print(f"  Loss : KFLoss(re=100, ν=1/100)  [fixed training Re — true OOD detector]")
     print(f"{'='*65}")
 
     if not path.exists():
         raise FileNotFoundError(f"Data file not found: {path}")
 
-    loss_fn = KFLoss(re=re, t_interval=1.0,
+    # ν fixed to training Re=100 for all evaluations — realistic OOD detector:
+    # incoming Re is unknown; residual measures "satisfies Re=100 physics?"
+    loss_fn = KFLoss(re=100, t_interval=1.0,
                      data_weight=5.0, pde_weight=1.0, ic_weight=1.0)
 
     dataset = KFDataset(str(path), n_samples=N_TEST, offset=OFFSET_TEST, sub_t=SUB_T)
