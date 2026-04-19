@@ -1,0 +1,57 @@
+# Server paths — NFS, accessible from any server (student03, student07, …)
+# Verified: 2026-04-18
+#
+# YAML note: paths are plain strings; use them in Python as pathlib.Path(paths["key"])
+
+root:
+  studentwork: /system/user/studentwork/wehofer
+  # 200 GB quota; projects, data, experiment outputs
+  # shared NFS — same path from every studentXX server
+
+  home: /system/user/wehofer
+  # 20 GB quota; dotfiles, small scratch files
+  # avoid storing large data or run artifacts here
+
+  conda_env: /system/apps/studentenv/wehofer
+  # shared conda env; activate with: conda activate /system/apps/studentenv/wehofer
+  # contains torch, lightning, wandb, hydra-core, etc.
+
+projects:
+  pino_lightning: /system/user/studentwork/wehofer/pino-lightning
+  # main project repo (this codebase); Hydra configs under configs/
+  # Hydra outputs → outputs/YYYY-MM-DD/, wandb artifacts → wandb/
+
+  paper_pino: /system/user/studentwork/wehofer/paper-pino
+  # original Li et al. PINO reference implementation
+  # experiment outputs → exp/; saved checkpoints → checkpoints/
+
+data:
+  darcy_binary: /system/user/studentwork/wehofer/data/darcy_binary
+  # Darcy flow, binary permeability field (3.7 GB)
+  # files: darcy_train_421.pt, darcy_test_421.pt  (resolution 421×421)
+
+  darcy_cont: /system/user/studentwork/wehofer/data/darcy_cont
+  # Darcy flow, continuous permeability field (18 GB)
+  # files: darcy_train_421.pt, darcy_test_421.pt  (resolution 421×421)
+
+  ns: /system/user/studentwork/wehofer/data/ns
+  # Navier-Stokes (Kolmogorov flow) dataset (26 GB)
+  # Re ∈ {100,200,250,300,350,400,500,1000}; T128 only; shape (300, 129, 128, 128)
+  # T64 and T256 files deleted 2026-04-18 (wrong spatial res for T256; unused for T64)
+
+outputs:
+  hydra_outputs: /system/user/studentwork/wehofer/pino-lightning/outputs
+  # Hydra multirun / single-run output logs, organised by date (YYYY-MM-DD/)
+  # contains .hydra/ config snapshots and train logs per run
+
+  wandb: /system/user/studentwork/wehofer/pino-lightning/wandb
+  # W&B local run artifacts (synced to wandb cloud)
+  # run dirs named run-YYYYMMDD_HHMMSS-<id>/
+
+  paper_pino_exp: /system/user/studentwork/wehofer/paper-pino/exp
+  # experiment output folders from paper-pino training runs
+  # e.g. darcy-11x11-pino-traindarcy/
+
+  paper_pino_checkpoints: /system/user/studentwork/wehofer/paper-pino/checkpoints
+  # saved model checkpoints from paper-pino runs
+  # e.g. Re500-single/, Re500-scratch-single/
