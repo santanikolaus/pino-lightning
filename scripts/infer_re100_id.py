@@ -22,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
 from torch.utils.data import DataLoader
 
 from src.datasets.kf_dataset import KFDataset
@@ -54,7 +55,8 @@ MODEL_CFG = {
     "stabilizer": "None",
 }
 
-DATA_ROOT    = Path("/system/user/studentwork/wehofer/data/ns")
+_PATHS_YAML  = Path(__file__).parent.parent / "documentation" / "paths.yaml"
+DATA_ROOT    = Path(yaml.safe_load(_PATHS_YAML.read_text())["data"]["ns"])
 N_TEST       = 40
 OFFSET_TEST  = 260
 SUB_T        = 2
@@ -71,6 +73,9 @@ RE_LIST_DEFAULT = [100, 200, 300, 500, 1000]
 
 
 def data_path(re: int) -> Path:
+    # Re=1000: regenerated with independent ICs (tau_corr=80, N_eff=480)
+    if re == 1000:
+        return DATA_ROOT / "NS_fine_Re1000_T128_indep.npy"
     return DATA_ROOT / f"NS_fine_Re{re}_T128_part0.npy"
 
 
