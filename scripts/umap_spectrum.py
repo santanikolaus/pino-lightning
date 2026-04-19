@@ -75,6 +75,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--res", default=None,
                         help="comma-separated Re values to include, e.g. 100,200,300,500,1000")
+    parser.add_argument("--n_eff_cap", type=int, default=None,
+                        help="cap N_eff per Re for balanced classes")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -97,6 +99,8 @@ def main():
         print(f"[{key}] Loading {path}")
         data = np.load(path, mmap_mode="r")
         snaps = get_independent_snapshots(data, tau)
+        if args.n_eff_cap and len(snaps) > args.n_eff_cap:
+            snaps = snaps[:args.n_eff_cap]
         print(f"  tau_corr={tau}  N_eff={len(snaps)}")
 
         for s in snaps:
