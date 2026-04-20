@@ -102,6 +102,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--npz", default="scripts/outputs/infer_re_sweep_fixednu.npz",
                         help="path to per-sample pde_loss arrays from infer_re100_id.py")
+    parser.add_argument("--npz2", default=None,
+                        help="optional second operator sweep (e.g. infer_re200_id.py output)")
+    parser.add_argument("--op_re",  type=int, default=100,
+                        help="training Re of the primary operator (default: 100)")
+    parser.add_argument("--op2_re", type=int, default=200,
+                        help="training Re of the second operator (default: 200)")
     parser.add_argument("--out", default="scripts/outputs/calibration_n_modes_8.png")
     args = parser.parse_args()
 
@@ -145,29 +151,67 @@ def main():
         labels.append(lbl)
         print(f"  Re={lbl:<12} {wd:>12.4f}   {es:>8.4f}σ   [{lo:.4f}, {hi:.4f}]σ")
 
+    # ── Second operator sweep (optional) ────────────────────────────────────
+    xs2, ys2, y_lo2, y_hi2 = [], [], [], []
+    if args.npz2:
+        sweep2 = np.load(args.npz2)
+        pde2 = {re: sweep2[f"re{re}_pde_loss"] for re in RE_LIST}
+        print(f"\nSecond operator (Re={args.op2_re}) PDE loss loaded:")
+        for re in RE_LIST:
+            arr = pde2[re]
+            print(f"  Re={re:>4}  n={len(arr)}  mean={arr.mean():.4f}  std={arr.std(ddof=1):.4f}")
+
+        print(f"\n{'Pair':<16} {'WD_visible':>12}   {'effect_size':>12}   {'95% CI':>16}  (op Re={args.op2_re})")
+        print("-" * 65)
+        for re_i, re_j in pairs:
+            wd = wd_visible(spectra[re_i], spectra[re_j])
+            es = effect_size(pde2[re_i], pde2[re_j])
+            lo, hi = bootstrap_effect_size_ci(pde2[re_i], pde2[re_j], rng=rng)
+            lbl = f"{re_i}v{re_j}"
+            xs2.append(wd); ys2.append(es)
+            y_lo2.append(lo); y_hi2.append(hi)
+            print(f"  Re={lbl:<12} {wd:>12.4f}   {es:>8.4f}σ   [{lo:.4f}, {hi:.4f}]σ")
+
     # ── Plot ─────────────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(9, 6))
 
-    # color by whether Re=100 is in the pair (structurally detectable) vs not
+    # primary operator (Re=op_re): tomato = ID pairs, steelblue = OOD pairs
+    id_str = f"{args.op_re}v"
     for x, y, lo, hi, lbl in zip(xs, ys, y_lo, y_hi, labels):
-        contains_100 = lbl.startswith("100v")
-        color = "tomato" if contains_100 else "steelblue"
+        color = "tomato" if lbl.startswith(id_str) else "steelblue"
         ax.errorbar(x, y, yerr=[[y - lo], [hi - y]],
                     fmt="o", color=color, ms=7, capsize=4, elinewidth=1.2, zorder=3)
         ax.annotate(f"Re {lbl.replace('v', ' vs ')}", (x, y),
                     textcoords="offset points", xytext=(6, 4), fontsize=8)
 
+    # second operator (Re=op2_re): darkorange = ID pairs, teal = OOD pairs
+    if args.npz2:
+        id_str2 = f"{args.op2_re}v"
+        for x, y, lo, hi, lbl in zip(xs2, ys2, y_lo2, y_hi2, labels):
+            color = "darkorange" if lbl.startswith(id_str2) else "teal"
+            ax.errorbar(x, y, yerr=[[y - lo], [hi - y]],
+                        fmt="s", color=color, ms=7, capsize=4, elinewidth=1.2,
+                        zorder=3, alpha=0.85)
+
     ax.axhline(1.0, ls="--", color="gray", lw=1.2, alpha=0.7, label="1σ threshold")
-    ax.scatter([], [], color="tomato",    s=70, label="pairs involving Re=100")
-    ax.scatter([], [], color="steelblue", s=70, label="pairs Re∈{200,300,500,1000}")
+    ax.scatter([], [], color="tomato",    s=70, label=f"op Re={args.op_re}: ID pairs")
+    ax.scatter([], [], color="steelblue", s=70, label=f"op Re={args.op_re}: OOD pairs")
+    if args.npz2:
+        ax.scatter([], [], color="darkorange", s=70, marker="s",
+                   label=f"op Re={args.op2_re}: ID pairs")
+        ax.scatter([], [], color="teal",       s=70, marker="s",
+                   label=f"op Re={args.op2_re}: OOD pairs")
 
     ax.set_xlabel("WD_visible  (mean per-bin Wasserstein, k ≤ 8, log-spectrum)",
                   fontsize=11)
     ax.set_ylabel("Equation-loss effect size  |Δmean_pde| / pooled_std  (σ)",
                   fontsize=11)
-    ax.set_title("OOD Detectability Calibration — FNO n_modes=8\n"
-                 "Effect size vs spectral distance in FNO representable band "
-                 "(ν = 1/100 fixed)",
+    op_label = f"Re={args.op_re}"
+    if args.npz2:
+        op_label += f" vs Re={args.op2_re}"
+    ax.set_title(f"OOD Detectability Calibration — FNO n_modes=8\n"
+                 f"Effect size vs spectral distance in FNO representable band "
+                 f"(operators: {op_label})",
                  fontsize=11)
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
