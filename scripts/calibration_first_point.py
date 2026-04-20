@@ -175,35 +175,33 @@ def main():
     # ── Plot ─────────────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(9, 6))
 
-    # primary operator: tomato = anchor pairs (training Re included), steelblue = pure OOD
+    # one color per operator; filled = pure OOD, open = anchor pair (training Re included)
+    C1, C2 = "tomato", "steelblue"
     for x, y, lo, hi, lbl in zip(xs, ys, y_lo, y_hi, labels):
-        color = "tomato" if args.op_re in map(int, lbl.split("v")) else "steelblue"
+        is_anchor = args.op_re in map(int, lbl.split("v"))
         ax.errorbar(x, y, yerr=[[y - lo], [hi - y]],
-                    fmt="o", color=color, ms=7, capsize=4, elinewidth=1.2, zorder=3)
+                    fmt="o", color=C1, ms=7, capsize=4, elinewidth=1.2, zorder=3,
+                    mfc=C1 if not is_anchor else "white", mec=C1)
         ax.annotate(f"Re {lbl.replace('v', ' vs ')}", (x, y),
-                    textcoords="offset points", xytext=(6, 4), fontsize=8)
+                    textcoords="offset points", xytext=(6, 4), fontsize=8, color=C1)
 
-    # second operator: darkorange = anchor pairs, teal = pure OOD
     if args.npz2:
         for x, y, lo, hi, lbl in zip(xs2, ys2, y_lo2, y_hi2, labels):
-            color = "darkorange" if args.op2_re in map(int, lbl.split("v")) else "teal"
+            is_anchor = args.op2_re in map(int, lbl.split("v"))
             ax.errorbar(x, y, yerr=[[y - lo], [hi - y]],
-                        fmt="s", color=color, ms=7, capsize=4, elinewidth=1.2,
-                        zorder=3, alpha=0.85)
+                        fmt="o", color=C2, ms=7, capsize=4, elinewidth=1.2,
+                        zorder=3, alpha=0.85,
+                        mfc=C2 if not is_anchor else "white", mec=C2)
             ax.annotate(f"Re {lbl.replace('v', ' vs ')}", (x, y),
                         textcoords="offset points", xytext=(6, -12), fontsize=8,
-                        color=color, alpha=0.85)
+                        color=C2, alpha=0.85)
 
     ax.axhline(1.0, ls="--", color="gray", lw=1.2, alpha=0.7, label="1σ threshold")
-    ax.scatter([], [], color="tomato",    s=70,
-               label=f"Re={args.op_re}: anchor pairs (training Re included)")
-    ax.scatter([], [], color="steelblue", s=70,
-               label=f"Re={args.op_re}: pure OOD pairs")
+    ax.errorbar([], [], fmt="o", color=C1, mfc=C1,  mec=C1,  label=f"operator Re={args.op_re}: pure OOD pairs")
+    ax.errorbar([], [], fmt="o", color=C1, mfc="white", mec=C1, label=f"operator Re={args.op_re}: anchor pairs")
     if args.npz2:
-        ax.scatter([], [], color="darkorange", s=70, marker="s",
-                   label=f"Re={args.op2_re}: anchor pairs (training Re included)")
-        ax.scatter([], [], color="teal",       s=70, marker="s",
-                   label=f"Re={args.op2_re}: pure OOD pairs")
+        ax.errorbar([], [], fmt="o", color=C2, mfc=C2,  mec=C2,  label=f"operator Re={args.op2_re}: pure OOD pairs")
+        ax.errorbar([], [], fmt="o", color=C2, mfc="white", mec=C2, label=f"operator Re={args.op2_re}: anchor pairs")
 
     ax.set_xlabel("WD_visible  (mean per-bin Wasserstein, k ≤ 8, log-spectrum)",
                   fontsize=11)
