@@ -175,7 +175,7 @@ def main():
     # ── Plot ─────────────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(9, 6))
 
-    # primary operator (Re=op_re): tomato = ID pairs, steelblue = OOD pairs
+    # primary operator: tomato = ID-vs-OOD, steelblue = OOD-vs-OOD
     id_str = f"{args.op_re}v"
     for x, y, lo, hi, lbl in zip(xs, ys, y_lo, y_hi, labels):
         color = "tomato" if lbl.startswith(id_str) else "steelblue"
@@ -184,7 +184,7 @@ def main():
         ax.annotate(f"Re {lbl.replace('v', ' vs ')}", (x, y),
                     textcoords="offset points", xytext=(6, 4), fontsize=8)
 
-    # second operator (Re=op2_re): darkorange = ID pairs, teal = OOD pairs
+    # second operator: darkorange = ID-vs-OOD, teal = OOD-vs-OOD
     if args.npz2:
         id_str2 = f"{args.op2_re}v"
         for x, y, lo, hi, lbl in zip(xs2, ys2, y_lo2, y_hi2, labels):
@@ -192,15 +192,20 @@ def main():
             ax.errorbar(x, y, yerr=[[y - lo], [hi - y]],
                         fmt="s", color=color, ms=7, capsize=4, elinewidth=1.2,
                         zorder=3, alpha=0.85)
+            ax.annotate(f"Re {lbl.replace('v', ' vs ')}", (x, y),
+                        textcoords="offset points", xytext=(6, -12), fontsize=8,
+                        color=color, alpha=0.85)
 
     ax.axhline(1.0, ls="--", color="gray", lw=1.2, alpha=0.7, label="1σ threshold")
-    ax.scatter([], [], color="tomato",    s=70, label=f"op Re={args.op_re}: ID pairs")
-    ax.scatter([], [], color="steelblue", s=70, label=f"op Re={args.op_re}: OOD pairs")
+    ax.scatter([], [], color="tomato",    s=70,
+               label=f"op Re={args.op_re}: ID-vs-OOD (one side = training Re)")
+    ax.scatter([], [], color="steelblue", s=70,
+               label=f"op Re={args.op_re}: OOD-vs-OOD")
     if args.npz2:
         ax.scatter([], [], color="darkorange", s=70, marker="s",
-                   label=f"op Re={args.op2_re}: ID pairs")
+                   label=f"op Re={args.op2_re}: ID-vs-OOD (one side = training Re)")
         ax.scatter([], [], color="teal",       s=70, marker="s",
-                   label=f"op Re={args.op2_re}: OOD pairs")
+                   label=f"op Re={args.op2_re}: OOD-vs-OOD")
 
     ax.set_xlabel("WD_visible  (mean per-bin Wasserstein, k ≤ 8, log-spectrum)",
                   fontsize=11)
