@@ -30,6 +30,16 @@ import matplotlib
 import yaml
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.rcParams.update({
+    "font.family": "sans-serif",
+    "axes.facecolor": "#FAFAFA",
+    "figure.facecolor": "white",
+    "axes.edgecolor": "#CCCCCC",
+    "xtick.color": "#555555",
+    "ytick.color": "#555555",
+    "axes.labelcolor": "#333333",
+    "text.color": "#333333",
+})
 import numpy as np
 from scipy.stats import wasserstein_distance
 
@@ -45,11 +55,11 @@ TAU_CORR = {
 }
 
 OP_COLORS = {
-    100:  "tomato",
-    200:  "steelblue",
-    300:  "seagreen",
-    500:  "darkorchid",
-    1000: "dimgray",
+    100:  "#E8705A",   # muted coral
+    200:  "#5B9BD5",   # soft blue
+    300:  "#5BAD72",   # soft green
+    500:  "#A07CC5",   # soft purple
+    1000: "#8C8C8C",   # medium gray
 }
 
 _PATHS_YAML = Path(__file__).parent.parent / "documentation" / "paths.yaml"
@@ -190,20 +200,23 @@ def main():
         ax.errorbar(xs, ys,
                     yerr=[np.array(ys) - np.array(y_lo_list),
                           np.array(y_hi_list) - np.array(ys)],
-                    fmt="s", color=color, ms=7, capsize=4,
-                    elinewidth=1.2, zorder=3, label=f"op Re={op_re}")
+                    fmt="s", color=color, ms=5, capsize=3, alpha=0.88,
+                    elinewidth=0.9, ecolor=color, zorder=3, label=f"op Re={op_re}")
 
-    ax.axhline(1.0, ls="--", color="gray", lw=1.2, alpha=0.7, label="1σ threshold")
-    ax.set_xlabel("WD_visible  (mean per-bin Wasserstein, k ≤ 8, log-spectrum)", fontsize=11)
-    ax.set_ylabel("Equation-loss effect size  |Δmean_pde| / pooled_std  (σ)", fontsize=11)
+    ax.axhline(1.0, ls="--", color="#AAAAAA", lw=1.0, alpha=0.9, label="1\u03c3 threshold")
+    ax.set_xlabel("WD$_\\mathrm{visible}$  (mean per-bin Wasserstein, $k \\leq 8$, log-spectrum)",
+                  fontsize=10)
+    ax.set_ylabel("Effect size  $|\\Delta\\mu_\\mathrm{pde}|\\,/\\,\\sigma_\\mathrm{pooled}$  ($\\sigma$)",
+                  fontsize=10)
     op_str = ", ".join(str(r) for r in op_res)
     ax.set_title(
-        f"OOD Detectability — REBASE-vs-others  |  FNO n_modes=8\n"
-        f"Each series: train_Re vs all other Re  |  operators: Re ∈ {{{op_str}}}",
-        fontsize=10,
+        f"OOD Detectability — REBASE-vs-others  \u2022  FNO $n_{{\\mathrm{{modes}}}}=8$\n"
+        f"Each series: train Re vs all other Re  \u2022  operators Re $\\in$ {{{op_str}}}",
+        fontsize=10, pad=10,
     )
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8.5, framealpha=0.9, edgecolor="#CCCCCC")
+    ax.grid(True, alpha=0.2, linewidth=0.6)
+    ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
 
     out = Path(args.out)
