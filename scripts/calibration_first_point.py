@@ -183,8 +183,7 @@ def main():
         print(f"  {'Pair':<14} {'WD_visible':>12}   {'effect_size':>12}   {'95% CI':>16}")
         print("  " + "-" * 60)
 
-        xs, ys, y_lo_list, y_hi_list = [], [], [], []
-
+        first_point = True
         for re_j in RE_LIST:
             if re_j == op_re:
                 continue
@@ -193,15 +192,16 @@ def main():
             a, b = pde[op_re], pde[re_j]
             es = effect_size(a, b)
             lo, hi = bootstrap_effect_size_ci(a, b, rng=rng)
-            xs.append(wd); ys.append(es)
-            y_lo_list.append(lo); y_hi_list.append(hi)
             print(f"  {op_re}v{re_j:<10} {wd:>12.4f}   {es:>8.4f}σ   [{lo:.4f}, {hi:.4f}]σ")
 
-        ax.errorbar(xs, ys,
-                    yerr=[np.array(ys) - np.array(y_lo_list),
-                          np.array(y_hi_list) - np.array(ys)],
-                    fmt="s", color=color, ms=5, capsize=3, alpha=0.88,
-                    elinewidth=0.9, ecolor=color, zorder=3, label=f"op Re={op_re}")
+            ax.errorbar(wd, es, yerr=[[es - lo], [hi - es]],
+                        fmt="s", color=color, ms=5, capsize=3, alpha=0.88,
+                        elinewidth=0.9, ecolor=color, zorder=3,
+                        label=f"op Re={op_re}" if first_point else "_nolegend_")
+            ax.annotate(str(re_j), (wd, es),
+                        textcoords="offset points", xytext=(6, 2),
+                        fontsize=7, color=color, va="center", zorder=5)
+            first_point = False
 
     ax.axhline(1.0, ls="--", color="#AAAAAA", lw=1.0, alpha=0.9, label="1\u03c3 threshold")
     ax.set_xlabel("WD$_\\mathrm{visible}$  (mean per-bin Wasserstein, $k \\leq 8$, log-spectrum)",
