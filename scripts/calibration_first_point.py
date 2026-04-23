@@ -55,11 +55,11 @@ TAU_CORR = {
 }
 
 OP_COLORS = {
-    100:  "#E8705A",   # muted coral
-    200:  "#5B9BD5",   # soft blue
-    300:  "#5BAD72",   # soft green
-    500:  "#A07CC5",   # soft purple
-    1000: "#8C8C8C",   # medium gray
+    100:  "#E45756",   # tableau coral
+    200:  "#4C78A8",   # tableau steel blue
+    300:  "#F28E2B",   # tableau amber
+    500:  "#72B7B2",   # tableau teal
+    1000: "#B279A2",   # tableau purple
 }
 
 _PATHS_YAML = Path(__file__).parent.parent / "documentation" / "paths.yaml"
