@@ -85,7 +85,7 @@ def load_model(ckpt_path: str, device: torch.device) -> torch.nn.Module:
 
 
 def run_re(re: int, train_re: int, model, ns_v0: NSVorticity, ns_v1: NSVorticity,
-           device: torch.device) -> dict[str, np.ndarray]:
+           device: torch.device, use_gt: bool = False) -> dict[str, np.ndarray]:
     path = data_path(re)
     if not path.exists():
         raise FileNotFoundError(f"Data file not found: {path}")
@@ -115,9 +115,15 @@ def run_re(re: int, train_re: int, model, ns_v0: NSVorticity, ns_v1: NSVorticity
                 raise ValueError(f"Expected T_eff=65, got {T}. Check sub_t or data file.")
 
         with torch.no_grad():
-            pred = kf_forward(model, ic, T,
-                              time_scale=TIME_SCALE, temporal_pad=TEMPORAL_PAD)
-            w = pred.squeeze(1)                           # (1, S, S, T)
+            if use_gt:
+                # Probe mode: solve ν* on the ground-truth trajectory instead of
+                # the FNO prediction. Isolates residual-operator behavior from
+                # model bias.
+                w = target                                 # (1, S, S, T)
+            else:
+                pred = kf_forward(model, ic, T,
+                                  time_scale=TIME_SCALE, temporal_pad=TEMPORAL_PAD)
+                w = pred.squeeze(1)                       # (1, S, S, T)
             assert w.shape[0] == 1, (
                 "nu_sweep assumes batch_size=1; per-trajectory ν* would mix "
                 "trajectories otherwise."
@@ -190,6 +196,10 @@ def parse_args():
                    help="Comma-separated test Re values (default: 100,200,300,500,1000)")
     p.add_argument("--out", required=True, help="Output .npz path")
     p.add_argument("--device", default=None, help="cuda / cpu (default: auto)")
+    p.add_argument("--use-gt", action="store_true",
+                   help="Probe: run ν solve on ground-truth trajectory (batch['y']) "
+                        "instead of FNO prediction. Isolates operator behavior "
+                        "from model bias; skips the 50% sanity gate.")
     return p.parse_args()
 
 
@@ -210,17 +220,33 @@ def main():
     ns_v0 = NSVorticity(re=float("inf"))   # v=0
     ns_v1 = NSVorticity(re=1.0)            # v=1  →  Du0 − Du1 = ∇²ω
 
+    if args.use_gt:
+        print("PROBE MODE: --use-gt  →  solving ν on ground truth, not FNO prediction")
+
     save_dict: dict[str, np.ndarray] = {}
     for re in re_list:
-        result = run_re(re, args.train_re, model, ns_v0, ns_v1, device)
+        result = run_re(re, args.train_re, model, ns_v0, ns_v1, device,
+                        use_gt=args.use_gt)
         save_dict[f"re{re}_nu_star"]  = result["nu_star"]
         save_dict[f"re{re}_curv"]     = result["curv"]
         save_dict[f"re{re}_res_star"] = result["res_star"]
         save_dict[f"re{re}_curve"]    = result["curve"]
 
     # Sanity gate: on op_R / test Re=R (in-distribution) ν* should recover ≈ 1/R.
-    # Coarse 50% threshold per nu-sweep.md §2.4.
-    if args.train_re in re_list:
+    # Coarse 50% threshold per nu-sweep.md §2.4. Probe mode skips the gate
+    # (the FNO is still trained at train_re but ν is solved on GT, so the gate
+    # statement does not apply).
+    if args.use_gt:
+        print("\nProbe mode  —  ν* vs 1/test_re on ground truth "
+              "(independent of FNO; measures residual-operator bias alone):")
+        for re in re_list:
+            mean_nu = save_dict[f"re{re}_nu_star"].mean()
+            truth   = 1.0 / re
+            rel_err = abs(mean_nu - truth) / truth
+            flag    = "OK" if rel_err < 0.2 else ("SOFT" if rel_err < 0.5 else "FAIL")
+            print(f"  test Re={re:<4}  mean(ν*)={mean_nu:.5f}  "
+                  f"1/test_re={truth:.5f}  rel_err={rel_err:.1%}  [{flag}]")
+    elif args.train_re in re_list:
         nu_id_mean = save_dict[f"re{args.train_re}_nu_star"].mean()
         nu_truth   = 1.0 / args.train_re
         rel_err    = abs(nu_id_mean - nu_truth) / nu_truth
