@@ -1,0 +1,53 @@
+# @package _global_
+# Ablation 1 — op300, data-only (pde_weight=0, ic_weight=0)
+#
+# Identical to kf_pino_re300_pretrain.yaml except pde_weight=0 and ic_weight=0.
+# Purpose: scope baseline — does B3 signal require physics-aware training,
+# or does it appear on any FNO trained with data loss only?
+#
+# Design note: ic_weight zeroed alongside pde_weight for a clean "no physics"
+# comparison.  data_weight kept at 5.0 to match effective learning signal on
+# the data term.  Architecture (n_modes=8, hidden=128) identical to baseline.
+#
+# Note: ns.residual() is still called internally (multiplied by zero); this
+# is a known no-op — pde_weight=0.0 is exercised in tests/test_train_kf_instance.py.
+#
+# Run on Titan V #4.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: ablation_1
+    name: op300-nmodes8-dataonly
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re300_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+model:
+  n_modes: [8, 8, 8]
+  lifting_channel_ratio: 0
+  hidden_channels: 128
+
+loss:
+  re: 300
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 0.0
+  ic_weight: 0.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
