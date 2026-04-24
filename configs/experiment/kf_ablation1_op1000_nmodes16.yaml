@@ -1,0 +1,50 @@
+# @package _global_
+# Ablation 1 — op1000, n_modes=16
+#
+# Identical to kf_pino_re1000_pretrain.yaml except n_modes=[16,16,16].
+# Purpose: test whether the B3=[9,16] detector signal shifts to B4=[17,32]
+# when the architectural spectral cutoff moves from 8→16.  Causal test of
+# the nonlinear-aliasing-at-cutoff mechanism.
+#
+# Run on GV100 (32GB).  Expected training time: ~same as op1000 baseline.
+#
+# After training, run per_mode_residual.py with this checkpoint and compare
+# the per-mode signed-d curve against the n_modes=8 baseline.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: ablation_1
+    name: op1000-nmodes16-pino
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re1000_T128_indep.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+model:
+  n_modes: [16, 16, 16]
+  lifting_channel_ratio: 0
+  hidden_channels: 128
+
+loss:
+  re: 1000
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
