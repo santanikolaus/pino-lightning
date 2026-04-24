@@ -28,9 +28,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-RE_LIST  = [100, 200, 300, 500, 1000]
-N_MODES  = 8   # FNO architectural cutoff — vertical line on plots
-K_MAX    = 64
+RE_LIST      = [100, 200, 300, 500, 1000]
+N_MODES      = 8    # FNO architectural cutoff — vertical line on plots
+K_MAX        = 64
+B3_RANGE     = (9, 16)   # B3 band, inclusive
+HEATMAP_VMAX = 3.0        # colour saturation on |d|
 
 # Coarse bands for cross-check summary (matches band_resolved_residual.py)
 COARSE_BANDS = [(0, 2), (3, 5), (6, 8), (9, 16), (17, K_MAX)]
@@ -184,6 +186,80 @@ def plot_band_summary(data: dict[int, dict[int, np.ndarray]], out_path: Path):
     print(f"Saved → {out_path}")
 
 
+def plot_b3_signed_heatmap(data: dict[int, dict[int, np.ndarray]], out_path: Path):
+    """5×5 signed-d heatmap aggregated over B3=[9,16].
+
+    Upper triangle (test Re > train Re): positive d expected.
+    Lower triangle (test Re < train Re): negative d expected.
+    Diagonal: NaN (ID baseline, greyed out).
+    """
+    import matplotlib.patches as mpatches
+
+    op_list = sorted(k for k in RE_LIST if k in data)
+    n       = len(op_list)
+    k_lo, k_hi = B3_RANGE
+    k_idx   = np.arange(k_lo, k_hi + 1)
+
+    mat = np.full((n, n), np.nan)
+    for i, op_re in enumerate(op_list):
+        id_b3 = data[op_re][op_re][:, k_idx].sum(axis=1)
+        for j, test_re in enumerate(op_list):
+            if test_re == op_re:
+                continue
+            ood_b3 = data[op_re][test_re][:, k_idx].sum(axis=1)
+            mat[i, j] = signed_cohens_d(ood_b3, id_b3)
+
+    fig, ax = plt.subplots(figsize=(7, 5.5))
+    cmap = plt.get_cmap("YlOrRd").copy()
+    cmap.set_bad(color="#E0E0E0")
+
+    masked = np.ma.masked_invalid(np.abs(mat))
+    im = ax.imshow(masked, cmap=cmap, vmin=0, vmax=HEATMAP_VMAX)
+
+    for i in range(n):
+        for j in range(n):
+            if np.isnan(mat[i, j]):
+                ax.text(j, i, "—", ha="center", va="center",
+                        fontsize=11, color="#999999")
+                continue
+            d = mat[i, j]
+            a = abs(d)
+            text_color  = "white" if a > 1.5 else "black"
+            label = (f"{d:+.2f}σ" if a < HEATMAP_VMAX
+                     else f"{'+' if d >= 0 else '-'}>{HEATMAP_VMAX:.0f}σ")
+            ax.text(j, i, label, ha="center", va="center",
+                    fontsize=10, color=text_color,
+                    fontweight="bold" if a >= 1.0 else "normal")
+            if a >= 1.0:
+                rect = mpatches.FancyBboxPatch(
+                    (j - 0.48, i - 0.48), 0.96, 0.96,
+                    boxstyle="square,pad=0", linewidth=1.5,
+                    edgecolor="black", facecolor="none", zorder=4,
+                )
+                ax.add_patch(rect)
+
+    labels = [str(r) for r in op_list]
+    ax.set_xticks(range(n));  ax.set_xticklabels(labels)
+    ax.set_yticks(range(n));  ax.set_yticklabels(labels)
+    ax.set_xlabel("Test Re", fontsize=11)
+    ax.set_ylabel("Operator  (train Re)", fontsize=11)
+    ax.set_title(
+        f"Signed Cohen's d  —  B3  max(|kx|,|ky|) ∈ [{k_lo},{k_hi}]\n"
+        "Upper triangle (test Re > train Re): positive  |  "
+        "Lower triangle (test Re < train Re): negative",
+        fontsize=10,
+    )
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("|Effect size|  (σ)", fontsize=9)
+    cbar.ax.axhline(1.0 / HEATMAP_VMAX, color="black", lw=1.2, linestyle="--")
+
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved → {out_path}")
+
+
 def print_b3_sign_table(data: dict[int, dict[int, np.ndarray]]):
     """Prints signed d at k=12 (centre of B3) — mirrors ood.md §6 sign table."""
     print("\n=== Signed d at k=12 (B3 centre) ===")
@@ -222,6 +298,7 @@ def main():
 
     plot_per_op(data, out_dir / "per_mode_signed_d.png")
     plot_band_summary(data, out_dir / "per_mode_band_summary.png")
+    plot_b3_signed_heatmap(data, out_dir / "per_mode_b3_signed_heatmap.png")
     print_b3_sign_table(data)
 
 
