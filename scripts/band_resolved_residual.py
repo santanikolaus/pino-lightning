@@ -66,7 +66,9 @@ TIME_SCALE   = 1.0
 TEMPORAL_PAD = 5
 
 RE_LIST_DEFAULT = [100, 200, 300, 500, 1000]
-BAND_EDGES      = [(0, 2), (3, 5), (6, 8), (9, 16), (17, 32)]
+S_GRID          = 128  # fixed: all KF data files are (300, 129, 128, 128)
+# Bands in square-shell framing max(|kx|,|ky|). Last edge = k_max = S_GRID/2.
+BAND_EDGES      = [(0, 2), (3, 5), (6, 8), (9, 16), (17, S_GRID // 2)]
 
 
 def data_path(re: int) -> Path:
@@ -87,7 +89,9 @@ def load_model(ckpt_path: str, device: torch.device) -> torch.nn.Module:
     return model.to(device).eval()
 
 
-def build_band_masks(S: int, device: torch.device) -> torch.Tensor:
+def build_band_masks(device: torch.device) -> torch.Tensor:
+    """Square-shell masks at fixed S_GRID=128, one per band in BAND_EDGES."""
+    S = S_GRID
     k_max = S // 2
     freqs = torch.cat([
         torch.arange(0, k_max, device=device),
@@ -96,8 +100,7 @@ def build_band_masks(S: int, device: torch.device) -> torch.Tensor:
     kx = freqs.view(S, 1).expand(S, S)
     ky = freqs.view(1, S).expand(S, S)
     k_inf = torch.maximum(kx.abs(), ky.abs())
-    masks = torch.stack([(k_inf >= lo) & (k_inf <= hi) for lo, hi in BAND_EDGES])
-    return masks  # (5, S, S) bool, on device
+    return torch.stack([(k_inf >= lo) & (k_inf <= hi) for lo, hi in BAND_EDGES])
 
 
 def run_re(re: int, train_re: int, model, masks: torch.Tensor,
@@ -116,7 +119,7 @@ def run_re(re: int, train_re: int, model, masks: torch.Tensor,
     dataset = KFDataset(str(path), n_samples=N_TEST, offset=OFFSET_TEST, sub_t=SUB_T)
     loader  = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    n_bands = masks.shape[0]
+    n_bands = len(BAND_EDGES)
     E_abs  = np.zeros((N_TEST, n_bands), dtype=np.float64)
     E_frac = np.zeros((N_TEST, n_bands), dtype=np.float64)
 
@@ -135,6 +138,9 @@ def run_re(re: int, train_re: int, model, masks: torch.Tensor,
                               time_scale=TIME_SCALE, temporal_pad=TEMPORAL_PAD)
 
         w = pred.squeeze(1)                                   # (1, S, S, T)
+        if i == 0 and w.shape[1] != S_GRID:
+            raise ValueError(f"Expected spatial size {S_GRID}, got {w.shape[1]}. "
+                             f"Mask partition assumes fixed S_GRID.")
         Du = ns.residual(w)                                    # (1, S, S, T-2)
         forcing = ns.get_forcing(w.shape[1], device).expand_as(Du)
         r  = Du - forcing
@@ -189,7 +195,8 @@ def main():
     print(f"Test Re sweep: {re_list}")
 
     model = load_model(args.ckpt, device)
-    masks = build_band_masks(S=64, device=device)
+    masks = build_band_masks(device=device)
+    print(f"Band masks: S={S_GRID}, edges={BAND_EDGES}")
 
     save_dict: dict[str, np.ndarray] = {}
     for re in re_list:
