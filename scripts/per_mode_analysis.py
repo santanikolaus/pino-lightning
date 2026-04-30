@@ -4,33 +4,44 @@ Per-mode signed Cohen's d — diagnostic figure for B3 band justification.
 Loads npz files produced by per_mode_residual.py (one per training operator),
 computes signed Cohen's d at every wavenumber k ∈ [0, 64], and produces:
 
-    per_mode_signed_d.png       — subplots (one per op), signed d vs k for
-                                  each OOD test Re, B3 shaded, n_modes cutoff marked
-    per_mode_band_summary.png   — max |d| per coarse band (replicates Step 6 table
-                                  from per-mode data for cross-check)
+    per_mode_signed_d.png        — subplots (one per op), signed d vs k for
+                                   each OOD test Re, B3 shaded, per-op n_modes cutoff
+    per_mode_band_summary.png    — max |d| per coarse band (cross-check vs Step 6)
     per_mode_b3_signed_heatmap.png — signed-d heatmap over B3 band
+    per_mode_nmodes_sweep.png    — (auto) per-test-Re subplots overlaying operators
+                                   with different n_modes; only written when >1 distinct
+                                   n_modes value shares the same train Re
 
-The signed-d sign convention is REBASE: d > 0 means OOD residual exceeds ID;
-d < 0 means it falls below. Diagonal (test Re == train Re) is skipped.
+The signed-d sign convention: d > 0 means OOD residual exceeds ID; d < 0 below.
 
-Run (standard — filenames encode train Re):
+Run (standard — filenames encode train Re, n_modes read from npz metadata):
     python scripts/per_mode_analysis.py \
         --inputs scripts/outputs/per_mode_residual_op*.npz \
         --out-dir scripts/outputs/
 
-Run (with overrides — arbitrary filenames, e.g. ablation comparison):
+Run (ablation — arbitrary filenames, explicit overrides):
     python scripts/per_mode_analysis.py \
         --inputs scripts/outputs/per_mode_residual_op300.npz \
                  scripts/outputs/per_mode_residual_ablation1_67p3g6jy.npz \
         --train-res 300 300 \
         --labels op300_pino op300_dataonly \
         --out-dir scripts/outputs/
+
+Run (n_modes sweep — n_modes read from npz; pass --n-modes-list to override):
+    python scripts/per_mode_analysis.py \
+        --inputs scripts/outputs/per_mode_residual_op300.npz \
+                 scripts/outputs/per_mode_residual_ablation1_tl1vfmv7.npz \
+                 scripts/outputs/per_mode_residual_ablation1_rrq27kuw.npz \
+        --train-res 300 300 300 \
+        --labels op300_nm8 op300_nm4 op300_nm16 \
+        --out-dir scripts/outputs/nmodes_sweep/
 """
 
 from __future__ import annotations
 
 import argparse
 import re as _re
+from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
@@ -40,16 +51,13 @@ import numpy as np
 
 
 RE_LIST      = [100, 200, 300, 500, 1000]
-N_MODES      = 8    # FNO architectural cutoff — vertical line on plots
 K_MAX        = 64
 B3_RANGE     = (9, 16)   # B3 band, inclusive
-HEATMAP_VMAX = 3.0        # colour saturation on |d|
+HEATMAP_VMAX = 3.0
 
-# Coarse bands for cross-check summary (matches band_resolved_residual.py)
 COARSE_BANDS = [(0, 2), (3, 5), (6, 8), (9, 16), (17, K_MAX)]
 BAND_LABELS  = ["B0\n[0,2]", "B1\n[3,5]", "B2\n[6,8]", "B3\n[9,16]", "B4\n[17,64]"]
 
-# Colours per test Re (consistent across subplots)
 RE_COLORS = {100: "#1f77b4", 200: "#ff7f0e", 300: "#2ca02c",
              500: "#d62728", 1000: "#9467bd"}
 
@@ -74,15 +82,23 @@ def load_data(
     paths: list[Path],
     train_res: list[int] | None = None,
     labels: list[str] | None = None,
-) -> tuple[dict[str, dict[int, np.ndarray]], dict[str, int]]:
+    n_modes_list: list[int] | None = None,
+) -> tuple[dict[str, dict[int, np.ndarray]], dict[str, int], dict[str, int]]:
     """Load per-mode npz files.
 
     Returns:
         data:         label -> {test_re -> (N_TEST, K_MAX+1)}
-        train_re_map: label -> train_re  (used to locate the ID baseline)
+        train_re_map: label -> train_re  (ID baseline lookup)
+        n_modes_map:  label -> n_modes   (spectral cutoff for plots)
+
+    n_modes is resolved in priority order:
+        1. --n-modes-list CLI arg
+        2. 'n_modes' key in npz (written by per_mode_residual.py ≥ this version)
+        3. default 8
     """
     data: dict[str, dict[int, np.ndarray]] = {}
     train_re_map: dict[str, int] = {}
+    n_modes_map: dict[str, int] = {}
 
     for i, p in enumerate(paths):
         train_re = train_res[i] if train_res is not None else _parse_op_re_from_filename(p)
@@ -92,12 +108,13 @@ def load_data(
             raise ValueError(f"Duplicate label '{label}'. Use --labels to disambiguate.")
 
         z = np.load(p)
+
         per_test: dict[int, np.ndarray] = {}
         for test_re in RE_LIST:
             key = f"re{test_re}_mode_abs"
             if key not in z.files:
                 raise KeyError(f"{p}: missing key {key}")
-            per_test[test_re] = z[key]  # (N_TEST, K_MAX+1)
+            per_test[test_re] = z[key]
 
         if train_re not in per_test:
             raise KeyError(
@@ -105,11 +122,20 @@ def load_data(
                 f"(available: {z.files})"
             )
 
+        if n_modes_list is not None:
+            nm = n_modes_list[i]
+        elif "n_modes" in z.files:
+            nm = int(z["n_modes"])
+        else:
+            nm = 8
+
         data[label]         = per_test
         train_re_map[label] = train_re
-        print(f"Loaded '{label}'  train_re={train_re}  shape={next(iter(per_test.values())).shape}")
+        n_modes_map[label]  = nm
+        print(f"Loaded '{label}'  train_re={train_re}  n_modes={nm}  "
+              f"shape={next(iter(per_test.values())).shape}")
 
-    return data, train_re_map
+    return data, train_re_map, n_modes_map
 
 
 def _sorted_labels(data: dict, train_re_map: dict[str, int]) -> list[str]:
@@ -124,7 +150,7 @@ def compute_signed_d_curve(
 ) -> dict[int, np.ndarray]:
     """Returns {test_re: signed_d array of shape (K_MAX+1,)} for one operator."""
     train_re   = train_re_map[label]
-    id_samples = data[label][train_re]  # (N_TEST, K_MAX+1)
+    id_samples = data[label][train_re]
     curves: dict[int, np.ndarray] = {}
     for test_re in RE_LIST:
         if test_re == train_re:
@@ -139,8 +165,10 @@ def compute_signed_d_curve(
 def plot_per_op(
     data: dict[str, dict[int, np.ndarray]],
     train_re_map: dict[str, int],
+    n_modes_map: dict[str, int],
     out_path: Path,
 ):
+    """One subplot per operator — OOD test Re curves overlaid."""
     op_list = _sorted_labels(data, train_re_map)
     n_ops   = len(op_list)
     ks      = np.arange(K_MAX + 1)
@@ -150,11 +178,12 @@ def plot_per_op(
         axes = [axes]
 
     for ax, label in zip(axes, op_list):
-        curves = compute_signed_d_curve(data, train_re_map, label)
+        nm      = n_modes_map[label]
+        curves  = compute_signed_d_curve(data, train_re_map, label)
 
         ax.axvspan(9, 16, color="#d0e8ff", alpha=0.55, label="B3 [9,16]", zorder=0)
-        ax.axvline(N_MODES, color="black", lw=1.2, linestyle="--",
-                   label=f"n_modes={N_MODES}", zorder=3)
+        ax.axvline(nm, color="black", lw=1.2, linestyle="--",
+                   label=f"n_modes={nm}", zorder=3)
         ax.axhline(0, color="black", lw=0.6, alpha=0.4, zorder=0)
         ax.axhline( 1, color="grey", lw=0.6, linestyle=":", alpha=0.5, zorder=0)
         ax.axhline(-1, color="grey", lw=0.6, linestyle=":", alpha=0.5, zorder=0)
@@ -164,7 +193,7 @@ def plot_per_op(
                     label=f"test Re={test_re}", zorder=2)
 
         ax.set_ylabel("Signed Cohen's d  (σ)", fontsize=9)
-        ax.set_title(f"{label}  (train Re={train_re_map[label]})", fontsize=10)
+        ax.set_title(f"{label}  (train Re={train_re_map[label]}, n_modes={nm})", fontsize=10)
         ax.set_ylim(-6, 6)
         ax.legend(fontsize=8, ncol=2, loc="upper right")
         ax.grid(alpha=0.25)
@@ -193,6 +222,88 @@ def plot_per_op(
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved → {out_path}")
+
+
+def plot_n_modes_sweep(
+    data: dict[str, dict[int, np.ndarray]],
+    train_re_map: dict[str, int],
+    n_modes_map: dict[str, int],
+    out_path: Path,
+):
+    """Per-test-Re subplots overlaying operators with different n_modes.
+
+    Groups operators by train_re. For each group with >1 distinct n_modes,
+    produces one subplot per OOD test Re with operator curves colored by n_modes
+    and dashed vertical lines at each operator's spectral cutoff.
+    Auto-skips if no such group exists.
+    """
+    groups: dict[int, list[str]] = defaultdict(list)
+    for label in data:
+        groups[train_re_map[label]].append(label)
+
+    sweep_groups = {
+        tr: lbls for tr, lbls in groups.items()
+        if len({n_modes_map[l] for l in lbls}) > 1
+    }
+
+    if not sweep_groups:
+        print("n_modes sweep plot: no group has >1 distinct n_modes — skipping")
+        return
+
+    for train_re, lbls in sorted(sweep_groups.items()):
+        ood_res = [r for r in RE_LIST if r != train_re]
+        n_ood   = len(ood_res)
+
+        nm_vals   = sorted({n_modes_map[l] for l in lbls})
+        cmap      = plt.get_cmap("plasma", len(nm_vals) + 1)
+        nm_color  = {nm: cmap(i) for i, nm in enumerate(nm_vals)}
+
+        fig, axes = plt.subplots(n_ood, 1, figsize=(10, 3.0 * n_ood), sharex=True)
+        if n_ood == 1:
+            axes = [axes]
+
+        ks = np.arange(K_MAX + 1)
+
+        for ax, test_re in zip(axes, ood_res):
+            ax.axvspan(9, 16, color="#d0e8ff", alpha=0.35, label="B3 [9,16]", zorder=0)
+            ax.axhline(0, color="black", lw=0.6, alpha=0.4, zorder=0)
+            ax.axhline( 1, color="grey", lw=0.6, linestyle=":", alpha=0.5, zorder=0)
+            ax.axhline(-1, color="grey", lw=0.6, linestyle=":", alpha=0.5, zorder=0)
+
+            for label in sorted(lbls, key=lambda l: n_modes_map[l]):
+                nm    = n_modes_map[label]
+                color = nm_color[nm]
+                id_s  = data[label][train_re]
+                ood   = data[label][test_re]
+                d = np.array([signed_cohens_d(ood[:, k], id_s[:, k])
+                              for k in range(K_MAX + 1)])
+                ax.plot(ks, d, color=color, lw=1.6,
+                        label=f"{label}  (n_modes={nm})", zorder=2)
+                ax.axvline(nm, color=color, lw=1.0, linestyle="--", alpha=0.75, zorder=3)
+
+            ax.set_ylabel("Signed Cohen's d  (σ)", fontsize=9)
+            ax.set_title(f"test Re={test_re}  (train Re={train_re})", fontsize=10)
+            ax.set_ylim(-6, 6)
+            ax.legend(fontsize=8, ncol=1, loc="upper right")
+            ax.grid(alpha=0.25)
+
+        axes[-1].set_xlabel("Wavenumber  k  =  max(|kx|, |ky|)", fontsize=10)
+        axes[-1].set_xlim(0, K_MAX)
+
+        fig.suptitle(
+            f"n_modes sweep — train Re={train_re}\n"
+            "Dashed verticals: each operator's spectral cutoff  |  "
+            "B3 [9,16] shaded",
+            fontsize=11, y=1.001,
+        )
+        fig.tight_layout()
+
+        suffix    = f"_re{train_re}" if len(sweep_groups) > 1 else ""
+        save_path = out_path.with_name(out_path.stem + suffix + out_path.suffix)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved → {save_path}")
 
 
 def plot_band_summary(
@@ -247,7 +358,7 @@ def plot_b3_signed_heatmap(
 ):
     """Signed-d heatmap aggregated over B3=[9,16].
 
-    Rows = operators (train Re); columns = test Re values (RE_LIST).
+    Rows = operators; columns = test Re values (RE_LIST).
     Cell is NaN where test Re == train Re (ID diagonal).
     """
     import matplotlib.patches as mpatches
@@ -265,8 +376,8 @@ def plot_b3_signed_heatmap(
         for j, test_re in enumerate(RE_LIST):
             if test_re == train_re:
                 continue
-            ood_b3 = data[label][test_re][:, k_idx].sum(axis=1)
-            mat[i, j] = signed_cohens_d(ood_b3, id_b3)
+            ood_b3     = data[label][test_re][:, k_idx].sum(axis=1)
+            mat[i, j]  = signed_cohens_d(ood_b3, id_b3)
 
     fig, ax = plt.subplots(figsize=(max(7, n_test * 1.3), max(5.5, n_ops * 1.1)))
     cmap = plt.get_cmap("YlOrRd").copy()
@@ -346,11 +457,14 @@ def parse_args():
     p.add_argument("--inputs", nargs="+", required=True,
                    help="npz files (standard name: per_mode_residual_op<RE>.npz)")
     p.add_argument("--train-res", nargs="+", type=int, default=None,
-                   help="Train Re for each input file (overrides filename parsing). "
+                   help="Train Re per file (overrides filename parsing). "
                         "Must match --inputs length.")
     p.add_argument("--labels", nargs="+", default=None,
-                   help="Display label for each input file (default: op<train_re>). "
-                        "Must match --inputs length. Required when two files share the same train Re.")
+                   help="Display label per file (default: op<train_re>). "
+                        "Must match --inputs length. Required when two files share train Re.")
+    p.add_argument("--n-modes-list", nargs="+", type=int, default=None,
+                   help="n_modes per file (overrides npz metadata and default of 8). "
+                        "Must match --inputs length.")
     p.add_argument("--out-dir", default="scripts/outputs/")
     return p.parse_args()
 
@@ -368,14 +482,19 @@ def main():
         raise ValueError(f"--train-res has {len(args.train_res)} entries but --inputs has {n}")
     if args.labels is not None and len(args.labels) != n:
         raise ValueError(f"--labels has {len(args.labels)} entries but --inputs has {n}")
+    if args.n_modes_list is not None and len(args.n_modes_list) != n:
+        raise ValueError(f"--n-modes-list has {len(args.n_modes_list)} entries but --inputs has {n}")
 
     out_dir = Path(args.out_dir)
 
-    data, train_re_map = load_data(paths, args.train_res, args.labels)
+    data, train_re_map, n_modes_map = load_data(
+        paths, args.train_res, args.labels, args.n_modes_list
+    )
 
-    plot_per_op(data, train_re_map, out_dir / "per_mode_signed_d.png")
+    plot_per_op(data, train_re_map, n_modes_map, out_dir / "per_mode_signed_d.png")
     plot_band_summary(data, train_re_map, out_dir / "per_mode_band_summary.png")
     plot_b3_signed_heatmap(data, train_re_map, out_dir / "per_mode_b3_signed_heatmap.png")
+    plot_n_modes_sweep(data, train_re_map, n_modes_map, out_dir / "per_mode_nmodes_sweep.png")
     print_b3_sign_table(data, train_re_map)
 
 
