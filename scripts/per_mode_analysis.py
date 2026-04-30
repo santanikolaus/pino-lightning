@@ -27,6 +27,8 @@ Run (with overrides — arbitrary filenames, e.g. ablation comparison):
         --out-dir scripts/outputs/
 """
 
+from __future__ import annotations
+
 import argparse
 import re as _re
 from pathlib import Path
