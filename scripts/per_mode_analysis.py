@@ -1,20 +1,29 @@
 """
 Per-mode signed Cohen's d — diagnostic figure for B3 band justification.
 
-Loads 5 npz files produced by per_mode_residual.py (one per training Re),
+Loads npz files produced by per_mode_residual.py (one per training operator),
 computes signed Cohen's d at every wavenumber k ∈ [0, 64], and produces:
 
-    per_mode_signed_d.png       — 5 subplots (one per op), signed d vs k for
+    per_mode_signed_d.png       — subplots (one per op), signed d vs k for
                                   each OOD test Re, B3 shaded, n_modes cutoff marked
     per_mode_band_summary.png   — max |d| per coarse band (replicates Step 6 table
                                   from per-mode data for cross-check)
+    per_mode_b3_signed_heatmap.png — signed-d heatmap over B3 band
 
 The signed-d sign convention is REBASE: d > 0 means OOD residual exceeds ID;
 d < 0 means it falls below. Diagonal (test Re == train Re) is skipped.
 
-Run:
+Run (standard — filenames encode train Re):
     python scripts/per_mode_analysis.py \
         --inputs scripts/outputs/per_mode_residual_op*.npz \
+        --out-dir scripts/outputs/
+
+Run (with overrides — arbitrary filenames, e.g. ablation comparison):
+    python scripts/per_mode_analysis.py \
+        --inputs scripts/outputs/per_mode_residual_op300.npz \
+                 scripts/outputs/per_mode_residual_ablation1_67p3g6jy.npz \
+        --train-res 300 300 \
+        --labels op300_pino op300_dataonly \
         --out-dir scripts/outputs/
 """
 
@@ -48,47 +57,89 @@ def signed_cohens_d(a: np.ndarray, b: np.ndarray) -> float:
     return (a.mean() - b.mean()) / (pooled_std + 1e-12)
 
 
-def parse_op_re(p: Path) -> int:
+def _parse_op_re_from_filename(p: Path) -> int:
+    """Fallback: extract train Re from standard filename per_mode_residual_op<RE>.npz."""
     m = _re.search(r"per_mode_residual_op(\d+)\.npz", p.name)
     if not m:
-        raise ValueError(f"Cannot parse op Re from: {p.name}")
+        raise ValueError(
+            f"Cannot parse op Re from filename: {p.name}\n"
+            "Use --train-res and --labels to override."
+        )
     return int(m.group(1))
 
 
-def load_data(paths: list[Path]) -> dict[int, dict[int, np.ndarray]]:
-    """Returns data[op_re][test_re] -> (N_TEST, K_MAX+1)."""
-    out: dict[int, dict[int, np.ndarray]] = {}
-    for p in paths:
-        op_re = parse_op_re(p)
+def load_data(
+    paths: list[Path],
+    train_res: list[int] | None = None,
+    labels: list[str] | None = None,
+) -> tuple[dict[str, dict[int, np.ndarray]], dict[str, int]]:
+    """Load per-mode npz files.
+
+    Returns:
+        data:         label -> {test_re -> (N_TEST, K_MAX+1)}
+        train_re_map: label -> train_re  (used to locate the ID baseline)
+    """
+    data: dict[str, dict[int, np.ndarray]] = {}
+    train_re_map: dict[str, int] = {}
+
+    for i, p in enumerate(paths):
+        train_re = train_res[i] if train_res is not None else _parse_op_re_from_filename(p)
+        label    = labels[i]    if labels    is not None else f"op{train_re}"
+
+        if label in data:
+            raise ValueError(f"Duplicate label '{label}'. Use --labels to disambiguate.")
+
         z = np.load(p)
-        per_test = {}
+        per_test: dict[int, np.ndarray] = {}
         for test_re in RE_LIST:
-            k = f"re{test_re}_mode_abs"
-            if k not in z.files:
-                raise KeyError(f"{p}: missing key {k}")
-            per_test[test_re] = z[k]  # (N_TEST, K_MAX+1)
-        out[op_re] = per_test
-        print(f"Loaded op Re={op_re}  shape={next(iter(per_test.values())).shape}")
-    return out
+            key = f"re{test_re}_mode_abs"
+            if key not in z.files:
+                raise KeyError(f"{p}: missing key {key}")
+            per_test[test_re] = z[key]  # (N_TEST, K_MAX+1)
+
+        if train_re not in per_test:
+            raise KeyError(
+                f"{p}: ID baseline key 're{train_re}_mode_abs' not in file "
+                f"(available: {z.files})"
+            )
+
+        data[label]         = per_test
+        train_re_map[label] = train_re
+        print(f"Loaded '{label}'  train_re={train_re}  shape={next(iter(per_test.values())).shape}")
+
+    return data, train_re_map
 
 
-def compute_signed_d_curve(data: dict[int, dict[int, np.ndarray]],
-                            op_re: int) -> dict[int, np.ndarray]:
-    """Returns {test_re: signed_d array of shape (K_MAX+1,)}."""
-    id_samples = data[op_re][op_re]  # (N_TEST, K_MAX+1)
-    curves = {}
+def _sorted_labels(data: dict, train_re_map: dict[str, int]) -> list[str]:
+    """Labels sorted by train_re, then alphabetically for ties."""
+    return sorted(data.keys(), key=lambda l: (train_re_map[l], l))
+
+
+def compute_signed_d_curve(
+    data: dict[str, dict[int, np.ndarray]],
+    train_re_map: dict[str, int],
+    label: str,
+) -> dict[int, np.ndarray]:
+    """Returns {test_re: signed_d array of shape (K_MAX+1,)} for one operator."""
+    train_re   = train_re_map[label]
+    id_samples = data[label][train_re]  # (N_TEST, K_MAX+1)
+    curves: dict[int, np.ndarray] = {}
     for test_re in RE_LIST:
-        if test_re == op_re:
+        if test_re == train_re:
             continue
-        ood = data[op_re][test_re]
+        ood = data[label][test_re]
         d = np.array([signed_cohens_d(ood[:, k], id_samples[:, k])
                       for k in range(K_MAX + 1)])
         curves[test_re] = d
     return curves
 
 
-def plot_per_op(data: dict[int, dict[int, np.ndarray]], out_path: Path):
-    op_list = sorted(k for k in RE_LIST if k in data)
+def plot_per_op(
+    data: dict[str, dict[int, np.ndarray]],
+    train_re_map: dict[str, int],
+    out_path: Path,
+):
+    op_list = _sorted_labels(data, train_re_map)
     n_ops   = len(op_list)
     ks      = np.arange(K_MAX + 1)
 
@@ -96,12 +147,10 @@ def plot_per_op(data: dict[int, dict[int, np.ndarray]], out_path: Path):
     if n_ops == 1:
         axes = [axes]
 
-    for ax, op_re in zip(axes, op_list):
-        curves = compute_signed_d_curve(data, op_re)
+    for ax, label in zip(axes, op_list):
+        curves = compute_signed_d_curve(data, train_re_map, label)
 
-        # B3 band shading
         ax.axvspan(9, 16, color="#d0e8ff", alpha=0.55, label="B3 [9,16]", zorder=0)
-        # n_modes cutoff
         ax.axvline(N_MODES, color="black", lw=1.2, linestyle="--",
                    label=f"n_modes={N_MODES}", zorder=3)
         ax.axhline(0, color="black", lw=0.6, alpha=0.4, zorder=0)
@@ -113,12 +162,11 @@ def plot_per_op(data: dict[int, dict[int, np.ndarray]], out_path: Path):
                     label=f"test Re={test_re}", zorder=2)
 
         ax.set_ylabel("Signed Cohen's d  (σ)", fontsize=9)
-        ax.set_title(f"op Re={op_re} (train Re)", fontsize=10)
+        ax.set_title(f"{label}  (train Re={train_re_map[label]})", fontsize=10)
         ax.set_ylim(-6, 6)
         ax.legend(fontsize=8, ncol=2, loc="upper right")
         ax.grid(alpha=0.25)
 
-        # Annotate B3 median d for quick scan
         b3_ks = np.arange(9, 17)
         for test_re, d in sorted(curves.items()):
             med = float(np.median(d[b3_ks]))
@@ -145,29 +193,33 @@ def plot_per_op(data: dict[int, dict[int, np.ndarray]], out_path: Path):
     print(f"Saved → {out_path}")
 
 
-def plot_band_summary(data: dict[int, dict[int, np.ndarray]], out_path: Path):
+def plot_band_summary(
+    data: dict[str, dict[int, np.ndarray]],
+    train_re_map: dict[str, int],
+    out_path: Path,
+):
     """Replicates Step-6 max|d| per (op, band) using per-mode data — cross-check."""
-    op_list = sorted(k for k in RE_LIST if k in data)
+    op_list = _sorted_labels(data, train_re_map)
     cmap    = plt.get_cmap("viridis", len(op_list))
     x       = np.arange(len(COARSE_BANDS))
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
 
-    for idx, op_re in enumerate(op_list):
-        id_samples = data[op_re][op_re]
+    for idx, label in enumerate(op_list):
+        train_re   = train_re_map[label]
+        id_samples = data[label][train_re]
         curve = []
         for lo, hi in COARSE_BANDS:
             k_range = np.arange(lo, hi + 1)
-            # aggregate band energy = sum over k in band
             id_band = id_samples[:, k_range].sum(axis=1)
             ood_ds  = []
             for test_re in RE_LIST:
-                if test_re == op_re:
+                if test_re == train_re:
                     continue
-                ood_band = data[op_re][test_re][:, k_range].sum(axis=1)
+                ood_band = data[label][test_re][:, k_range].sum(axis=1)
                 ood_ds.append(abs(signed_cohens_d(ood_band, id_band)))
             curve.append(max(ood_ds) if ood_ds else np.nan)
-        ax.plot(x, curve, marker="o", color=cmap(idx), label=f"op Re={op_re}")
+        ax.plot(x, curve, marker="o", color=cmap(idx), label=label)
 
     ax.axvspan(2.5, 3.5, color="#d0e8ff", alpha=0.55, label="B3 (hypothesis)")
     ax.axhline(1.0, color="black", lw=0.8, linestyle="--", alpha=0.5)
@@ -186,48 +238,53 @@ def plot_band_summary(data: dict[int, dict[int, np.ndarray]], out_path: Path):
     print(f"Saved → {out_path}")
 
 
-def plot_b3_signed_heatmap(data: dict[int, dict[int, np.ndarray]], out_path: Path):
-    """5×5 signed-d heatmap aggregated over B3=[9,16].
+def plot_b3_signed_heatmap(
+    data: dict[str, dict[int, np.ndarray]],
+    train_re_map: dict[str, int],
+    out_path: Path,
+):
+    """Signed-d heatmap aggregated over B3=[9,16].
 
-    Upper triangle (test Re > train Re): positive d expected.
-    Lower triangle (test Re < train Re): negative d expected.
-    Diagonal: NaN (ID baseline, greyed out).
+    Rows = operators (train Re); columns = test Re values (RE_LIST).
+    Cell is NaN where test Re == train Re (ID diagonal).
     """
     import matplotlib.patches as mpatches
 
-    op_list = sorted(k for k in RE_LIST if k in data)
-    n       = len(op_list)
+    op_list  = _sorted_labels(data, train_re_map)
+    n_ops    = len(op_list)
+    n_test   = len(RE_LIST)
     k_lo, k_hi = B3_RANGE
-    k_idx   = np.arange(k_lo, k_hi + 1)
+    k_idx    = np.arange(k_lo, k_hi + 1)
 
-    mat = np.full((n, n), np.nan)
-    for i, op_re in enumerate(op_list):
-        id_b3 = data[op_re][op_re][:, k_idx].sum(axis=1)
-        for j, test_re in enumerate(op_list):
-            if test_re == op_re:
+    mat = np.full((n_ops, n_test), np.nan)
+    for i, label in enumerate(op_list):
+        train_re = train_re_map[label]
+        id_b3    = data[label][train_re][:, k_idx].sum(axis=1)
+        for j, test_re in enumerate(RE_LIST):
+            if test_re == train_re:
                 continue
-            ood_b3 = data[op_re][test_re][:, k_idx].sum(axis=1)
+            ood_b3 = data[label][test_re][:, k_idx].sum(axis=1)
             mat[i, j] = signed_cohens_d(ood_b3, id_b3)
 
-    fig, ax = plt.subplots(figsize=(7, 5.5))
+    fig, ax = plt.subplots(figsize=(max(7, n_test * 1.3), max(5.5, n_ops * 1.1)))
     cmap = plt.get_cmap("YlOrRd").copy()
     cmap.set_bad(color="#E0E0E0")
 
     masked = np.ma.masked_invalid(np.abs(mat))
     im = ax.imshow(masked, cmap=cmap, vmin=0, vmax=HEATMAP_VMAX)
 
-    for i in range(n):
-        for j in range(n):
+    for i in range(n_ops):
+        for j in range(n_test):
             if np.isnan(mat[i, j]):
                 ax.text(j, i, "—", ha="center", va="center",
                         fontsize=11, color="#999999")
                 continue
             d = mat[i, j]
             a = abs(d)
-            text_color  = "white" if a > 1.5 else "black"
-            label = (f"{d:+.2f}σ" if a < HEATMAP_VMAX
-                     else f"{'+' if d >= 0 else '-'}>{HEATMAP_VMAX:.0f}σ")
-            ax.text(j, i, label, ha="center", va="center",
+            text_color = "white" if a > 1.5 else "black"
+            cell_label = (f"{d:+.2f}σ" if a < HEATMAP_VMAX
+                          else f"{'+' if d >= 0 else '-'}>{HEATMAP_VMAX:.0f}σ")
+            ax.text(j, i, cell_label, ha="center", va="center",
                     fontsize=10, color=text_color,
                     fontweight="bold" if a >= 1.0 else "normal")
             if a >= 1.0:
@@ -238,15 +295,15 @@ def plot_b3_signed_heatmap(data: dict[int, dict[int, np.ndarray]], out_path: Pat
                 )
                 ax.add_patch(rect)
 
-    labels = [str(r) for r in op_list]
-    ax.set_xticks(range(n));  ax.set_xticklabels(labels)
-    ax.set_yticks(range(n));  ax.set_yticklabels(labels)
+    ax.set_xticks(range(n_test))
+    ax.set_xticklabels([str(r) for r in RE_LIST])
+    ax.set_yticks(range(n_ops))
+    ax.set_yticklabels(op_list)
     ax.set_xlabel("Test Re", fontsize=11)
     ax.set_ylabel("Operator  (train Re)", fontsize=11)
     ax.set_title(
         f"Signed Cohen's d  —  B3  max(|kx|,|ky|) ∈ [{k_lo},{k_hi}]\n"
-        "Upper triangle (test Re > train Re): positive  |  "
-        "Lower triangle (test Re < train Re): negative",
+        "d > 0: OOD residual exceeds ID  |  d < 0: below ID  |  grey: ID diagonal",
         fontsize=10,
     )
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -260,20 +317,24 @@ def plot_b3_signed_heatmap(data: dict[int, dict[int, np.ndarray]], out_path: Pat
     print(f"Saved → {out_path}")
 
 
-def print_b3_sign_table(data: dict[int, dict[int, np.ndarray]]):
-    """Prints signed d at k=12 (centre of B3) — mirrors ood.md §6 sign table."""
+def print_b3_sign_table(
+    data: dict[str, dict[int, np.ndarray]],
+    train_re_map: dict[str, int],
+):
+    """Prints signed d at k=12 (centre of B3)."""
     print("\n=== Signed d at k=12 (B3 centre) ===")
-    header = "op\\test  " + "  ".join(f"Re={r:>4}" for r in RE_LIST)
+    header = "operator          " + "  ".join(f"Re={r:>4}" for r in RE_LIST)
     print(header)
     print("-" * len(header))
-    for op_re in sorted(k for k in RE_LIST if k in data):
-        id_s = data[op_re][op_re][:, 12]
-        row  = [f"{op_re:<8}"]
+    for label in _sorted_labels(data, train_re_map):
+        train_re = train_re_map[label]
+        id_s     = data[label][train_re][:, 12]
+        row      = [f"{label:<18}"]
         for test_re in RE_LIST:
-            if test_re == op_re:
+            if test_re == train_re:
                 row.append("    —    ")
             else:
-                d = signed_cohens_d(data[op_re][test_re][:, 12], id_s)
+                d = signed_cohens_d(data[label][test_re][:, 12], id_s)
                 row.append(f"{d:+.2f}σ   ")
         print("  ".join(row))
 
@@ -281,25 +342,39 @@ def print_b3_sign_table(data: dict[int, dict[int, np.ndarray]]):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--inputs", nargs="+", required=True,
-                   help="npz files named per_mode_residual_op<RE>.npz")
+                   help="npz files (standard name: per_mode_residual_op<RE>.npz)")
+    p.add_argument("--train-res", nargs="+", type=int, default=None,
+                   help="Train Re for each input file (overrides filename parsing). "
+                        "Must match --inputs length.")
+    p.add_argument("--labels", nargs="+", default=None,
+                   help="Display label for each input file (default: op<train_re>). "
+                        "Must match --inputs length. Required when two files share the same train Re.")
     p.add_argument("--out-dir", default="scripts/outputs/")
     return p.parse_args()
 
 
 def main():
-    args       = parse_args()
-    paths      = [Path(p) for p in args.inputs]
+    args  = parse_args()
+    paths = [Path(p) for p in args.inputs]
+
     for p in paths:
         if not p.exists():
             raise FileNotFoundError(p)
+
+    n = len(paths)
+    if args.train_res is not None and len(args.train_res) != n:
+        raise ValueError(f"--train-res has {len(args.train_res)} entries but --inputs has {n}")
+    if args.labels is not None and len(args.labels) != n:
+        raise ValueError(f"--labels has {len(args.labels)} entries but --inputs has {n}")
+
     out_dir = Path(args.out_dir)
 
-    data = load_data(paths)
+    data, train_re_map = load_data(paths, args.train_res, args.labels)
 
-    plot_per_op(data, out_dir / "per_mode_signed_d.png")
-    plot_band_summary(data, out_dir / "per_mode_band_summary.png")
-    plot_b3_signed_heatmap(data, out_dir / "per_mode_b3_signed_heatmap.png")
-    print_b3_sign_table(data)
+    plot_per_op(data, train_re_map, out_dir / "per_mode_signed_d.png")
+    plot_band_summary(data, train_re_map, out_dir / "per_mode_band_summary.png")
+    plot_b3_signed_heatmap(data, train_re_map, out_dir / "per_mode_b3_signed_heatmap.png")
+    print_b3_sign_table(data, train_re_map)
 
 
 if __name__ == "__main__":
