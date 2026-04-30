@@ -160,6 +160,9 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt", required=True)
     p.add_argument("--train-re", type=int, required=True)
+    p.add_argument("--n-modes", type=int, default=8,
+                   help="FNO spectral modes per dim — sets MODEL_CFG n_modes to [n,n,n]. "
+                        "Default 8 matches baseline checkpoints.")
     p.add_argument("--re", default=",".join(str(r) for r in RE_LIST_DEFAULT))
     p.add_argument("--out", required=True)
     p.add_argument("--device", default=None)
@@ -173,9 +176,12 @@ def main():
         args.device if args.device
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
+
+    MODEL_CFG["n_modes"] = [args.n_modes] * 3
+
     print(f"Device: {device}")
     print(f"Checkpoint: {args.ckpt}")
-    print(f"Train Re: {args.train_re}")
+    print(f"Train Re: {args.train_re}  n_modes: {MODEL_CFG['n_modes']}")
     print(f"Test Re sweep: {re_list}")
 
     model = load_model(args.ckpt, device)
@@ -189,6 +195,7 @@ def main():
 
     save_dict["k_max"]       = np.array(K_MAX,          dtype=np.int32)
     save_dict["train_re"]    = np.array(args.train_re,   dtype=np.int32)
+    save_dict["n_modes"]     = np.array(args.n_modes,    dtype=np.int32)
     save_dict["n_test"]      = np.array(N_TEST,          dtype=np.int32)
     save_dict["offset_test"] = np.array(OFFSET_TEST,     dtype=np.int32)
     save_dict["sub_t"]       = np.array(SUB_T,           dtype=np.int32)
