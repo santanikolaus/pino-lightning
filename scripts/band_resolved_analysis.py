@@ -205,12 +205,12 @@ def plot_per_op_bands(band_by_op, metric: str, out_path: Path):
 
 
 def plot_per_op_bands_trajectories(band_by_op, metric: str, out_path: Path):
-    """Identical layout to plot_per_op_bands but per trajectory instead of group mean.
+    """Same as plot_per_op_bands with ±1 std band around each group mean.
 
-    Each of the 40 test trajectories is z-scored against the ID distribution
-    per band: z[i,b] = (x[i,b] - id_mean[b]) / id_std[b].
-    Thin lines show individual samples; thick line is the group mean (same as
-    the Cohen's d figure but in z-score units rather than pooled-std units).
+    Each test trajectory is z-scored against ID per band:
+        z[i,b] = (x[i,b] - id_mean[b]) / id_std[b]
+    The shaded band shows mean ± 1 std across the 40 trajectories, showing
+    whether the OOD distribution separates from zero (ID centre).
     """
     ops_present = [r for r in RE_LIST if r in band_by_op]
     n_ops = len(ops_present)
@@ -223,7 +223,7 @@ def plot_per_op_bands_trajectories(band_by_op, metric: str, out_path: Path):
 
     for ax, op_re in zip(axes, ops_present):
         id_samples = band_by_op[op_re][op_re]           # (n_id, n_bands)
-        id_mean    = id_samples.mean(axis=0)             # (n_bands,)
+        id_mean    = id_samples.mean(axis=0)
         id_std     = id_samples.std(axis=0, ddof=1) + 1e-12
 
         ax.axvspan(2.5, 3.5, color="#d0e8ff", alpha=0.45, zorder=0)
@@ -237,11 +237,11 @@ def plot_per_op_bands_trajectories(band_by_op, metric: str, out_path: Path):
             ood   = band_by_op[op_re][test_re]           # (n_ood, n_bands)
             color = RE_COLORS[test_re]
             z_mat = (ood - id_mean) / id_std             # (n_ood, n_bands)
+            mean  = z_mat.mean(axis=0)
+            std   = z_mat.std(axis=0, ddof=1)
 
-            for i in range(z_mat.shape[0]):
-                ax.plot(x, z_mat[i], color=color, lw=0.5, alpha=0.18, zorder=2)
-
-            ax.plot(x, z_mat.mean(axis=0), color=color, lw=2.0, alpha=0.9,
+            ax.fill_between(x, mean - std, mean + std, color=color, alpha=0.15, zorder=2)
+            ax.plot(x, mean, color=color, lw=1.5, alpha=0.9,
                     marker="o", markersize=4, label=f"test Re={test_re}", zorder=3)
 
         ax.set_ylabel("z-score  (σ)", fontsize=9)
@@ -255,8 +255,8 @@ def plot_per_op_bands_trajectories(band_by_op, metric: str, out_path: Path):
 
     metric_label = "absolute band energy" if metric == "abs" else "band fraction"
     fig.suptitle(
-        f"Per-trajectory band z-score — all operators, all OOD pairings\n"
-        f"metric: {metric_label}  |  B3=[9,16] shaded  |  thin: individual trajectories  |  thick: mean",
+        f"Per-band z-score vs ID — all operators, all OOD pairings\n"
+        f"metric: {metric_label}  |  B3=[9,16] shaded  |  band: mean ± 1 std  (n=40)",
         fontsize=10, y=1.002,
     )
     fig.tight_layout()
