@@ -143,70 +143,23 @@ def plot_heatmap(mat: np.ndarray, band_idx: int, metric: str, out_path: Path):
     print(f"Saved → {out_path}")
 
 
-def plot_summary(band_by_op, metric: str, out_path: Path):
-    """One subplot per operator: signed Cohen's d per band vs every other test Re."""
-    ops = [re for re in RE_LIST if re in band_by_op]
-    n_ops = len(ops)
-    fig, axes = plt.subplots(1, n_ops, figsize=(3.5 * n_ops, 4.5), sharey=True)
-    if n_ops == 1:
-        axes = [axes]
-
-    cmap = plt.get_cmap("tab10", len(RE_LIST))
-    re_to_color = {re: cmap(i) for i, re in enumerate(RE_LIST)}
-    x = np.arange(N_BANDS)
-    metric_label = "absolute band energy" if metric == "abs" else "band fraction"
-
-    for ax, op_re in zip(axes, ops):
-        id_samples_by_band = [band_by_op[op_re][op_re][:, b] for b in range(N_BANDS)]
-        for test_re in RE_LIST:
-            if test_re == op_re:
-                continue
-            curve = [
-                signed_cohens_d(band_by_op[op_re][test_re][:, b], id_samples_by_band[b])
-                for b in range(N_BANDS)
-            ]
-            ax.plot(x, curve, marker="o", color=re_to_color[test_re],
-                    label=f"test Re={test_re}")
-
-        ax.axvspan(2.5, 3.5, color="#cccccc", alpha=0.35)
-        ax.axhline(0, color="black", lw=0.8, linestyle="--", alpha=0.5)
-        ax.axhline(1.0, color="black", lw=0.6, linestyle=":", alpha=0.4)
-        ax.axhline(-1.0, color="black", lw=0.6, linestyle=":", alpha=0.4)
-        ax.set_xticks(x)
-        ax.set_xticklabels([f"B{i}\n{BAND_KRANGES[i]}" for i in range(N_BANDS)], fontsize=8)
-        ax.set_title(f"op Re={op_re}", fontsize=10)
-        ax.grid(alpha=0.3)
-        ax.legend(fontsize=7, loc="best")
-
-    axes[0].set_ylabel(f"signed Cohen's d  (σ)  —  {metric_label}", fontsize=9)
-    fig.suptitle("Per-band Re distinguishability — each operator vs all others", fontsize=11)
-    fig.tight_layout()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
-    print(f"Saved → {out_path}")
-
-
 RE_COLORS = {100: "#1f77b4", 200: "#ff7f0e", 300: "#2ca02c",
              500: "#d62728", 1000: "#9467bd"}
 
 
 def plot_per_op_bands(band_by_op, metric: str, out_path: Path):
-    """5 stacked subplots — one per operator.
+    """5 stacked subplots — one per operator, shared y-axis.
 
-    Each subplot shows signed Cohen's d per coarse band for each OOD test Re
-    as a separate thin line.  Nothing is collapsed: the full (operator × test Re)
-    picture is visible.  B3 is shaded.
-
-    y-axis is signed (not |d|), so direction information is preserved: positive
-    means OOD residual energy exceeds ID, negative means below.
+    Each subplot: x=coarse bands B0-B4, y=signed Cohen's d.
+    One line per OOD test Re (group-level statistic, not per trajectory).
+    sharey=True so panel heights are directly comparable across operators.
     """
     ops_present = [r for r in RE_LIST if r in band_by_op]
     n_ops = len(ops_present)
     x = np.arange(N_BANDS)
     xlabels = [f"B{i}  {BAND_KRANGES[i]}" for i in range(N_BANDS)]
 
-    fig, axes = plt.subplots(n_ops, 1, figsize=(8, 3.2 * n_ops), sharex=True)
+    fig, axes = plt.subplots(n_ops, 1, figsize=(8, 3.2 * n_ops), sharex=True, sharey=True)
     if n_ops == 1:
         axes = [axes]
 
@@ -314,7 +267,6 @@ def main():
         for b in range(N_BANDS):
             mat = build_matrix(band_by_op, b)
             plot_heatmap(mat, b, metric, out_dir / f"banded_cohens_d_band{b}_{metric}.png")
-        plot_summary(band_by_op, metric, out_dir / f"banded_cohens_d_summary_{metric}.png")
         plot_per_op_bands(band_by_op, metric, out_dir / f"banded_cohens_d_per_op_{metric}.png")
         print_decision_table(band_by_op, metric)
 
