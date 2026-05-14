@@ -204,6 +204,76 @@ def plot_per_op_bands(band_by_op, metric: str, out_path: Path):
     print(f"Saved → {out_path}")
 
 
+def plot_per_op_bands_trajectories(band_by_op, metric: str, out_path: Path):
+    """Same layout as plot_per_op_bands but z-scored per trajectory.
+
+    Each sample is normalised against the ID mean/std per band:
+        z[i, b] = (x[i, b] - id_mean[b]) / id_std[b]
+
+    Thin individual lines show the within-group spread; a thicker mean line
+    per test Re overlays the group centre (equivalent to the Cohen's d curve
+    shifted to z-score units).  ID trajectories plotted in grey for reference.
+    """
+    ops_present = [r for r in RE_LIST if r in band_by_op]
+    n_ops = len(ops_present)
+    x = np.arange(N_BANDS)
+    xlabels = [f"B{i}  {BAND_KRANGES[i]}" for i in range(N_BANDS)]
+
+    fig, axes = plt.subplots(n_ops, 1, figsize=(8, 3.2 * n_ops), sharex=True, sharey=True)
+    if n_ops == 1:
+        axes = [axes]
+
+    for ax, op_re in zip(axes, ops_present):
+        id_samples = band_by_op[op_re][op_re]          # (n_id, n_bands)
+        id_mean    = id_samples.mean(axis=0)            # (n_bands,)
+        id_std     = id_samples.std(axis=0, ddof=1) + 1e-12
+
+        ax.axvspan(2.5, 3.5, color="#d0e8ff", alpha=0.45, zorder=0)
+        ax.axhline(0, color="black", lw=0.6, alpha=0.4, zorder=0)
+        ax.axhline( 1, color="grey", lw=0.6, linestyle=":", alpha=0.5, zorder=0)
+        ax.axhline(-1, color="grey", lw=0.6, linestyle=":", alpha=0.5, zorder=0)
+
+        # ID trajectories — grey reference cloud
+        for i in range(id_samples.shape[0]):
+            z = (id_samples[i] - id_mean) / id_std
+            ax.plot(x, z, color="grey", lw=0.4, alpha=0.25, zorder=1)
+
+        for test_re in RE_LIST:
+            if test_re == op_re:
+                continue
+            ood = band_by_op[op_re][test_re]            # (n_ood, n_bands)
+            color = RE_COLORS[test_re]
+            z_mat = (ood - id_mean) / id_std            # (n_ood, n_bands)
+
+            for i in range(z_mat.shape[0]):
+                ax.plot(x, z_mat[i], color=color, lw=0.4, alpha=0.2, zorder=2)
+
+            # mean line per test Re
+            ax.plot(x, z_mat.mean(axis=0), color=color, lw=2.0, alpha=0.9,
+                    marker="o", markersize=4, label=f"test Re={test_re}", zorder=3)
+
+        ax.set_ylabel("z-score  (σ)", fontsize=9)
+        ax.set_title(f"operator  Re={op_re}", fontsize=10)
+        ax.legend(fontsize=8, ncol=4, loc="upper left")
+        ax.grid(alpha=0.25)
+
+    axes[-1].set_xticks(x)
+    axes[-1].set_xticklabels(xlabels, fontsize=9)
+    axes[-1].set_xlabel("Frequency band", fontsize=10)
+
+    metric_label = "absolute band energy" if metric == "abs" else "band fraction"
+    fig.suptitle(
+        f"Per-trajectory z-score vs ID — all operators, all OOD pairings\n"
+        f"metric: {metric_label}  |  B3=[9,16] shaded  |  grey: ID cloud  |  thick: group mean",
+        fontsize=10, y=1.002,
+    )
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved → {out_path}")
+
+
 def print_decision_table(band_by_op, metric: str):
     print(f"\n=== max |d| per (op, band)  —  metric: {metric} ===")
     header = "op Re   " + "  ".join(f"B{b} {BAND_KRANGES[b]:>8}" for b in range(N_BANDS))
@@ -268,6 +338,7 @@ def main():
             mat = build_matrix(band_by_op, b)
             plot_heatmap(mat, b, metric, out_dir / f"banded_cohens_d_band{b}_{metric}.png")
         plot_per_op_bands(band_by_op, metric, out_dir / f"banded_cohens_d_per_op_{metric}.png")
+        plot_per_op_bands_trajectories(band_by_op, metric, out_dir / f"banded_cohens_d_trajectories_{metric}.png")
         print_decision_table(band_by_op, metric)
 
 
