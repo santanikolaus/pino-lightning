@@ -205,14 +205,12 @@ def plot_per_op_bands(band_by_op, metric: str, out_path: Path):
 
 
 def plot_per_op_bands_trajectories(band_by_op, metric: str, out_path: Path):
-    """Same layout as plot_per_op_bands but z-scored per trajectory.
+    """Identical layout to plot_per_op_bands but per trajectory instead of group mean.
 
-    Each sample is normalised against the ID mean/std per band:
-        z[i, b] = (x[i, b] - id_mean[b]) / id_std[b]
-
-    Thin individual lines show the within-group spread; a thicker mean line
-    per test Re overlays the group centre (equivalent to the Cohen's d curve
-    shifted to z-score units).  ID trajectories plotted in grey for reference.
+    Each of the 40 test trajectories is z-scored against the ID distribution
+    per band: z[i,b] = (x[i,b] - id_mean[b]) / id_std[b].
+    Thin lines show individual samples; thick line is the group mean (same as
+    the Cohen's d figure but in z-score units rather than pooled-std units).
     """
     ops_present = [r for r in RE_LIST if r in band_by_op]
     n_ops = len(ops_present)
@@ -224,31 +222,25 @@ def plot_per_op_bands_trajectories(band_by_op, metric: str, out_path: Path):
         axes = [axes]
 
     for ax, op_re in zip(axes, ops_present):
-        id_samples = band_by_op[op_re][op_re]          # (n_id, n_bands)
-        id_mean    = id_samples.mean(axis=0)            # (n_bands,)
+        id_samples = band_by_op[op_re][op_re]           # (n_id, n_bands)
+        id_mean    = id_samples.mean(axis=0)             # (n_bands,)
         id_std     = id_samples.std(axis=0, ddof=1) + 1e-12
 
         ax.axvspan(2.5, 3.5, color="#d0e8ff", alpha=0.45, zorder=0)
-        ax.axhline(0, color="black", lw=0.6, alpha=0.4, zorder=0)
-        ax.axhline( 1, color="grey", lw=0.6, linestyle=":", alpha=0.5, zorder=0)
-        ax.axhline(-1, color="grey", lw=0.6, linestyle=":", alpha=0.5, zorder=0)
-
-        # ID trajectories — grey reference cloud
-        for i in range(id_samples.shape[0]):
-            z = (id_samples[i] - id_mean) / id_std
-            ax.plot(x, z, color="grey", lw=0.4, alpha=0.25, zorder=1)
+        ax.axhline(0,  color="black", lw=0.6, alpha=0.4, zorder=0)
+        ax.axhline( 1, color="grey",  lw=0.6, linestyle=":", alpha=0.5, zorder=0)
+        ax.axhline(-1, color="grey",  lw=0.6, linestyle=":", alpha=0.5, zorder=0)
 
         for test_re in RE_LIST:
             if test_re == op_re:
                 continue
-            ood = band_by_op[op_re][test_re]            # (n_ood, n_bands)
+            ood   = band_by_op[op_re][test_re]           # (n_ood, n_bands)
             color = RE_COLORS[test_re]
-            z_mat = (ood - id_mean) / id_std            # (n_ood, n_bands)
+            z_mat = (ood - id_mean) / id_std             # (n_ood, n_bands)
 
             for i in range(z_mat.shape[0]):
-                ax.plot(x, z_mat[i], color=color, lw=0.4, alpha=0.2, zorder=2)
+                ax.plot(x, z_mat[i], color=color, lw=0.5, alpha=0.18, zorder=2)
 
-            # mean line per test Re
             ax.plot(x, z_mat.mean(axis=0), color=color, lw=2.0, alpha=0.9,
                     marker="o", markersize=4, label=f"test Re={test_re}", zorder=3)
 
@@ -263,8 +255,8 @@ def plot_per_op_bands_trajectories(band_by_op, metric: str, out_path: Path):
 
     metric_label = "absolute band energy" if metric == "abs" else "band fraction"
     fig.suptitle(
-        f"Per-trajectory z-score vs ID — all operators, all OOD pairings\n"
-        f"metric: {metric_label}  |  B3=[9,16] shaded  |  grey: ID cloud  |  thick: group mean",
+        f"Per-trajectory band z-score — all operators, all OOD pairings\n"
+        f"metric: {metric_label}  |  B3=[9,16] shaded  |  thin: individual trajectories  |  thick: mean",
         fontsize=10, y=1.002,
     )
     fig.tight_layout()
