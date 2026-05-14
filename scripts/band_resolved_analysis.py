@@ -217,7 +217,7 @@ def plot_per_op_bands_trajectories(band_by_op, metric: str, out_path: Path):
     x = np.arange(N_BANDS)
     xlabels = [f"B{i}  {BAND_KRANGES[i]}" for i in range(N_BANDS)]
 
-    fig, axes = plt.subplots(n_ops, 1, figsize=(8, 3.2 * n_ops), sharex=True, sharey=True)
+    fig, axes = plt.subplots(n_ops, 1, figsize=(8, 3.2 * n_ops), sharex=True)
     if n_ops == 1:
         axes = [axes]
 
