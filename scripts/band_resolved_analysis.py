@@ -6,7 +6,8 @@ training Re (filename must match banded_residual_op{re}.npz).
 
 Outputs:
     banded_cohens_d_band{0..4}_{abs,frac}.png   — per-band 5×5 heatmaps
-    banded_cohens_d_summary_{abs,frac}.png      — max|d| over OOD cells vs band
+    banded_cohens_d_summary_{abs,frac}.png      — max|d| over OOD cells vs band (collapsed)
+    banded_cohens_d_per_op_{abs,frac}.png       — 5 stacked subplots, signed d per OOD Re per band
 
 Signed Cohen's d is used (no abs around the mean diff) so sign inversions
 across the op100→op1000 sweep in B3 are detectable — see band-resolved.md §4
@@ -186,6 +187,70 @@ def plot_summary(band_by_op, metric: str, out_path: Path):
     print(f"Saved → {out_path}")
 
 
+RE_COLORS = {100: "#1f77b4", 200: "#ff7f0e", 300: "#2ca02c",
+             500: "#d62728", 1000: "#9467bd"}
+
+
+def plot_per_op_bands(band_by_op, metric: str, out_path: Path):
+    """5 stacked subplots — one per operator.
+
+    Each subplot shows signed Cohen's d per coarse band for each OOD test Re
+    as a separate thin line.  Nothing is collapsed: the full (operator × test Re)
+    picture is visible.  B3 is shaded.
+
+    y-axis is signed (not |d|), so direction information is preserved: positive
+    means OOD residual energy exceeds ID, negative means below.
+    """
+    ops_present = [r for r in RE_LIST if r in band_by_op]
+    n_ops = len(ops_present)
+    x = np.arange(N_BANDS)
+    xlabels = [f"B{i}  {BAND_KRANGES[i]}" for i in range(N_BANDS)]
+
+    fig, axes = plt.subplots(n_ops, 1, figsize=(8, 3.2 * n_ops), sharex=True)
+    if n_ops == 1:
+        axes = [axes]
+
+    for ax, op_re in zip(axes, ops_present):
+        id_samples_all = band_by_op[op_re][op_re]  # (n_id, n_bands)
+
+        ax.axvspan(2.5, 3.5, color="#d0e8ff", alpha=0.45, zorder=0)
+        ax.axhline(0,   color="black", lw=0.6, alpha=0.4, zorder=0)
+        ax.axhline( 1,  color="grey",  lw=0.6, linestyle=":", alpha=0.5, zorder=0)
+        ax.axhline(-1,  color="grey",  lw=0.6, linestyle=":", alpha=0.5, zorder=0)
+
+        for test_re in RE_LIST:
+            if test_re == op_re:
+                continue
+            ood = band_by_op[op_re][test_re]  # (n_ood, n_bands)
+            d_per_band = [signed_cohens_d(ood[:, b], id_samples_all[:, b])
+                          for b in range(N_BANDS)]
+            ax.plot(x, d_per_band,
+                    color=RE_COLORS[test_re], lw=1.2, alpha=0.85,
+                    marker="o", markersize=4,
+                    label=f"test Re={test_re}", zorder=2)
+
+        ax.set_ylabel("Signed Cohen's d  (σ)", fontsize=9)
+        ax.set_title(f"operator  Re={op_re}", fontsize=10)
+        ax.legend(fontsize=8, ncol=4, loc="upper left")
+        ax.grid(alpha=0.25)
+
+    axes[-1].set_xticks(x)
+    axes[-1].set_xticklabels(xlabels, fontsize=9)
+    axes[-1].set_xlabel("Frequency band", fontsize=10)
+
+    metric_label = "absolute band energy" if metric == "abs" else "band fraction"
+    fig.suptitle(
+        f"Per-band signed Cohen's d — all operators, all OOD pairings\n"
+        f"metric: {metric_label}  |  B3=[9,16] shaded  |  d>0: OOD residual exceeds ID",
+        fontsize=10, y=1.002,
+    )
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved → {out_path}")
+
+
 def print_decision_table(band_by_op, metric: str):
     print(f"\n=== max |d| per (op, band)  —  metric: {metric} ===")
     header = "op Re   " + "  ".join(f"B{b} {BAND_KRANGES[b]:>8}" for b in range(N_BANDS))
@@ -250,6 +315,7 @@ def main():
             mat = build_matrix(band_by_op, b)
             plot_heatmap(mat, b, metric, out_dir / f"banded_cohens_d_band{b}_{metric}.png")
         plot_summary(band_by_op, metric, out_dir / f"banded_cohens_d_summary_{metric}.png")
+        plot_per_op_bands(band_by_op, metric, out_dir / f"banded_cohens_d_per_op_{metric}.png")
         print_decision_table(band_by_op, metric)
 
 
