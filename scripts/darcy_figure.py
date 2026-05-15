@@ -243,7 +243,7 @@ def make_figure(a_11, fno_11, fno_211, pino_11, pino_211, out_path: str):
     fig.colorbar(im_pred_ref, ax=pred_axes,         shrink=0.8, pad=0.02, label="$u(x)$")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
     print(f"Saved → {out_path}")
 
 
@@ -334,8 +334,6 @@ def main():
 
     default_out = (
         "scripts/outputs/darcy_fno_pino_{sample}.png"
-        if args.mode == "2x2"
-        else "scripts/outputs/darcy_fno_pino_{sample}.pdf"
     )
     out_template = args.out or default_out
 
