@@ -31,7 +31,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import yaml
-from neuralop import get_model
+from neuralop.models import FNO
 
 # ── Model configs (from Hydra snapshots) ─────────────────────────────────────
 
@@ -113,8 +113,11 @@ def _subsample(t: torch.Tensor, target: int) -> torch.Tensor:
 
 
 def load_model(cfg: dict, ckpt_path: str, device: torch.device) -> torch.nn.Module:
-    from argparse import Namespace
-    model = get_model(Namespace(model=cfg))
+    kwargs = {k: v for k, v in cfg.items() if k != "model_arch"}
+    kwargs["in_channels"] = kwargs.pop("data_channels")
+    if kwargs.get("stabilizer") == "None":
+        kwargs["stabilizer"] = None
+    model = FNO(**kwargs)
     state = torch.load(ckpt_path, map_location=device, weights_only=False)["state_dict"]
     model_state = {k[len("model."):]: v for k, v in state.items() if k.startswith("model.")}
     model.load_state_dict(model_state, strict=True)
