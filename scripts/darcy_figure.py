@@ -113,7 +113,8 @@ def _subsample(t: torch.Tensor, target: int) -> torch.Tensor:
 
 
 def load_model(cfg: dict, ckpt_path: str, device: torch.device) -> torch.nn.Module:
-    model = get_model(cfg)
+    from argparse import Namespace
+    model = get_model(Namespace(model=cfg))
     state = torch.load(ckpt_path, map_location=device, weights_only=False)["state_dict"]
     model_state = {k[len("model."):]: v for k, v in state.items() if k.startswith("model.")}
     model.load_state_dict(model_state, strict=True)
