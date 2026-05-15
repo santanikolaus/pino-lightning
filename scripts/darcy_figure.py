@@ -196,57 +196,51 @@ def load_test_sample(data_root: str, sample_idx: int):
 
 # ── Figure ────────────────────────────────────────────────────────────────────
 
-def make_figure(fno_11, fno_211, pino_11, pino_211, gt_211, out_path: str):
-    col_titles = ["$11\\times11$ pred", "$211\\times211$ pred", "$211\\times211$ $|\\mathrm{error}|$"]
+def make_figure(a_11, fno_11, fno_211, pino_11, pino_211, out_path: str):
+    col_titles = ["input ($11\\times11$)", "$11\\times11$ pred", "$211\\times211$ pred"]
     row_labels  = ["FNO", "PINO"]
 
-    fno_err  = np.abs(fno_211  - gt_211)
-    pino_err = np.abs(pino_211 - gt_211)
-
-    # Shared colour limits for pred panels (across both rows and both res cols)
-    vmin_pred = min(fno_11.min(), fno_211.min(), pino_11.min(), pino_211.min(), gt_211.min())
-    vmax_pred = max(fno_11.max(), fno_211.max(), pino_11.max(), pino_211.max(), gt_211.max())
-    vmax_err  = max(fno_err.max(), pino_err.max())
+    vmin_pred = min(fno_11.min(), fno_211.min(), pino_11.min(), pino_211.min())
+    vmax_pred = max(fno_11.max(), fno_211.max(), pino_11.max(), pino_211.max())
+    a_np = a_11.numpy()
 
     fig, axes = plt.subplots(2, 3, figsize=(10, 6),
                              gridspec_kw={"hspace": 0.12, "wspace": 0.08})
 
     pred_axes = []
-    err_axes  = []
+    im_inp_ref = None
     im_pred_ref = None
-    im_err_ref  = None
 
     data_rows = [
-        (fno_11,  fno_211,  fno_err),
-        (pino_11, pino_211, pino_err),
+        (fno_11,  fno_211),
+        (pino_11, pino_211),
     ]
 
-    for row, (p11, p211, err) in enumerate(data_rows):
+    for row, (p11, p211) in enumerate(data_rows):
         ax0, ax1, ax2 = axes[row]
 
-        ax0.imshow(p11,  origin="lower", cmap="RdBu_r",
+        im0 = ax0.imshow(a_np,  origin="lower", cmap="gray",
+                         interpolation="nearest")
+        ax1.imshow(p11,  origin="lower", cmap="RdBu_r",
                    vmin=vmin_pred, vmax=vmax_pred, interpolation="nearest")
-        im1 = ax1.imshow(p211, origin="lower", cmap="RdBu_r",
+        im2 = ax2.imshow(p211, origin="lower", cmap="RdBu_r",
                          vmin=vmin_pred, vmax=vmax_pred)
-        im2 = ax2.imshow(err,  origin="lower", cmap="hot_r",
-                         vmin=0, vmax=vmax_err)
 
         for ax in (ax0, ax1, ax2):
             ax.set_xticks([])
             ax.set_yticks([])
 
         ax0.set_ylabel(row_labels[row], fontsize=11, labelpad=6)
-        pred_axes += [ax0, ax1]
-        err_axes.append(ax2)
+        pred_axes += [ax1, ax2]
 
         if row == 0:
-            im_pred_ref = im1
-            im_err_ref  = im2
+            im_inp_ref  = im0
+            im_pred_ref = im2
             for ax, title in zip((ax0, ax1, ax2), col_titles):
                 ax.set_title(title, fontsize=10, pad=4)
 
-    fig.colorbar(im_pred_ref, ax=pred_axes, shrink=0.8, pad=0.02)
-    fig.colorbar(im_err_ref,  ax=err_axes,  shrink=0.8, pad=0.04, label="|error|")
+    fig.colorbar(im_inp_ref,  ax=list(axes[:, 0]), shrink=0.8, pad=0.02, label="$a(x)$")
+    fig.colorbar(im_pred_ref, ax=pred_axes,         shrink=0.8, pad=0.02, label="$u(x)$")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -288,13 +282,13 @@ def main():
 
     for idx in samples:
         print(f"\n── Sample {idx} ──")
-        a_11, a_211, _, y_211 = load_test_sample(args.data, idx)
+        a_11, a_211, _, _ = load_test_sample(args.data, idx)
 
-        fno_11,  fno_211  = infer_fno(fno_model,   a_11, a_211, device)
-        pino_11, pino_211 = infer_pino(pino_model,  a_11, a_211, device)
+        fno_11,  fno_211  = infer_fno(fno_model,  a_11, a_211, device)
+        pino_11, pino_211 = infer_pino(pino_model, a_11, a_211, device)
 
         out = args.out.replace("{sample}", str(idx))
-        make_figure(fno_11, fno_211, pino_11, pino_211, y_211.numpy(), out)
+        make_figure(a_11, fno_11, fno_211, pino_11, pino_211, out)
 
 
 if __name__ == "__main__":
