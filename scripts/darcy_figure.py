@@ -247,6 +247,55 @@ def make_figure(a_11, fno_11, fno_211, pino_11, pino_211, out_path: str):
     print(f"Saved → {out_path}")
 
 
+def make_figure_2x2(fno_211, pino_211, gt_211, out_path: str):
+    row_labels = ["FNO", "PINO"]
+    col_titles = ["$211\\times211$ prediction", "$211\\times211$ $|\\mathrm{pred} - \mathrm{GT}|$"]
+
+    fno_err  = np.abs(fno_211  - gt_211)
+    pino_err = np.abs(pino_211 - gt_211)
+
+    vmin_pred = min(fno_211.min(), pino_211.min(), gt_211.min())
+    vmax_pred = max(fno_211.max(), pino_211.max(), gt_211.max())
+    vmax_err  = max(fno_err.max(), pino_err.max())
+
+    fig, axes = plt.subplots(2, 2, figsize=(6, 5),
+                             gridspec_kw={"hspace": 0.08, "wspace": 0.08})
+
+    im_pred_ref = None
+    im_err_ref  = None
+    pred_axes   = []
+    err_axes    = []
+
+    for row, (pred, err) in enumerate([(fno_211, fno_err), (pino_211, pino_err)]):
+        ax_p, ax_e = axes[row]
+
+        im_p = ax_p.imshow(pred, origin="lower", cmap="RdBu_r",
+                           vmin=vmin_pred, vmax=vmax_pred)
+        im_e = ax_e.imshow(err,  origin="lower", cmap="hot_r",
+                           vmin=0, vmax=vmax_err)
+
+        for ax in (ax_p, ax_e):
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        ax_p.set_ylabel(row_labels[row], fontsize=11, labelpad=6)
+        pred_axes.append(ax_p)
+        err_axes.append(ax_e)
+
+        if row == 0:
+            im_pred_ref = im_p
+            im_err_ref  = im_e
+            ax_p.set_title(col_titles[0], fontsize=10, pad=4)
+            ax_e.set_title(col_titles[1], fontsize=10, pad=4)
+
+    fig.colorbar(im_pred_ref, ax=pred_axes, shrink=0.8, pad=0.02, label="$u(x)$")
+    fig.colorbar(im_err_ref,  ax=err_axes,  shrink=0.8, pad=0.02, label="|error|")
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    print(f"Saved → {out_path}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -262,7 +311,10 @@ def parse_args():
                    help=f"darcy_binary data root (default: {_root})")
     p.add_argument("--sample", default="0",
                    help="Comma-separated sample indices, e.g. 0,1,2,3 (default: 0)")
-    p.add_argument("--out",    default="scripts/outputs/darcy_fno_pino_{sample}.pdf")
+    p.add_argument("--mode",   default="3col", choices=["3col", "2x2"],
+                   help="Figure layout: 3col (input+pred+pred) or 2x2 (pred+error)")
+    p.add_argument("--out",    default=None,
+                   help="Output path template with {sample} placeholder")
     p.add_argument("--device", default=None, help="cuda / cpu (default: auto)")
     return p.parse_args()
 
@@ -280,15 +332,25 @@ def main():
     fno_model  = load_model(FNO_CFG,  args.fno,  device)
     pino_model = load_model(PINO_CFG, args.pino, device)
 
+    default_out = (
+        "scripts/outputs/darcy_fno_pino_{sample}.png"
+        if args.mode == "2x2"
+        else "scripts/outputs/darcy_fno_pino_{sample}.pdf"
+    )
+    out_template = args.out or default_out
+
     for idx in samples:
         print(f"\n── Sample {idx} ──")
-        a_11, a_211, _, _ = load_test_sample(args.data, idx)
+        a_11, a_211, _, y_211 = load_test_sample(args.data, idx)
 
         fno_11,  fno_211  = infer_fno(fno_model,  a_11, a_211, device)
         pino_11, pino_211 = infer_pino(pino_model, a_11, a_211, device)
 
-        out = args.out.replace("{sample}", str(idx))
-        make_figure(a_11, fno_11, fno_211, pino_11, pino_211, out)
+        out = out_template.replace("{sample}", str(idx))
+        if args.mode == "2x2":
+            make_figure_2x2(fno_211, pino_211, y_211.numpy(), out)
+        else:
+            make_figure(a_11, fno_11, fno_211, pino_11, pino_211, out)
 
 
 if __name__ == "__main__":
