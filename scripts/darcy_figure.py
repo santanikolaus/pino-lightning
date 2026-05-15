@@ -26,7 +26,6 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -209,14 +208,11 @@ def make_figure(fno_11, fno_211, pino_11, pino_211, gt_211, out_path: str):
     vmax_pred = max(fno_11.max(), fno_211.max(), pino_11.max(), pino_211.max(), gt_211.max())
     vmax_err  = max(fno_err.max(), pino_err.max())
 
-    fig = plt.figure(figsize=(10, 6))
-    gs  = gridspec.GridSpec(
-        2, 5,
-        figure=fig,
-        width_ratios=[1, 1, 1, 0.05, 0.05],
-        hspace=0.12, wspace=0.12,
-    )
+    fig, axes = plt.subplots(2, 3, figsize=(10, 6),
+                             gridspec_kw={"hspace": 0.12, "wspace": 0.08})
 
+    pred_axes = []
+    err_axes  = []
     im_pred_ref = None
     im_err_ref  = None
 
@@ -226,12 +222,10 @@ def make_figure(fno_11, fno_211, pino_11, pino_211, gt_211, out_path: str):
     ]
 
     for row, (p11, p211, err) in enumerate(data_rows):
-        ax0 = fig.add_subplot(gs[row, 0])
-        ax1 = fig.add_subplot(gs[row, 1])
-        ax2 = fig.add_subplot(gs[row, 2])
+        ax0, ax1, ax2 = axes[row]
 
-        im0 = ax0.imshow(p11,  origin="lower", cmap="RdBu_r",
-                         vmin=vmin_pred, vmax=vmax_pred, interpolation="nearest")
+        ax0.imshow(p11,  origin="lower", cmap="RdBu_r",
+                   vmin=vmin_pred, vmax=vmax_pred, interpolation="nearest")
         im1 = ax1.imshow(p211, origin="lower", cmap="RdBu_r",
                          vmin=vmin_pred, vmax=vmax_pred)
         im2 = ax2.imshow(err,  origin="lower", cmap="hot_r",
@@ -242,6 +236,8 @@ def make_figure(fno_11, fno_211, pino_11, pino_211, gt_211, out_path: str):
             ax.set_yticks([])
 
         ax0.set_ylabel(row_labels[row], fontsize=11, labelpad=6)
+        pred_axes += [ax0, ax1]
+        err_axes.append(ax2)
 
         if row == 0:
             im_pred_ref = im1
@@ -249,11 +245,8 @@ def make_figure(fno_11, fno_211, pino_11, pino_211, gt_211, out_path: str):
             for ax, title in zip((ax0, ax1, ax2), col_titles):
                 ax.set_title(title, fontsize=10, pad=4)
 
-    cax_pred = fig.add_subplot(gs[:, 3])
-    fig.colorbar(im_pred_ref, cax=cax_pred)
-
-    cax_err = fig.add_subplot(gs[:, 4])
-    fig.colorbar(im_err_ref, cax=cax_err, label="|error|")
+    fig.colorbar(im_pred_ref, ax=pred_axes, shrink=0.8, pad=0.02)
+    fig.colorbar(im_err_ref,  ax=err_axes,  shrink=0.8, pad=0.04, label="|error|")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
