@@ -209,16 +209,16 @@ def make_figure(fno_11, fno_211, pino_11, pino_211, gt_211, out_path: str):
     vmax_pred = max(fno_11.max(), fno_211.max(), pino_11.max(), pino_211.max(), gt_211.max())
     vmax_err  = max(fno_err.max(), pino_err.max())
 
-    fig = plt.figure(figsize=(9, 6))
+    fig = plt.figure(figsize=(10, 6))
     gs  = gridspec.GridSpec(
-        2, 4,
+        2, 5,
         figure=fig,
-        width_ratios=[1, 1, 1, 0.05],
-        hspace=0.12, wspace=0.08,
+        width_ratios=[1, 1, 1, 0.05, 0.05],
+        hspace=0.12, wspace=0.12,
     )
 
-    axes_pred = []
-    axes_err  = []
+    im_pred_ref = None
+    im_err_ref  = None
 
     data_rows = [
         (fno_11,  fno_211,  fno_err),
@@ -243,20 +243,17 @@ def make_figure(fno_11, fno_211, pino_11, pino_211, gt_211, out_path: str):
 
         ax0.set_ylabel(row_labels[row], fontsize=11, labelpad=6)
 
-        axes_pred.append((im0, im1))
-        axes_err.append(im2)
-
         if row == 0:
+            im_pred_ref = im1
+            im_err_ref  = im2
             for ax, title in zip((ax0, ax1, ax2), col_titles):
                 ax.set_title(title, fontsize=10, pad=4)
 
-    # Shared colorbars
     cax_pred = fig.add_subplot(gs[:, 3])
-    fig.colorbar(axes_pred[0][1], cax=cax_pred)
+    fig.colorbar(im_pred_ref, cax=cax_pred)
 
-    # Second colorbar for error — place it outside right
-    cax_err = cax_pred.inset_axes([1.6, 0.0, 1.0, 1.0])
-    fig.colorbar(axes_err[0], cax=cax_err, label="|error|")
+    cax_err = fig.add_subplot(gs[:, 4])
+    fig.colorbar(im_err_ref, cax=cax_err, label="|error|")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -276,38 +273,35 @@ def parse_args():
                    help="Path to PINO checkpoint (y3j1qzis/best_val61.ckpt)")
     p.add_argument("--data",   default=_root,
                    help=f"darcy_binary data root (default: {_root})")
-    p.add_argument("--sample", type=int, default=0,
-                   help="Test sample index (default: 0)")
-    p.add_argument("--out",    default="scripts/outputs/darcy_fno_pino.pdf")
+    p.add_argument("--sample", default="0",
+                   help="Comma-separated sample indices, e.g. 0,1,2,3 (default: 0)")
+    p.add_argument("--out",    default="scripts/outputs/darcy_fno_pino_{sample}.pdf")
     p.add_argument("--device", default=None, help="cuda / cpu (default: auto)")
     return p.parse_args()
 
 
 def main():
-    args   = parse_args()
-    device = torch.device(
+    args    = parse_args()
+    samples = [int(s) for s in args.sample.split(",")]
+    device  = torch.device(
         args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu")
     )
-    print(f"Device : {device}")
-    print(f"Sample : {args.sample}")
+    print(f"Device  : {device}")
+    print(f"Samples : {samples}")
 
     print("Loading models …")
     fno_model  = load_model(FNO_CFG,  args.fno,  device)
     pino_model = load_model(PINO_CFG, args.pino, device)
 
-    print("Loading data …")
-    a_11, a_211, y_11, y_211 = load_test_sample(args.data, args.sample)
+    for idx in samples:
+        print(f"\n── Sample {idx} ──")
+        a_11, a_211, _, y_211 = load_test_sample(args.data, idx)
 
-    print("Running FNO inference …")
-    fno_11, fno_211 = infer_fno(fno_model, a_11, a_211, device)
+        fno_11,  fno_211  = infer_fno(fno_model,   a_11, a_211, device)
+        pino_11, pino_211 = infer_pino(pino_model,  a_11, a_211, device)
 
-    print("Running PINO inference …")
-    pino_11, pino_211 = infer_pino(pino_model, a_11, a_211, device)
-
-    gt_211 = y_211.numpy()
-
-    print("Building figure …")
-    make_figure(fno_11, fno_211, pino_11, pino_211, gt_211, args.out)
+        out = args.out.replace("{sample}", str(idx))
+        make_figure(fno_11, fno_211, pino_11, pino_211, y_211.numpy(), out)
 
 
 if __name__ == "__main__":
