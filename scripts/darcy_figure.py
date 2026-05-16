@@ -134,49 +134,55 @@ def build_input(a: torch.Tensor, input_res: int, device: torch.device) -> torch.
 
 
 @torch.no_grad()
-def infer_fno(model, a_11: torch.Tensor, a_211: torch.Tensor,
+def infer_fno(model, a_11: torch.Tensor, a_61: torch.Tensor, a_211: torch.Tensor,
               device: torch.device):
-    """FNO: train_res=11. Input at native resolution for both test cases."""
+    """FNO: train_res=11. Zero-shot at 61 and 211."""
     x11  = build_input(a_11,  11,  device)
+    x61  = build_input(a_61,  61,  device)
     x211 = build_input(a_211, 211, device)
 
-    pred_11  = model(x11)                                              # (1,1,11,11)
-    pred_211 = model(x211)                                             # (1,1,211,211)
+    pred_11  = model(x11)  * MOLLIFIER_SCALE * _mollifier(11,  device)
+    pred_61  = model(x61)  * MOLLIFIER_SCALE * _mollifier(61,  device)
+    pred_211 = model(x211) * MOLLIFIER_SCALE * _mollifier(211, device)
 
-    pred_11  = pred_11  * MOLLIFIER_SCALE * _mollifier(11,  device)
-    pred_211 = pred_211 * MOLLIFIER_SCALE * _mollifier(211, device)
-
-    return pred_11.squeeze().cpu().numpy(), pred_211.squeeze().cpu().numpy()
+    return (pred_11.squeeze().cpu().numpy(),
+            pred_61.squeeze().cpu().numpy(),
+            pred_211.squeeze().cpu().numpy())
 
 
 @torch.no_grad()
-def infer_pino(model, a_11: torch.Tensor, a_211: torch.Tensor,
+def infer_pino(model, a_11: torch.Tensor, a_61: torch.Tensor, a_211: torch.Tensor,
                device: torch.device):
     """PINO: train_res=61, sparse_input_res=11.
 
     11×11 test: NN-fill 11→61, add coord grid at 61, run, mollify at 61,
-                then subsample to 11.
+                subsample result to 11.
+    61×61 test: native train resolution — direct input at 61.
     211×211 test: standard path — input at 211, coord grid at 211.
     """
-    # 11×11 branch
+    # 11×11 branch (NN-fill to train res, subsample output back)
     a11_4d = a_11.unsqueeze(0).unsqueeze(0).to(device)            # (1,1,11,11)
-    a61    = F.interpolate(a11_4d, size=(61, 61), mode="nearest")  # (1,1,61,61)
-    grid61 = _coord_grid(61).unsqueeze(0).to(device)               # (1,2,61,61)
-    x61    = torch.cat([a61, grid61], dim=1)                       # (1,3,61,61)
+    a61_nn = F.interpolate(a11_4d, size=(61, 61), mode="nearest") # (1,1,61,61)
+    grid61 = _coord_grid(61).unsqueeze(0).to(device)              # (1,2,61,61)
+    x61_nn = torch.cat([a61_nn, grid61], dim=1)                   # (1,3,61,61)
+    pred61_from11 = model(x61_nn) * MOLLIFIER_SCALE * _mollifier(61, device)
+    pred_11 = _subsample(pred61_from11, 11).squeeze().cpu().numpy()
 
-    pred61 = model(x61) * MOLLIFIER_SCALE * _mollifier(61, device) # (1,1,61,61)
-    pred_11 = _subsample(pred61, 11).squeeze().cpu().numpy()
+    # 61×61 branch (native train resolution, actual subsampled input)
+    x61  = build_input(a_61,  61,  device)
+    pred_61 = model(x61) * MOLLIFIER_SCALE * _mollifier(61, device)
+    pred_61 = pred_61.squeeze().cpu().numpy()
 
     # 211×211 branch
     x211  = build_input(a_211, 211, device)
     pred_211 = model(x211) * MOLLIFIER_SCALE * _mollifier(211, device)
     pred_211 = pred_211.squeeze().cpu().numpy()
 
-    return pred_11, pred_211
+    return pred_11, pred_61, pred_211
 
 
 def load_test_sample(data_root: str, sample_idx: int):
-    """Return (a_11, a_211, y_11, y_211) numpy arrays for one test sample."""
+    """Return (a_11, a_61, a_211, y_211) numpy arrays for one test sample."""
     path = Path(data_root) / f"darcy_test_{SOURCE_RES}.pt"
     data = torch.load(path, map_location="cpu", weights_only=False)
     x_full = data["x"].float()  # (N, 421, 421)
@@ -188,59 +194,67 @@ def load_test_sample(data_root: str, sample_idx: int):
 
     return (
         subsample(x_full, 11),
+        subsample(x_full, 61),
         subsample(x_full, 211),
-        subsample(y_full, 11),
         subsample(y_full, 211),
     )
 
 
 # ── Figure ────────────────────────────────────────────────────────────────────
 
-def make_figure(a_11, fno_11, fno_211, pino_11, pino_211, out_path: str):
-    col_titles = ["input ($11\\times11$)", "$11\\times11$ pred", "$211\\times211$ pred"]
-    row_labels  = ["FNO", "PINO"]
+def make_figure(a_11, fno_11, fno_61, fno_211, pino_11, pino_61, pino_211, out_path: str):
+    col_titles = ["Initial Permeability", "$11\\times11$", "$61\\times61$", "$211\\times211$"]
 
-    vmin_pred = min(fno_11.min(), fno_211.min(), pino_11.min(), pino_211.min())
-    vmax_pred = max(fno_11.max(), fno_211.max(), pino_11.max(), pino_211.max())
-    a_np = a_11.numpy()
+    all_preds  = [fno_11, fno_61, fno_211, pino_11, pino_61, pino_211]
+    vmin_pred  = min(p.min() for p in all_preds)
+    vmax_pred  = max(p.max() for p in all_preds)
+    a_np       = a_11.numpy()
 
-    fig, axes = plt.subplots(2, 3, figsize=(10, 6),
+    fig, axes = plt.subplots(2, 4, figsize=(13, 6),
                              gridspec_kw={"hspace": 0.12, "wspace": 0.08})
 
-    pred_axes = []
-    im_inp_ref = None
+    pred_axes   = []
     im_pred_ref = None
 
     data_rows = [
-        (fno_11,  fno_211),
-        (pino_11, pino_211),
+        (fno_11,  fno_61,  fno_211),
+        (pino_11, pino_61, pino_211),
     ]
+    for row, (p11, p61, p211) in enumerate(data_rows):
+        ax0, ax1, ax2, ax3 = axes[row]
 
-    for row, (p11, p211) in enumerate(data_rows):
-        ax0, ax1, ax2 = axes[row]
+        if row == 0:
+            ax0.imshow(a_np, origin="lower", cmap="gray", interpolation="nearest")
+            ax0.set_ylabel("FNO", fontsize=11, labelpad=6)
+        else:
+            for sp in ax0.spines.values():
+                sp.set_visible(False)
+            ax0.set_xticks([])
+            ax0.set_yticks([])
+            ax0.text(0.5, 0.5, "PINO", transform=ax0.transAxes,
+                     ha="center", va="center", fontsize=12, style="italic")
 
-        im0 = ax0.imshow(a_np,  origin="lower", cmap="gray",
-                         interpolation="nearest")
         ax1.imshow(p11,  origin="lower", cmap="RdBu_r",
                    vmin=vmin_pred, vmax=vmax_pred, interpolation="nearest")
-        im2 = ax2.imshow(p211, origin="lower", cmap="RdBu_r",
+        ax2.imshow(p61,  origin="lower", cmap="RdBu_r",
+                   vmin=vmin_pred, vmax=vmax_pred, interpolation="nearest")
+        im3 = ax3.imshow(p211, origin="lower", cmap="RdBu_r",
                          vmin=vmin_pred, vmax=vmax_pred)
 
-        for ax in (ax0, ax1, ax2):
+        for ax in (ax0, ax1, ax2, ax3):
             ax.set_xticks([])
             ax.set_yticks([])
 
-        ax0.set_ylabel(row_labels[row], fontsize=11, labelpad=6)
-        pred_axes += [ax1, ax2]
+        pred_axes += [ax1, ax2, ax3]
+        if im_pred_ref is None:
+            im_pred_ref = im3
 
         if row == 0:
-            im_inp_ref  = im0
-            im_pred_ref = im2
-            for ax, title in zip((ax0, ax1, ax2), col_titles):
+            ax0.set_title(col_titles[0], fontsize=10, pad=4, style="italic")
+            for ax, title in zip((ax1, ax2, ax3), col_titles[1:]):
                 ax.set_title(title, fontsize=10, pad=4)
 
-    fig.colorbar(im_inp_ref,  ax=list(axes[:, 0]), shrink=0.8, pad=0.02, label="$a(x)$")
-    fig.colorbar(im_pred_ref, ax=pred_axes,         shrink=0.8, pad=0.02, label="$u(x)$")
+    fig.colorbar(im_pred_ref, ax=pred_axes, shrink=0.8, pad=0.02, label="$u(x)$")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
@@ -249,7 +263,7 @@ def make_figure(a_11, fno_11, fno_211, pino_11, pino_211, out_path: str):
 
 def make_figure_2x2(fno_211, pino_211, gt_211, out_path: str):
     row_labels = ["FNO", "PINO"]
-    col_titles = ["$211\\times211$ prediction", "$211\\times211$ $|\\mathrm{pred} - \mathrm{GT}|$"]
+    col_titles = [r"$211\times211$ prediction", r"$211\times211$ $|\mathrm{pred} - \mathrm{GT}|$"]
 
     fno_err  = np.abs(fno_211  - gt_211)
     pino_err = np.abs(pino_211 - gt_211)
@@ -339,16 +353,16 @@ def main():
 
     for idx in samples:
         print(f"\n── Sample {idx} ──")
-        a_11, a_211, _, y_211 = load_test_sample(args.data, idx)
+        a_11, a_61, a_211, y_211 = load_test_sample(args.data, idx)
 
-        fno_11,  fno_211  = infer_fno(fno_model,  a_11, a_211, device)
-        pino_11, pino_211 = infer_pino(pino_model, a_11, a_211, device)
+        fno_11,  fno_61,  fno_211  = infer_fno(fno_model,  a_11, a_61, a_211, device)
+        pino_11, pino_61, pino_211 = infer_pino(pino_model, a_11, a_61, a_211, device)
 
         out = out_template.replace("{sample}", str(idx))
         if args.mode == "2x2":
             make_figure_2x2(fno_211, pino_211, y_211.numpy(), out)
         else:
-            make_figure(a_11, fno_11, fno_211, pino_11, pino_211, out)
+            make_figure(a_11, fno_11, fno_61, fno_211, pino_11, pino_61, pino_211, out)
 
 
 if __name__ == "__main__":
