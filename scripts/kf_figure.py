@@ -134,8 +134,8 @@ def _default_paths():
         (Path(__file__).parent.parent / "documentation" / "paths.yaml").read_text()
     )
     project = Path(cfg["root"]["studentwork"]) / "pino-lightning"
-    ckpt_rel = cfg["pretrain_checkpoints"]["re500"]
-    ckpt = project / ckpt_rel if not Path(ckpt_rel).is_absolute() else Path(ckpt_rel)
+    # run 38o0kj3y = 1_pino-re500-pretrain (table08.md)
+    ckpt = project / "pretrain-kol" / "38o0kj3y" / "checkpoints" / "best.ckpt"
     data = Path(cfg["data"]["ns"]) / "NS_fine_Re500_T128_part0.npy"
     return str(ckpt), str(data)
 
