@@ -203,7 +203,7 @@ def load_test_sample(data_root: str, sample_idx: int):
 # ── Figure ────────────────────────────────────────────────────────────────────
 
 def make_figure(a_11, fno_11, fno_61, fno_211, pino_11, pino_61, pino_211, out_path: str):
-    col_titles = ["Initial Permeability", "$11\\times11$", "$61\\times61$", "$211\\times211$"]
+    col_titles = ["Initial Permeability $a(x)$", "$11\\times11$", "$61\\times61$", "$211\\times211$"]
 
     all_preds  = [fno_11, fno_61, fno_211, pino_11, pino_61, pino_211]
     vmin_pred  = min(p.min() for p in all_preds)
@@ -254,7 +254,7 @@ def make_figure(a_11, fno_11, fno_61, fno_211, pino_11, pino_61, pino_211, out_p
             for ax, title in zip((ax1, ax2, ax3), col_titles[1:]):
                 ax.set_title(title, fontsize=10, pad=4)
 
-    fig.colorbar(im_pred_ref, ax=pred_axes, shrink=0.8, pad=0.02, label="$u(x)$")
+    fig.colorbar(im_pred_ref, ax=pred_axes, shrink=0.8, pad=0.02, label="pressure field $u(x)$")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
@@ -302,7 +302,7 @@ def make_figure_2x2(fno_211, pino_211, gt_211, out_path: str):
             ax_p.set_title(col_titles[0], fontsize=10, pad=4)
             ax_e.set_title(col_titles[1], fontsize=10, pad=4)
 
-    fig.colorbar(im_pred_ref, ax=pred_axes, shrink=0.8, pad=0.02, label="$u(x)$")
+    fig.colorbar(im_pred_ref, ax=pred_axes, shrink=0.8, pad=0.02, label="pressure field $u(x)$")
     fig.colorbar(im_err_ref,  ax=err_axes,  shrink=0.8, pad=0.02, label="|error|")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
