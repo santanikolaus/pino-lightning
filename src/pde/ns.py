@@ -17,7 +17,7 @@ class NSVorticity:
         x2 = torch.tensor(np.linspace(0, 2 * np.pi, S, endpoint=False), dtype=torch.float).reshape(1, S).repeat(S, 1)
         return (-4 * torch.cos(4 * x2)).reshape(1, S, S, 1).to(device)
 
-    def residual(self, w: Tensor) -> Tensor:
+    def residual(self, w: Tensor) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor]]:
         """
         w: (B, S, S, T) — vorticity trajectory, channels-last
         Returns: (B, S, S, T-2) — LHS of NS vorticity eq at interior time steps.
@@ -67,8 +67,10 @@ class NSVorticity:
         dt = self.t_interval / (nt - 1)
         wt = (w[:, :, :, 2:] - w[:, :, :, :-2]) / (2 * dt)
 
-        Du = wt + (ux * wx + uy * wy - v * wlap)[..., 1:-1]
-        return Du
+        adv  = (ux * wx + uy * wy)[..., 1:-1]
+        diff = (-v * wlap)[..., 1:-1]
+        Du   = wt + adv + diff
+        return Du, (wt, adv, diff)
 
 
 class KFLoss:
@@ -92,7 +94,7 @@ class KFLoss:
 
         data = self.lp.rel(w, y)
         forcing = self.ns.get_forcing(w.shape[1], w.device).expand(w.shape[0], w.shape[1], w.shape[2], w.shape[3] - 2)
-        Du = self.ns.residual(w)
+        Du, _ = self.ns.residual(w)
         pde = self.lp.rel(Du, forcing)
 
         u_in = w[:, :, :, 0]      # prediction at t=0, shape (B, S, S)
