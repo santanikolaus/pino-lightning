@@ -1,20 +1,26 @@
 """
-Per-term OOD score analysis — Re100 operator vs ID/OOD test data.
+Per-term OOD score analysis.
 
 Loads power timeseries .npz files (N, T) per term, computes time-mean
-scores and Cohen's d table.
+scores and Cohen's d for each (op_re, ood_re) pair.
 
 Usage:
-    python msc/ood/analyse_scores.py
+    python msc/ood/analyse_scores.py --op-re 100 200 300 500 1000 --test-re 100 200 300 500 1000
 """
+import argparse
 from pathlib import Path
 
 import numpy as np
 
 TERMS   = ["Du", "wt", "adv", "diff"]
-OP_RE   = 100
-TEST_RE = [100, 500, 1000]
 OUTPUTS = Path(__file__).parent / "outputs"
+
+
+def _parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--op-re",   nargs="+", type=int, default=[100, 200, 300, 500, 1000])
+    p.add_argument("--test-re", nargs="+", type=int, default=[100, 200, 300, 500, 1000])
+    return p.parse_args()
 
 
 def score(arr: np.ndarray) -> np.ndarray:
@@ -28,20 +34,28 @@ def cohens_d(id_scores: np.ndarray, ood_scores: np.ndarray) -> float:
 
 
 def main() -> None:
-    data   = {re: np.load(OUTPUTS / f"residuals_op{OP_RE}_test{re}.npz")
-              for re in TEST_RE}
-    scores = {re: {t: score(data[re][t]) for t in TERMS}
-              for re in TEST_RE}
+    args = _parse_args()
 
-    id_re = TEST_RE[0]
-    for ood_re in TEST_RE[1:]:
-        print(f"\nRe{OP_RE} operator — ID=Re{id_re} vs OOD=Re{ood_re}")
-        print(f"{'term':<6}  {'ID mean':>12}  {'OOD mean':>12}  {'Cohen d':>8}")
-        print("-" * 46)
-        for t in TERMS:
-            d = cohens_d(scores[id_re][t], scores[ood_re][t])
-            print(f"{t:<6}  {scores[id_re][t].mean():>12.3e}"
-                  f"  {scores[ood_re][t].mean():>12.3e}  {d:>8.3f}")
+    for op_re in args.op_re:
+        data   = {re: np.load(OUTPUTS / f"residuals_op{op_re}_test{re}.npz")
+                  for re in args.test_re}
+        scores = {re: {t: score(data[re][t]) for t in TERMS}
+                  for re in args.test_re}
+        id_scores = scores[op_re]
+
+        print(f"\n{'='*60}")
+        print(f"operator Re={op_re}  (ID = test Re{op_re})")
+        print(f"{'='*60}")
+        print(f"{'term':<6}  {'test_re':>8}  {'ID mean':>12}  {'OOD mean':>12}  {'Cohen d':>8}")
+        print("-" * 54)
+        for ood_re in args.test_re:
+            if ood_re == op_re:
+                continue
+            for t in TERMS:
+                d = cohens_d(id_scores[t], scores[ood_re][t])
+                print(f"{t:<6}  {ood_re:>8}  {id_scores[t].mean():>12.3e}"
+                      f"  {scores[ood_re][t].mean():>12.3e}  {d:>8.3f}")
+            print()
 
 
 if __name__ == "__main__":
