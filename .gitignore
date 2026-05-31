@@ -4,6 +4,8 @@
 
 lightning_logs
 outputs/
+msc/ood/outputs/
+msc/tta/outputs/
 checkpoints/
 pino-darcy/
 literature/
