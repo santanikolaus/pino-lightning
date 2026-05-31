@@ -1,0 +1,47 @@
+# @package _global_
+# Ablation 2 — op300, n_modes=16, fno_skip=None
+#
+# Identical to kf_ablation1_op300_nmodes16 (rrq27kuw) except fno_skip removed.
+# Purpose: isolate skip connection contribution to within-passband B3 bleed.
+# Without skips the only information path is spectral conv (hard cutoff at k=16).
+# Prediction: onset shifts cleanly to k=17 if skips caused the within-passband signal.
+# Compare directly against rrq27kuw (nm16, with skip) to attribute the bleed.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: ablation_2
+    name: op300-nmodes16-noskip-pino
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re300_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+model:
+  n_modes: [16, 16, 16]
+  lifting_channel_ratio: 0
+  hidden_channels: 128
+  fno_skip: null   # remove skip connections; valid neuralop option
+
+loss:
+  re: 300
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
