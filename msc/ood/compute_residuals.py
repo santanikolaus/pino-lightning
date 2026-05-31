@@ -1,10 +1,11 @@
 """
-Compute and save raw per-term NS residuals for (op_re, test_re) pairs.
+Compute and save per-term FFT power timeseries for (op_re, test_re) pairs.
 
-Runs on server. Output .npz files are the basis for all local analysis.
+Runs on server. Saves fft_power(term) → (N, T) per term — pre-computed so
+local analysis only needs time_mean + Cohen's d without re-running FFT.
 
 Usage:
-    python -m msc.ood.compute_residuals --op-re 100 --test-re 100 500 1000
+    python -m msc.ood.compute_residuals --op-re 100 200 300 500 1000 --test-re 100 200 300 500 1000
 """
 import argparse
 from pathlib import Path
@@ -44,12 +45,16 @@ def main() -> None:
 
             results = decomposer.extract(data_path)
 
+            def _power(key: str) -> np.ndarray:
+                arr = np.stack([e[key].squeeze(0).cpu().numpy() for e in results])
+                return (np.abs(np.fft.fft2(arr, axes=[1, 2])) ** 2).sum(axis=(1, 2))
+
             np.savez_compressed(
                 out_path,
-                Du   = np.stack([e["Du"].squeeze(0).cpu().numpy()   for e in results]),
-                wt   = np.stack([e["wt"].squeeze(0).cpu().numpy()   for e in results]),
-                adv  = np.stack([e["adv"].squeeze(0).cpu().numpy()  for e in results]),
-                diff = np.stack([e["diff"].squeeze(0).cpu().numpy() for e in results]),
+                Du   = _power("Du"),
+                wt   = _power("wt"),
+                adv  = _power("adv"),
+                diff = _power("diff"),
             )
             print(f"saved → {out_path.name}")
 

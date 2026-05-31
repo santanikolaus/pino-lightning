@@ -9,14 +9,15 @@ from src.datasets.kf_dataset import KFDataset
 from src.models.kf_fno import build_fno_kf, kf_forward
 from src.pde.ns import NSVorticity
 
-_cfg       = yaml.safe_load((Path(__file__).parent.parent / "configs/models.yaml").open())
+_cfg = yaml.safe_load(
+    (Path(__file__).parent.parent / "configs/models.yaml").open())
 _MODEL_CFG = _cfg["operator"]
-_INF       = _cfg["inference"]
+_INF = _cfg["inference"]
 
-N_TEST       = _INF["n_test"]
-OFFSET_TEST  = _INF["offset_test"]
-SUB_T        = _INF["sub_t"]
-TIME_SCALE   = _INF["time_scale"]
+N_TEST = _INF["n_test"]
+OFFSET_TEST = _INF["offset_test"]
+SUB_T = _INF["sub_t"]
+TIME_SCALE = _INF["time_scale"]
 TEMPORAL_PAD = _INF["temporal_pad"]
 
 
@@ -96,7 +97,7 @@ class ResidualDecomposer:
         w: (B, S, S, T) → (B, T)
         """
         w_h = torch.fft.fft2(w, dim=[1, 2])
-        return (w_h.real ** 2 + w_h.imag ** 2).sum(dim=[1, 2])
+        return (w_h.real**2 + w_h.imag**2).sum(dim=[1, 2])
 
     @staticmethod
     def time_mean(power: Tensor) -> Tensor:
