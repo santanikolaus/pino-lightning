@@ -30,18 +30,18 @@ class TestNSVorticityShapes:
     def test_residual_output_shape(self, b, s, t):
         ns = NSVorticity(re=40)
         w = torch.randn(b, s, s, t)
-        out = ns.residual(w)
+        out, _ = ns.residual(w)
         assert out.shape == (b, s, s, t - 2)
 
     def test_batch_size_one_works(self):
         ns = NSVorticity(re=40)
         w = torch.randn(1, S, S, T)
-        out = ns.residual(w)
+        out, _ = ns.residual(w)
         assert out.shape == (1, S, S, T - 2)
 
     def test_default_small_grid(self):
         ns = NSVorticity(re=40)
-        out = ns.residual(_rand())
+        out, _ = ns.residual(_rand())
         assert out.shape == (B, S, S, T - 2)
 
 
@@ -55,7 +55,8 @@ class TestNSVorticityPhysics:
     def test_large_residual_on_random_field(self):
         ns = NSVorticity(re=40)
         w = _rand()
-        assert ns.residual(w).abs().mean().item() > 0.1
+        Du, _ = ns.residual(w)
+        assert Du.abs().mean().item() > 0.1
 
     def test_constant_field_residual_equals_zero(self):
         """ω(x,y,t) = c everywhere → ∂ω/∂t=0, ∇ω=0, ∇²ω=0, u·∇ω=0.
@@ -64,7 +65,7 @@ class TestNSVorticityPhysics:
         ns = NSVorticity(re=float("inf"))  # v=0, no viscosity
         c = 3.7
         w = torch.full((1, S, S, T), c)
-        res = ns.residual(w)  # (1, S, S, T-2)
+        res, _ = ns.residual(w)  # (1, S, S, T-2)
 
         expected = torch.zeros_like(res)
         torch.testing.assert_close(res, expected, atol=1e-5, rtol=1e-5)
@@ -75,7 +76,7 @@ class TestNSVorticityPhysics:
         torch.manual_seed(42)
         w = _rand()
 
-        our_res = ns.residual(w)
+        our_res, _ = ns.residual(w)
         paper_res = FDM_NS_vorticity(w, v=1.0 / 40)
 
         torch.testing.assert_close(our_res, paper_res, atol=1e-5, rtol=1e-5)
@@ -90,7 +91,7 @@ class TestNSVorticityPhysics:
         dt = ns.t_interval / (T - 1)
         t_vals = torch.arange(T, dtype=torch.float) * dt  # shape (T,)
         w = (alpha * t_vals).reshape(1, 1, 1, T).expand(1, S, S, T)
-        res = ns.residual(w)  # (1, S, S, T-2)
+        res, _ = ns.residual(w)  # (1, S, S, T-2)
 
         expected = torch.full_like(res, alpha)
         torch.testing.assert_close(res, expected, atol=1e-4, rtol=1e-4)
@@ -106,12 +107,13 @@ class TestNSVorticityNumerics:
     def test_no_nan_on_random_input(self):
         ns = NSVorticity(re=40)
         w = torch.randn(2, S, S, T)
-        assert not torch.isnan(ns.residual(w)).any()
+        Du, _ = ns.residual(w)
+        assert not torch.isnan(Du).any()
 
     def test_gradients_flow_through_residual(self):
         ns = NSVorticity(re=40)
         w = torch.randn(2, S, S, T, requires_grad=True)
-        res = ns.residual(w)
+        res, _ = ns.residual(w)
         res.sum().backward()
         assert w.grad is not None
         assert torch.isfinite(w.grad).all()
@@ -237,20 +239,20 @@ class TestNSVorticityDCSentinel:
     def test_constant_field_no_nan(self):
         ns = NSVorticity(re=float("inf"))
         w = torch.ones(1, 16, 16, 10) * 5.0
-        res = ns.residual(w)
+        res, _ = ns.residual(w)
         assert not torch.isnan(res).any(), "NaN in residual for constant (DC-only) field"
 
     def test_constant_field_no_inf(self):
         ns = NSVorticity(re=float("inf"))
         w = torch.ones(1, 16, 16, 10) * 5.0
-        res = ns.residual(w)
+        res, _ = ns.residual(w)
         assert not torch.isinf(res).any(), "Inf in residual for constant (DC-only) field"
 
     def test_constant_field_zero_value(self):
         """Constant field → Du = 0 (residual() no longer subtracts forcing)."""
         w = torch.ones(1, 16, 16, 10) * 5.0
         ns = NSVorticity(re=float("inf"))
-        res = ns.residual(w)
+        res, _ = ns.residual(w)
         expected = torch.zeros_like(res)
         torch.testing.assert_close(res, expected, atol=1e-5, rtol=1e-5)
 
@@ -420,7 +422,7 @@ class TestForcingInclusionInline:
         torch.manual_seed(42)
         w = torch.randn(2, 16, 16, 10)
 
-        our_res = ns.residual(w)
+        our_res, _ = ns.residual(w)
         paper_res = _fdm_ns_vorticity_inline(w, v=1.0 / 40)
 
         torch.testing.assert_close(our_res, paper_res, atol=1e-5, rtol=1e-5)
@@ -429,7 +431,7 @@ class TestForcingInclusionInline:
         ns = NSVorticity(re=40)
         torch.manual_seed(0)
         w = torch.randn(2, 16, 16, 10)
-        our_res = ns.residual(w)
+        our_res, _ = ns.residual(w)
         paper_res = _fdm_ns_vorticity_inline(w, v=1.0 / 40)
         assert our_res.shape == paper_res.shape
 
@@ -457,7 +459,7 @@ class TestTIntervalParametrised:
         t_vals = torch.arange(T, dtype=torch.float) * dt
         w = (alpha * t_vals).reshape(1, 1, 1, T).expand(1, S, S, T).clone()
 
-        res = ns.residual(w)
+        res, _ = ns.residual(w)
         expected = torch.full_like(res, alpha)
         torch.testing.assert_close(res, expected, atol=1e-4, rtol=1e-4)
 
@@ -467,7 +469,8 @@ class TestTIntervalParametrised:
         B, S, T = 2, 16, 10
         ns = NSVorticity(re=40, t_interval=t_interval)
         w = torch.randn(B, S, S, T)
-        assert ns.residual(w).shape == (B, S, S, T - 2)
+        Du, _ = ns.residual(w)
+        assert Du.shape == (B, S, S, T - 2)
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +719,7 @@ class TestNSVorticityRe100:
     def test_residual_output_shape_re100(self, b, s, t):
         ns = NSVorticity(re=100)
         w = torch.randn(b, s, s, t)
-        out = ns.residual(w)
+        out, _ = ns.residual(w)
         assert out.shape == (b, s, s, t - 2)
 
     @pytest.mark.parametrize("b,s,t", [
@@ -728,7 +731,8 @@ class TestNSVorticityRe100:
         ns = NSVorticity(re=100)
         torch.manual_seed(0)
         w = torch.randn(b, s, s, t)
-        assert not torch.isnan(ns.residual(w)).any()
+        Du, _ = ns.residual(w)
+        assert not torch.isnan(Du).any()
 
     def test_re100_viscosity_coefficient(self):
         ns = NSVorticity(re=100)
@@ -756,8 +760,8 @@ class TestNSVorticityRe100:
 
         ns_re100 = NSVorticity(re=100)
         ns_re40 = NSVorticity(re=40)
-        res_100 = ns_re100.residual(w)
-        res_40 = ns_re40.residual(w)
+        res_100, _ = ns_re100.residual(w)
+        res_40, _  = ns_re40.residual(w)
         assert not torch.allclose(res_100, res_40, atol=1e-4), (
             "re=100 and re=40 produce identical residuals — viscosity coefficient not applied"
         )
