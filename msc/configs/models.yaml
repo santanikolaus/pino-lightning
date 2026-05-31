@@ -1,0 +1,64 @@
+# Model architecture, inference parameters, and fine-tuning hyperparameters for KF-FNO.
+#
+# operator:  full arch config for the 5 pretrained checkpoints (Re100/200/300/500/1000).
+#            Effective merged config (fno_kf.yaml base + pretrain overrides).
+#            Load with build_fno_kf(cfg["operator"]).
+#
+# inference: data split and forward-pass parameters for OOD/TTA evaluation.
+#
+# finetune:  training hyperparameters for instance-wise warm-start fine-tuning.
+#            Uniform across all 25 warmstart experiment configs.
+#            Re-specific fields (loss.re, data_path, warm_start_ckpt) resolved at
+#            runtime from configs/paths.yaml.
+
+operator:
+  model_arch: fno
+  data_channels: 4           # [gridx, gridy, gridt, IC vorticity]
+  out_channels: 1            # predicted vorticity
+  # FLAG n_modes: all 5 main checkpoints trained with [8,8,8]; ablation variant uses [16,16,16].
+  # Confirm checkpoint identity before changing.
+  n_modes: [8, 8, 8]
+  hidden_channels: 128       # base fno_kf.yaml default is 64; overridden to 128 in all experiments
+  n_layers: 4
+  lifting_channel_ratio: 0   # base default is 2; 0 = single linear lift (paper fc0)
+  projection_channel_ratio: 2
+  domain_padding: 0.0
+  positional_embedding: null
+  norm: null
+  fno_skip: linear
+  implementation: factorized
+  use_channel_mlp: false
+  channel_mlp_expansion: 0.5
+  channel_mlp_dropout: 0.0
+  separable: false
+  factorization: null
+  rank: 1.0
+  fixed_rank_modes: false
+  stabilizer: "None"
+
+inference:
+  n_test:       40
+  offset_test:  260   # train=200 + val=60
+  sub_t:        2
+  time_scale:   1.0
+  temporal_pad: 5
+
+finetune:
+  trainer:
+    max_epochs: 8000
+  data:
+    n_train: 1
+    n_val: 1
+    batch_size: 1
+    sub_t: 2
+    num_workers: 0
+  loss:
+    t_interval: 1.0
+    data_weight: 0.0   # no supervised data loss during fine-tuning
+    pde_weight: 1.0
+    ic_weight: 5.0
+  opt:
+    learning_rate: 0.0025
+    weight_decay: 0.0
+    milestones: [1000, 2000, 3000, 4000, 5000, 6000, 7000]
+    gamma: 0.5
