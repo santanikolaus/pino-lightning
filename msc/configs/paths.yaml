@@ -22,3 +22,11 @@ checkpoints:
 outputs:
   ood: /system/user/studentwork/wehofer/pino-lightning/msc/ood/outputs
   tta: /system/user/studentwork/wehofer/pino-lightning/msc/tta/outputs
+
+# Base tensors — pre-computed spectral power, no model needed downstream.
+# Convention: {outputs.ood}/residuals_op{op_re}_test{test_re}.npz
+# Shape per term (Du, wt, adv, diff): (N=40, S=128, S=128, T=63) float32
+# |FFT2|^2 applied; no further aggregation.
+base_tensors:
+  op_re:   [100, 200, 300, 500, 1000]
+  test_re: [100, 200, 300, 500, 1000]
