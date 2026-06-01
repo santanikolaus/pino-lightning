@@ -47,9 +47,9 @@ def main() -> None:
 
             def _power(key: str) -> np.ndarray:
                 arr = np.stack([e[key].squeeze(0).cpu().numpy() for e in results])
-                return (np.abs(np.fft.fft2(arr, axes=[1, 2])) ** 2).sum(axis=(1, 2))
+                return (np.abs(np.fft.fft2(arr, axes=[1, 2])) ** 2)
 
-            np.savez_compressed(
+            np.savez(
                 out_path,
                 Du   = _power("Du"),
                 wt   = _power("wt"),
