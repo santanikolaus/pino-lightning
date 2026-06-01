@@ -133,7 +133,7 @@ def run_re(re: int, train_re: int, model, masks: torch.Tensor,
                               time_scale=TIME_SCALE, temporal_pad=TEMPORAL_PAD)
 
         w  = pred.squeeze(1)                            # (1, S, S, T)
-        Du = ns.residual(w)                             # (1, S, S, T-2)
+        Du, _ = ns.residual(w)                          # (1, S, S, T-2)
         forcing = ns.get_forcing(w.shape[1], device).expand_as(Du)
         r  = Du - forcing
         r_h   = torch.fft.fft2(r, dim=[1, 2])          # (1, S, S, T-2)
@@ -163,6 +163,8 @@ def parse_args():
     p.add_argument("--n-modes", type=int, default=8,
                    help="FNO spectral modes per dim — sets MODEL_CFG n_modes to [n,n,n]. "
                         "Default 8 matches baseline checkpoints.")
+    p.add_argument("--fno-skip", default="linear",
+                   help="Skip connection type: 'linear' (default) or 'none' (no skips).")
     p.add_argument("--re", default=",".join(str(r) for r in RE_LIST_DEFAULT))
     p.add_argument("--out", required=True)
     p.add_argument("--device", default=None)
@@ -178,6 +180,7 @@ def main():
     )
 
     MODEL_CFG["n_modes"] = [args.n_modes] * 3
+    MODEL_CFG["fno_skip"] = None if args.fno_skip.lower() == "none" else args.fno_skip
 
     print(f"Device: {device}")
     print(f"Checkpoint: {args.ckpt}")
