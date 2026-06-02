@@ -92,17 +92,9 @@ class ResidualDecomposer:
 
     @staticmethod
     def fft_power(w: Tensor) -> Tensor:
-        """Total spatial FFT power per time step.
+        """Spatial FFT power per frequency per time step.
 
-        w: (B, S, S, T) → (B, T)
+        w: (B, S, S, T) → (B, S, S, T)
         """
         w_h = torch.fft.fft2(w, dim=[1, 2])
-        return (w_h.real**2 + w_h.imag**2).sum(dim=[1, 2])
-
-    @staticmethod
-    def time_mean(power: Tensor) -> Tensor:
-        """Mean power over time — scalar score per trajectory.
-
-        power: (B, T) → (B,)
-        """
-        return power.mean(dim=-1)
+        return w_h.real**2 + w_h.imag**2

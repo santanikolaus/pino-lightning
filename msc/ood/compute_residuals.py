@@ -1,8 +1,8 @@
 """
 Compute and save per-term FFT power timeseries for (op_re, test_re) pairs.
 
-Runs on server. Saves fft_power(term) → (N, T) per term — pre-computed so
-local analysis only needs time_mean + Cohen's d without re-running FFT.
+Runs on server. Saves |FFT2|² per term → (N, S, S, T) float32 — raw spectral
+power, no aggregation. All downstream analysis loads from these NPZ files.
 
 Usage:
     python -m msc.ood.compute_residuals --op-re 100 200 300 500 1000 --test-re 100 200 300 500 1000
@@ -11,9 +11,10 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+import torch
 import yaml
 
-from msc.ood.term_residual import ResidualDecomposer
+from msc.ood.residuals import ResidualDecomposer
 
 
 def _parse_args():
@@ -46,8 +47,8 @@ def main() -> None:
             results = decomposer.extract(data_path)
 
             def _power(key: str) -> np.ndarray:
-                arr = np.stack([e[key].squeeze(0).cpu().numpy() for e in results])
-                return (np.abs(np.fft.fft2(arr, axes=[1, 2])) ** 2)
+                w = torch.cat([e[key] for e in results], dim=0)
+                return ResidualDecomposer.fft_power(w).cpu().numpy()
 
             np.savez(
                 out_path,

@@ -7,6 +7,12 @@ outputs/
 msc/ood/outputs/
 msc/tta/outputs/
 checkpoints/
+pretrain-kol/
+ablation_1/
+ablation_2/
+kolmogorov_warm/
+kolmogorov_warm2/
+finetune_kol_2/
 pino-darcy/
 literature/
 

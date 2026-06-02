@@ -1,7 +1,8 @@
+import numpy as np
 import pytest
 import torch
 
-from msc.ood.term_residual import (
+from msc.ood.residuals import (
     ResidualDecomposer,
     N_TEST,
     OFFSET_TEST,
@@ -9,6 +10,7 @@ from msc.ood.term_residual import (
     TIME_SCALE,
     TEMPORAL_PAD,
 )
+from msc.ood.residual_analysis import ResidualAnalysis
 
 
 @pytest.mark.parametrize(
@@ -22,7 +24,7 @@ from msc.ood.term_residual import (
 def test_fft_power_output_shape(B, S, T):
     w = torch.randn(B, S, S, T)
     out = ResidualDecomposer.fft_power(w)
-    assert out.shape == (B, T)
+    assert out.shape == (B, S, S, T)
 
 
 @pytest.mark.parametrize(
@@ -34,9 +36,10 @@ def test_fft_power_output_shape(B, S, T):
     ],
 )
 def test_fft_power_parseval(B, S, T):
+    # Parseval: sum of |FFT|² over all frequencies == S² * spatial L2
     torch.manual_seed(42)
     w = torch.randn(B, S, S, T)
-    got = ResidualDecomposer.fft_power(w)
+    got = ResidualDecomposer.fft_power(w).sum(dim=[1, 2])
     expected = (S * S) * (w ** 2).sum(dim=[1, 2])
     assert torch.allclose(got, expected, rtol=1e-5, atol=0.0)
 
@@ -51,7 +54,7 @@ def test_fft_power_parseval(B, S, T):
 )
 def test_time_mean_output_shape(B, T):
     power = torch.randn(B, T)
-    out = ResidualDecomposer.time_mean(power)
+    out = ResidualAnalysis.time_mean(power.numpy())
     assert out.shape == (B,)
 
 
@@ -66,9 +69,9 @@ def test_time_mean_output_shape(B, T):
 def test_time_mean_correctness(B, T):
     torch.manual_seed(7)
     power = torch.randn(B, T)
-    got = ResidualDecomposer.time_mean(power)
-    expected = power.mean(dim=-1)
-    assert torch.allclose(got, expected, rtol=1e-6, atol=0.0)
+    got = ResidualAnalysis.time_mean(power.numpy())
+    expected = power.numpy().mean(axis=-1)
+    assert np.allclose(got, expected, rtol=1e-6, atol=0.0)
 
 
 def test_module_constants_match_yaml():
