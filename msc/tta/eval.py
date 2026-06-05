@@ -116,3 +116,35 @@ def band_eval(model: torch.nn.Module, dataset, device,
         "bp_u": u_pt.sum(1), "bp_gt": gt_pt.sum(1), "bp_err": err_pt.sum(1),
         "bp_res_u": bp_resu, "bp_res_gt": bp_resgt,
     }
+
+
+def per_instance_k7(model: torch.nn.Module, dataset, device) -> dict:
+    """Per-trajectory k<=7 rel-L2 error — keeps the trajectory axis (band_eval pools it).
+
+    Returns {'early','late','aggr'}, each shape (N,), aligned by dataset index so two
+    operators are paired on the SAME IC -> enables a paired sign / Wilcoxon test on
+    whether one operator systematically beats the other (systematic = learnable model
+    error; ~chance = chaotic decorrelation). All metrics restricted to the valid k<=7 band.
+    """
+    S = dataset[0]["y"].shape[0]
+    T_eff = dataset[0]["y"].shape[-1]
+    n_bands = S // 2 + 1
+    kinf = cheb_bins(S, device)
+    nE = max(1, T_eff // 8)
+    lo = slice(0, K_REP + 1)
+
+    early = np.zeros(len(dataset)); late = np.zeros(len(dataset)); aggr = np.zeros(len(dataset))
+    for i in range(len(dataset)):
+        ic = dataset[i]["x"].unsqueeze(0).to(device)
+        gt = dataset[i]["y"].unsqueeze(0).to(device)
+        T = gt.shape[-1]
+        with torch.no_grad():
+            uhat = kf_forward(model, ic, T, time_scale=setup.TIME_SCALE,
+                              temporal_pad=setup.TEMPORAL_PAD).squeeze(1)
+        ep = band_power_t(uhat - gt, kinf, n_bands)[lo]   # (K_REP+1, T)
+        gp = band_power_t(gt, kinf, n_bands)[lo]
+        err_t = np.sqrt(ep.sum(0) / (gp.sum(0) + 1e-30))  # (T,)
+        early[i] = err_t[1:1 + nE].mean()
+        late[i] = err_t[-nE:].mean()
+        aggr[i] = np.sqrt(ep.sum() / (gp.sum() + 1e-30))
+    return {"early": early, "late": late, "aggr": aggr}
