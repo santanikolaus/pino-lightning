@@ -1,0 +1,9 @@
+# E0b — CEILING: op500 (supervised-on-target) on Re500, no adaptation.
+# Same split + same early-time k<=7 metric as E0a, so the comparison is clean.
+# In k<=7 both sides reference the same GT -> the GT-low-k caveat cancels.
+ckpt: pretrain-kol/38o0kj3y/checkpoints/best.ckpt
+method: noadapt
+test_re: 500
+residual_re: 500          # op500's own nu
+out: scripts/outputs/e0b_op500_ceiling.npz
+device: null
