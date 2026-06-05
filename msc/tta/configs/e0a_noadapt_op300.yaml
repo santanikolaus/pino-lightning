@@ -1,0 +1,8 @@
+# E0a — FLOOR: frozen op300 on Re500, no adaptation.
+# Expect early-time k<=7 ~ 0.24 (confirms the harness reproduces the baseline).
+ckpt: pretrain-kol/1iix0n42/checkpoints/best.ckpt
+method: noadapt
+test_re: 500
+residual_re: 300          # op's own nu for the residual band-fraction
+out: scripts/outputs/e0a_op300_floor.npz
+device: null              # null -> auto (cuda if available)
