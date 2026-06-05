@@ -39,6 +39,27 @@ def radial_power_spectrum(field2d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return bins, power
 
 
+def resolution_knee(k: np.ndarray, power: np.ndarray) -> tuple[float, float]:
+    """Pin the dissipation scale numerically (convention-free).
+    k_d   = wavenumber where the log-log slope steepens >1.5 below the inertial
+            slope (departure from the k^-3 cascade into the dissipation range).
+    k_pal = wavenumber capturing 99.9% of palinstrophy (k^2*power, sets enstrophy
+            dissipation eps_Z=2*nu*palinstrophy) — high-k diagnostic, NOT the exact
+            residual weighting (diffusion term weights k^4).
+    k_d is a definition-dependent bracket, not a point estimate; resolution target
+    spans [2*k_d Nyquist .. 3*k_d dealias] with margin."""
+    k = k.astype(float)
+    p = power.copy(); p[p <= 0] = p[p > 0].min()
+    logp = np.convolve(np.log(p[1:]), np.ones(3) / 3, mode="same")
+    slope = np.gradient(logp, np.log(k[1:]))
+    s0 = np.median(slope[(k[1:] >= 8) & (k[1:] <= 20)])     # inertial-range slope
+    diss = np.where((k[1:] > 20) & (slope < s0 - 1.5))[0]
+    k_d = float(k[1:][diss[0]]) if len(diss) else float("nan")
+    cum = np.cumsum((k**2 * power)[1:]); cum /= cum[-1]
+    k_pal = float(k[1:][np.searchsorted(cum, 0.999)])
+    return k_d, k_pal
+
+
 def process_one(key: str, cfg: dict, n_snapshots: int) -> tuple[np.ndarray, np.ndarray]:
     path = Path(cfg["path"])
     print(f"[{key}] Loading {path}")
@@ -84,6 +105,11 @@ def main():
         cum = np.cumsum(p1) / p1.sum()
         ax_cum.plot(k1, cum, lw=1.2, label=f"Re={re}")
         ax_comp.plot(k1, k1**3 * p1, lw=1.2, label=f"Re={re}")
+
+    print(f"\n{'Re':>6}{'k_d(knee)':>11}{'k_pal99.9':>11}{'N=3*k_d':>10}  (128^2 resolves k<=43)")
+    for key in keys:
+        k_d, k_pal = resolution_knee(*all_powers[key])
+        print(f"{runs[key]['re']:>6}{k_d:>11.1f}{k_pal:>11.1f}{int(np.ceil(3*k_d)):>10d}")
 
     # k^-3 reference line (2D enstrophy cascade), anchored at k=6 of last Re
     if k is not None and power is not None:
