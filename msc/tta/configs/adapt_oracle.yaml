@@ -1,0 +1,16 @@
+# Adaptation dry run — ORACLE nu (1/500). Step-1: watch the E4 curve.
+# warm-start op300, adapt physics-only on Re500 pool, eval held-out [260:300].
+ckpt: pretrain-kol/1iix0n42/checkpoints/best.ckpt   # op300
+adapt_re: 500            # adapt-pool data
+adapt_n: 100             # pool size (ablate to 30 later)
+adapt_offset: 0          # disjoint from eval split [260:300]
+adapt_nu_re: 500         # ORACLE physics (KFLoss nu = 1/500)
+eval_re: 500             # held-out eval data
+lr: 1.0e-4               # << 1e-3 pretrain (single dry-run LR; sweep later)
+steps: 300               # fixed budget = label-free stop (3 epochs over 100)
+pde_weight: 1.0
+ic_weight: 5.0           # IC anchor (only regularizer; warmstart recipe value)
+probe_n: 10              # held-out subset for the E4 telemetry curve
+probe_every: 20
+out: scripts/outputs/adapt_oracle.npz
+device: null
