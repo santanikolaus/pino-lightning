@@ -9,7 +9,7 @@ eval_re: 500             # held-out eval data
 lr: 1.0e-4               # << 1e-3 pretrain (single dry-run LR; sweep later)
 steps: 300               # fixed budget = label-free stop (3 epochs over 100)
 pde_weight: 1.0
-ic_weight: 5.0           # IC anchor (only regularizer; warmstart recipe value)
+ic_weight: 1.0           # demoted anchor (was 5; pooled-TTDA: IC is regularizer, not the objective)
 probe_n: 10              # held-out subset for the E4 telemetry curve
 probe_every: 20
 out: scripts/outputs/adapt_oracle.npz
