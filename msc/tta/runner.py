@@ -24,7 +24,6 @@ import hashlib
 import itertools
 import json
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -171,12 +170,12 @@ def _plot(h, path):
     fig.tight_layout(); fig.savefig(path, dpi=150)
 
 
-def main(cfg: dict):
+def main(cfg: dict, tag: str = ""):
     if "matrix" not in cfg:
         run_cell(cfg)
         return
     grid = list(itertools.product(cfg["matrix"]["lr"], cfg["matrix"]["pool_n"]))
-    print(f"MATRIX {cfg['experiment']}: {len(grid)} cells (lr × pool_n), sequential on one GPU\n")
+    print(f"MATRIX{tag} {cfg['experiment']}: {len(grid)} cells (lr × pool_n), sequential on one GPU\n")
     rows = []
     for k, (lr, n) in enumerate(grid, 1):
         print(f"\n########## cell {k}/{len(grid)}: lr={lr} N={n} ##########")
@@ -185,7 +184,8 @@ def main(cfg: dict):
         rows.append(run_cell(cell))
 
     out = Path(cfg["out"]) / cfg["experiment"]
-    (out / "matrix_summary.json").write_text(json.dumps(rows, indent=2))
+    summary_path = out / f"matrix_summary{tag}.json"
+    summary_path.write_text(json.dumps(rows, indent=2))
     print(f"\n===== VERDICT (matched-fit; only pool_fit=True cells speak to b/c) =====")
     print(f"{'lr':>8}{'N':>4}{'fit_step':>10}{'held_aggr@fit':>15}{'held_aggr_fin':>15}{'fit?':>6}"
           f"   [op100 {OP100_AGGR} / op500 {OP500_AGGR}]")
@@ -193,10 +193,24 @@ def main(cfg: dict):
         af = f"{r['heldout_aggr_at_fit']:.4f}" if r["heldout_aggr_at_fit"] is not None else "  --  "
         print(f"{r['lr']:>8g}{r['pool_n']:>4}{str(r['pool_fit_step']):>10}{af:>15}"
               f"{r['heldout_aggr_final']:>15.4f}{('Y' if r['pool_fit'] else 'N'):>6}")
-    print(f"\nsaved -> {out / 'matrix_summary.json'}")
+    print(f"\nsaved -> {summary_path}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: python -m msc.tta.runner <config.yaml>")
-    main(yaml.safe_load(Path(sys.argv[1]).read_text()))
+    import argparse
+    ap = argparse.ArgumentParser(description="TTA client: full matrix | one LR-row (--lr) | one cell (--lr --pool_n)")
+    ap.add_argument("config")
+    ap.add_argument("--lr", type=float, default=None,
+                    help="run only this LR. alone → the LR ROW (all pool_n, sequential, own summary, 1/GPU).")
+    ap.add_argument("--pool_n", type=int, default=None, help="with --lr → a single cell")
+    args = ap.parse_args()
+    cfg = yaml.safe_load(Path(args.config).read_text())
+    if args.lr is not None and args.pool_n is not None:        # single cell
+        cfg.pop("matrix", None)
+        cfg["adapt"]["lr"], cfg["adapt"]["pool_n"] = args.lr, args.pool_n
+        run_cell(cfg)
+    elif args.lr is not None:                                   # one LR row: all pool_n, own summary
+        cfg["matrix"]["lr"] = [args.lr]
+        main(cfg, tag=f"_lr{args.lr:g}")
+    else:                                                       # full matrix, sequential
+        main(cfg)
