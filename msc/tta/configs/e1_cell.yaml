@@ -1,0 +1,23 @@
+# E1 — first cell. Cross-harness regression test against warm2.
+# op100 (widest playground per bracket), single IC, oracle ν=1/500, physics+ic.
+# GATE: pool val_l2 must descend to ~0.05-0.09 by 1500 steps (warm2 trajectory).
+#       pool drops + held-out flat = no-generalization (predicted); both clean findings.
+experiment: E1
+seed: 0
+ckpt: pretrain-kol/pvqq97sq/checkpoints/best.ckpt   # op100
+data_re: 500
+split:
+  adapt:   [0, 100]      # pool drawn here, offset 0 stride 5
+  heldout: [200, 300]    # eval window (disjoint, buffer [100:200])
+  sub_t: 2
+adapt:
+  pool_n: 1              # E1=1 (E2=2, E3∈{3,5,10} later)
+  pool_stride: 5         # decorrelated spacing (cf. warmstart [280,285,290,295])
+  steps: 1500
+  lr: 2.5e-3             # warm2-proven descent — validates the harness
+  ic_weight: 5.0         # warm2 anchor
+  pde_weight: 1.0
+  adapt_nu: 500          # ORACLE physics (KFLoss ν = 1/500)
+  probe_every: 50
+  probe_subset: 25       # held-out subset for the curve (full 100 at final eval)
+out: msc/tta/runs/
