@@ -10,9 +10,10 @@ ONLY here, strictly downstream of any adaptation — a Method never sees it.
 """
 import numpy as np
 import torch
+from neuralop import LpLoss
 
 from src.models.kf_fno import kf_forward
-from src.pde.ns import NSVorticity
+from src.pde.ns import NSVorticity, KFLoss
 from . import setup
 
 # TODO(alias-gate): wire the per-config alias GO/NO-GO guard here (roadmap "Guards").
@@ -116,6 +117,40 @@ def band_eval(model: torch.nn.Module, dataset, device,
         "bp_u": u_pt.sum(1), "bp_gt": gt_pt.sum(1), "bp_err": err_pt.sum(1),
         "bp_res_u": bp_resu, "bp_res_gt": bp_resgt,
     }
+
+
+@torch.no_grad()
+def probe(model: torch.nn.Module, dataset, device, nu: int) -> dict:
+    """Per-sample adapt telemetry — one forward / sample, write-only (GT downstream
+    of adaptation; never feeds stopping/LR). Returns (N,) arrays:
+
+      residual_abs : rel-L2 ‖Du−f‖/‖f‖ at ν=1/nu — the OBJECTIVE magnitude (absolute,
+                     not the in-band fraction) → keeps the kill-shot in view.
+      val_l2       : full-field rel-L2 (LpLoss d=3,p=2,rel) — the warm2 bridge metric.
+      k7_early/late/aggr : band-resolved (k<=7) error vs GT, early/late/aggregate.
+    """
+    S, T_eff = dataset[0]["y"].shape[0], dataset[0]["y"].shape[-1]
+    n_bands, kinf = S // 2 + 1, cheb_bins(S, device)
+    nE, lo = max(1, T_eff // 8), slice(0, K_REP + 1)
+    lp = LpLoss(d=3, p=2, reduction="mean")
+    res_fn = KFLoss(re=nu, data_weight=0.0, pde_weight=1.0, ic_weight=0.0)
+
+    keys = ("residual_abs", "val_l2", "k7_early", "k7_late", "k7_aggr")
+    out = {k: np.zeros(len(dataset)) for k in keys}
+    for i in range(len(dataset)):
+        ic = dataset[i]["x"].unsqueeze(0).to(device)
+        gt = dataset[i]["y"].unsqueeze(0).to(device)
+        pred = kf_forward(model, ic, gt.shape[-1], time_scale=setup.TIME_SCALE,
+                          temporal_pad=setup.TEMPORAL_PAD)          # (1,1,S,S,T)
+        out["residual_abs"][i] = float(res_fn(pred, gt)["pde"])
+        out["val_l2"][i] = float(lp.rel(pred.squeeze(1), gt))
+        ep = band_power_t(pred.squeeze(1) - gt, kinf, n_bands)[lo]
+        gp = band_power_t(gt, kinf, n_bands)[lo]
+        err_t = np.sqrt(ep.sum(0) / (gp.sum(0) + 1e-30))           # (T,)
+        out["k7_early"][i] = err_t[1:1 + nE].mean()
+        out["k7_late"][i] = err_t[-nE:].mean()
+        out["k7_aggr"][i] = np.sqrt(ep.sum() / (gp.sum() + 1e-30))
+    return out
 
 
 def per_instance_k7(model: torch.nn.Module, dataset, device) -> dict:
