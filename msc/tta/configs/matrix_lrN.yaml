@@ -1,0 +1,29 @@
+# LR × N matrix — disentangle forgetting (c) from non-identifiability (b).
+# op100, oracle ν, IC fixed at 5 (deferred axis). Sequential on one GPU.
+#   LR = forgetting↔wall discriminator (dense in the threshold zone; no inert low LR).
+#   N  = transfer axis. N=1 = pure-forgetting baseline; N=10 = best transfer shot.
+#        (held-out@N=10 − held-out@N=1) at matched LR isolates transfer.
+# VERDICT (among pool_fit=True cells, at matched-fit): held-out aggr k<=7 → 0.370
+#   = forgetting was the cause (path exists); flat ~0.531 = non-identifiability wall.
+#   target = held-out k<=7 error, NEVER residual.
+experiment: E_lrN
+seed: 0
+ckpt: pretrain-kol/pvqq97sq/checkpoints/best.ckpt   # op100
+data_re: 500
+split:
+  adapt:   [0, 100]
+  heldout: [200, 300]
+  sub_t: 2
+adapt:
+  pool_stride: 5
+  steps: 3000            # low-LR needs the budget to reach the fit line
+  ic_weight: 5.0
+  pde_weight: 1.0
+  adapt_nu: 500          # oracle ν=1/500
+  probe_every: 50
+  probe_subset: 25
+matrix:
+  lr:     [2.5e-3, 1.0e-3, 3.0e-4, 1.0e-4]
+  pool_n: [1, 10]
+fit_thresh: 0.10         # pool "fit" line for the matched-fit readout
+out: msc/tta/runs/

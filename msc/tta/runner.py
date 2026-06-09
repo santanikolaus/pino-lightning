@@ -1,22 +1,27 @@
-"""TTA adaptation client — SINGLE CELL (v1).
+"""TTA adaptation client.
 
-yaml → adapt one operator on a small pool (physics + ic-anchor, label-free) →
-log POOL (transductive) and HELD-OUT (inductive) per-sample curves vs step →
-final band-resolved eval on the full held-out split → traceable run dir.
+yaml → adapt op100 on a small pool (physics + ic-anchor, label-free) → log POOL
+(transductive) and HELD-OUT (inductive) per-sample curves LIVE vs step → final
+band-resolved eval on the full held-out split → traceable run dir.
 
-v1 is deliberately one cell (one lr / ic_weight / ν / pool_n). The matrix
-(LR × IC × ν) is added only AFTER the first cell is audited.
+Two modes (one entry point):
+  • single cell  — `adapt.lr` and `adapt.pool_n` set directly in the yaml.
+  • matrix       — `matrix.lr` / `matrix.pool_n` lists; the cartesian product runs
+                   SEQUENTIALLY on one GPU, each cell its own run dir, then a
+                   verdict table (matched-fit held-out vs the bracket references).
 
-First-cell regression gate (warm2 cross-harness check): op100, lr=2.5e-3, ic=5,
-oracle ν=1/500, single IC, data=0 — the POOL val_l2 must descend to ~0.05–0.09 by
-1500 steps (warm2's Lightning-harness trajectory). FullWeightTTA is a different
-code path; if the pool sits >0.15 the forward/loss has drifted → STOP, do not let
-the matrix inherit it.
+Matched-fit logic (why the matrix can't be misread): different LRs learn at
+different speeds, so comparing held-out at a fixed step conflates LR with training
+progress. Instead we log `pool_fit_step` = first step the pool reaches val_l2 ≤
+`fit_thresh` (~0.10, the warm2 floor), and read held-out AT that step
+(`heldout_at_fit`). A cell whose pool never fits is uninformative (gated out).
 
-Run (server, one GPU per cell):
-    CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$PWD python -m msc.tta.runner msc/tta/configs/e1_cell.yaml
+Run (single GPU):
+    CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$PWD python -m msc.tta.runner msc/tta/configs/matrix_lrN.yaml
 """
+import copy
 import hashlib
+import itertools
 import json
 import subprocess
 import sys
@@ -35,7 +40,9 @@ from src.datasets.kf_dataset import KFDataset
 from . import setup, eval as ev
 from .methods import FullWeightTTA
 
-WARM_GATE = 0.09          # pool val_l2 must reach this by the end (warm2 descent); else harness drift
+WARM_GATE = 0.09          # pool val_l2 by end = harness OK (warm2 descent)
+DEFAULT_FIT_THRESH = 0.10  # pool "fit" line for the matched-fit readout
+OP100_AGGR, OP500_AGGR = 0.531, 0.370   # bracket references (must-beat / ceiling)
 
 
 def _git_meta() -> tuple[str, bool]:
@@ -65,51 +72,64 @@ def _build_heldout(cfg) -> tuple[KFDataset, Subset]:
     return full, Subset(full, sub)
 
 
-def run(cfg: dict) -> dict:
+def _matched_fit(h, fit_thresh) -> tuple:
+    """First step where pool val_l2 ≤ fit_thresh, and held-out metrics AT that step.
+    Returns (fit_step|None, {metric: held-out mean}|None)."""
+    pool_val = h["pool_val_l2"].mean(1)
+    crossed = np.where(pool_val <= fit_thresh)[0]
+    if len(crossed) == 0:
+        return None, None
+    idx = int(crossed[0])
+    metrics = ("val_l2", "residual_abs", "k7_early", "k7_late", "k7_aggr")
+    return int(h["step"][idx]), {m: float(h[f"heldout_{m}"][idx].mean()) for m in metrics}
+
+
+def run_cell(cfg: dict) -> dict:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     a = cfg["adapt"]
+    fit_thresh = cfg.get("fit_thresh", DEFAULT_FIT_THRESH)
     pool_ds, pool_idx = _build_pool(cfg)
     heldout_full, heldout_probe = _build_heldout(cfg)
-    print(f"Device={device}  {cfg['experiment']}  op={cfg['ckpt']}\n"
-          f"  pool={pool_idx} (N={a['pool_n']})  heldout={cfg['split']['heldout']} "
-          f"probe_subset={len(heldout_probe)}\n"
-          f"  lr={a['lr']}  ic_weight={a['ic_weight']}  ν=1/{a['adapt_nu']}  steps={a['steps']}\n")
+    print(f"\n=== {cfg['experiment']} cell  lr={a['lr']}  N={a['pool_n']}  ic={a['ic_weight']}"
+          f"  ν=1/{a['adapt_nu']}  steps={a['steps']} ===\n"
+          f"  op={cfg['ckpt']}  pool={pool_idx}  heldout={cfg['split']['heldout']}"
+          f" probe_subset={len(heldout_probe)}", flush=True)
 
     op = setup.load_model(cfg["ckpt"], device)
     method = FullWeightTTA(re=a["adapt_nu"], lr=a["lr"], steps=a["steps"],
                            ic_weight=a["ic_weight"], pde_weight=a["pde_weight"],
                            probes={"pool": pool_ds, "heldout": heldout_probe},
-                           probe_every=a["probe_every"], seed=cfg.get("seed", 0))
+                           probe_every=a["probe_every"], seed=cfg.get("seed", 0),
+                           stop_on_fit=fit_thresh, fit_probe="pool")
     adapted = method.adapt(op, pool_ds, device)
     h = method.history
 
-    # final headline on the FULL held-out split (bracket-comparable)
-    final = ev.band_eval(adapted, heldout_full, device,
-                         op_re=a["adapt_nu"], test_re=cfg["data_re"])
+    final = ev.band_eval(adapted, heldout_full, device, op_re=a["adapt_nu"], test_re=cfg["data_re"])
     pool_val_final = float(h["pool_val_l2"][-1].mean())
-    gate_pass = pool_val_final <= WARM_GATE
+    fit_step, at_fit = _matched_fit(h, fit_thresh)
 
-    print(f"\n{'step':>6}{'pool_val':>10}{'held_val':>10}{'pool_res':>10}"
-          f"{'held_res':>10}{'held_aggr':>11}")
-    for j in range(len(h["step"])):
-        print(f"{int(h['step'][j]):>6}{h['pool_val_l2'][j].mean():>10.4f}"
-              f"{h['heldout_val_l2'][j].mean():>10.4f}{h['pool_residual_abs'][j].mean():>10.4f}"
-              f"{h['heldout_residual_abs'][j].mean():>10.4f}{h['heldout_k7_aggr'][j].mean():>11.4f}")
-    print(f"\nfinal held-out (n={len(heldout_full)}): aggr k<=7={final['err_k7']:.4f} "
-          f"late={final['late']:.4f}  [op100 base .531/.678, op500 ceil .370/.473]")
-    print(f"REGRESSION GATE: pool val_l2={pool_val_final:.4f} "
-          f"{'PASS' if gate_pass else 'FAIL (>'+str(WARM_GATE)+' → harness drift, STOP)'}")
+    print(f"  pool val_l2 final={pool_val_final:.4f}  "
+          f"{'FIT at step '+str(fit_step) if fit_step is not None else 'NO-FIT (capped, gated out)'}",
+          flush=True)
+    print(f"  held-out (n={len(heldout_full)}): aggr@fit="
+          f"{(at_fit['k7_aggr'] if at_fit else float('nan')):.4f}  aggr_final={final['err_k7']:.4f}"
+          f"  [op100 {OP100_AGGR} / op500 {OP500_AGGR}]", flush=True)
 
-    _save(cfg, h, final, pool_idx, pool_val_final, gate_pass)
-    return final
+    rundir = _save(cfg, h, final, pool_idx, pool_val_final, fit_step, at_fit)
+    return {"lr": a["lr"], "pool_n": a["pool_n"], "pool_fit_step": fit_step,
+            "pool_fit": fit_step is not None, "pool_val_final": pool_val_final,
+            "heldout_aggr_at_fit": at_fit["k7_aggr"] if at_fit else None,
+            "heldout_aggr_final": float(final["err_k7"]),
+            "heldout_late_final": float(final["late"]), "rundir": str(rundir)}
 
 
-def _save(cfg, h, final, pool_idx, pool_val_final, gate_pass):
+def _save(cfg, h, final, pool_idx, pool_val_final, fit_step, at_fit) -> Path:
     sha, dirty = _git_meta()
     resolved = {**cfg, "_resolved": {"pool_indices": pool_idx, "git_sha": sha,
                                      "git_dirty": dirty, "seed": cfg.get("seed", 0)}}
     chash = hashlib.sha1(json.dumps(resolved, sort_keys=True, default=str).encode()).hexdigest()[:8]
-    rundir = Path(cfg["out"]) / cfg["experiment"] / f"{datetime.now():%Y%m%d_%H%M%S}_{chash}"
+    tag = f"lr{cfg['adapt']['lr']:g}_N{cfg['adapt']['pool_n']}"
+    rundir = Path(cfg["out"]) / cfg["experiment"] / f"{datetime.now():%Y%m%d_%H%M%S}_{tag}_{chash}"
     rundir.mkdir(parents=True, exist_ok=True)
 
     (rundir / "config.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False))
@@ -117,23 +137,25 @@ def _save(cfg, h, final, pool_idx, pool_val_final, gate_pass):
     summary = {
         "experiment": cfg["experiment"], "ckpt": cfg["ckpt"],
         "lr": cfg["adapt"]["lr"], "ic_weight": cfg["adapt"]["ic_weight"],
-        "adapt_nu": cfg["adapt"]["adapt_nu"], "steps": cfg["adapt"]["steps"],
-        "pool_indices": pool_idx, "seed": cfg.get("seed", 0),
+        "pool_n": cfg["adapt"]["pool_n"], "adapt_nu": cfg["adapt"]["adapt_nu"],
+        "steps": cfg["adapt"]["steps"], "pool_indices": pool_idx, "seed": cfg.get("seed", 0),
         "git_sha": sha, "git_dirty": dirty,
-        "pool_val_l2_final": pool_val_final, "regression_gate_pass": gate_pass,
+        "pool_val_l2_final": pool_val_final, "pool_fit": fit_step is not None,
+        "pool_fit_step": fit_step, "heldout_at_fit": at_fit,
         "heldout_final": {k: float(final[k]) for k in
                           ("err_k7", "err_full", "early", "late", "resu_f7", "resgt_f7")},
     }
     (rundir / "summary.json").write_text(json.dumps(summary, indent=2))
     _plot(h, str(rundir / "curve.png"))
-    print(f"\nSaved -> {rundir}")
+    print(f"  saved -> {rundir}", flush=True)
+    return rundir
 
 
 def _plot(h, path):
     step = h["step"]
     panels = [("val_l2", "full-field val_l2", None),
               ("residual_abs", "residual ‖Du−f‖/‖f‖", None),
-              ("k7_aggr", "aggr k<=7 error", (0.531, 0.370))]   # (op100 base, op500 ceil)
+              ("k7_aggr", "aggr k<=7 error", (OP100_AGGR, OP500_AGGR))]
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     for ax, (metric, title, refs) in zip(axes, panels):
         ax.plot(step, h[f"pool_{metric}"].mean(1), "o-", color="tab:red", label="pool (transductive)")
@@ -149,7 +171,32 @@ def _plot(h, path):
     fig.tight_layout(); fig.savefig(path, dpi=150)
 
 
+def main(cfg: dict):
+    if "matrix" not in cfg:
+        run_cell(cfg)
+        return
+    grid = list(itertools.product(cfg["matrix"]["lr"], cfg["matrix"]["pool_n"]))
+    print(f"MATRIX {cfg['experiment']}: {len(grid)} cells (lr × pool_n), sequential on one GPU\n")
+    rows = []
+    for k, (lr, n) in enumerate(grid, 1):
+        print(f"\n########## cell {k}/{len(grid)}: lr={lr} N={n} ##########")
+        cell = copy.deepcopy(cfg); cell.pop("matrix")
+        cell["adapt"]["lr"], cell["adapt"]["pool_n"] = lr, n
+        rows.append(run_cell(cell))
+
+    out = Path(cfg["out"]) / cfg["experiment"]
+    (out / "matrix_summary.json").write_text(json.dumps(rows, indent=2))
+    print(f"\n===== VERDICT (matched-fit; only pool_fit=True cells speak to b/c) =====")
+    print(f"{'lr':>8}{'N':>4}{'fit_step':>10}{'held_aggr@fit':>15}{'held_aggr_fin':>15}{'fit?':>6}"
+          f"   [op100 {OP100_AGGR} / op500 {OP500_AGGR}]")
+    for r in rows:
+        af = f"{r['heldout_aggr_at_fit']:.4f}" if r["heldout_aggr_at_fit"] is not None else "  --  "
+        print(f"{r['lr']:>8g}{r['pool_n']:>4}{str(r['pool_fit_step']):>10}{af:>15}"
+              f"{r['heldout_aggr_final']:>15.4f}{('Y' if r['pool_fit'] else 'N'):>6}")
+    print(f"\nsaved -> {out / 'matrix_summary.json'}")
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         sys.exit("usage: python -m msc.tta.runner <config.yaml>")
-    run(yaml.safe_load(Path(sys.argv[1]).read_text()))
+    main(yaml.safe_load(Path(sys.argv[1]).read_text()))
