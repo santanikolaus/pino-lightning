@@ -46,10 +46,14 @@ class FullWeightTTA(Method):
 
     def __init__(self, *, re: int, lr: float, steps: int,
                  ic_weight: float = 5.0, pde_weight: float = 1.0,
-                 probes=None, probe_every: int = 50, seed: int = 0):
+                 probes=None, probe_every: int = 50, seed: int = 0,
+                 stop_on_fit=None, fit_probe: str = "pool"):
         self.re, self.lr, self.steps = re, lr, steps
         self.ic_weight, self.pde_weight = ic_weight, pde_weight
         self.probes, self.probe_every, self.seed = probes or {}, probe_every, seed
+        # early-stop once fit_probe's val_l2 reaches stop_on_fit (matched-fit line):
+        # past it the pool only overfits further — nothing more to learn from the cell.
+        self.stop_on_fit, self.fit_probe = stop_on_fit, fit_probe
         self.history = None
 
     def adapt(self, model, dataset, device):
@@ -63,6 +67,8 @@ class FullWeightTTA(Method):
 
         hist = {"step": [], "train_pde": [], "train_ic": [],
                 "probe": {name: [] for name in self.probes}}
+        print(f"  {'step':>6} | live probe (mean over samples): val / residual / aggr-k<=7",
+              flush=True)
         self._log(hist, 0, None, model, device)        # step-0 baseline
 
         step, done = 0, False
@@ -76,6 +82,11 @@ class FullWeightTTA(Method):
                 step += 1
                 if step % self.probe_every == 0 or step >= self.steps:
                     self._log(hist, step, out, model, device)
+                    if self.stop_on_fit is not None and \
+                       hist["probe"][self.fit_probe][-1]["val_l2"].mean() <= self.stop_on_fit:
+                        print(f"  [early-stop: {self.fit_probe} val_l2 ≤ {self.stop_on_fit} "
+                              f"at step {step}]", flush=True)
+                        done = True; break
                 if step >= self.steps:
                     done = True; break
         self.history = self._finalize(hist)
@@ -85,8 +96,13 @@ class FullWeightTTA(Method):
         hist["step"].append(step)
         hist["train_pde"].append(float(out["pde"]) if out is not None else np.nan)
         hist["train_ic"].append(float(out["ic"]) if out is not None else np.nan)
+        cells = []
         for name, ds in self.probes.items():
-            hist["probe"][name].append(ev.probe(model, ds, device, nu=self.re))
+            d = ev.probe(model, ds, device, nu=self.re)
+            hist["probe"][name].append(d)
+            cells.append(f"{name} {d['val_l2'].mean():.3f}/{d['residual_abs'].mean():.3f}"
+                         f"/{d['k7_aggr'].mean():.3f}")
+        print(f"  {step:>6} | " + "  ".join(cells), flush=True)
 
     def _finalize(self, hist) -> dict:
         """Flatten to an npz-friendly dict: scalars (n_steps,) + per probe/metric
