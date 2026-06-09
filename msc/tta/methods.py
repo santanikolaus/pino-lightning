@@ -59,6 +59,7 @@ class FullWeightTTA(Method):
     def adapt(self, model, dataset, device):
         torch.manual_seed(self.seed)
         model = copy.deepcopy(model).to(device)
+        setup.enable_gradient_checkpointing(model)
         model.train()                              # no-op for FNO (no BN/dropout); correct-by-convention
         opt = torch.optim.Adam(model.parameters(), lr=self.lr)
         loss_fn = KFLoss(re=self.re, data_weight=0.0,
