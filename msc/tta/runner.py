@@ -201,15 +201,19 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="TTA client: full matrix | one LR-row (--lr) | one cell (--lr --pool_n)")
     ap.add_argument("config")
     ap.add_argument("--lr", type=float, default=None,
-                    help="run only this LR. alone → the LR ROW (all pool_n, sequential, own summary, 1/GPU).")
-    ap.add_argument("--pool_n", type=int, default=None, help="with --lr → a single cell")
+                    help="alone → LR row (this LR × all N). with --pool_n → single cell.")
+    ap.add_argument("--pool_n", type=int, default=None,
+                    help="alone → N row (this N × all LRs; 1 GPU sweeps LR). with --lr → single cell.")
     args = ap.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
     if args.lr is not None and args.pool_n is not None:        # single cell
         cfg.pop("matrix", None)
         cfg["adapt"]["lr"], cfg["adapt"]["pool_n"] = args.lr, args.pool_n
         run_cell(cfg)
-    elif args.lr is not None:                                   # one LR row: all pool_n, own summary
+    elif args.pool_n is not None:                               # N row: this N × all LRs (1/GPU)
+        cfg["matrix"]["pool_n"] = [args.pool_n]
+        main(cfg, tag=f"_N{args.pool_n}")
+    elif args.lr is not None:                                   # LR row: this LR × all N
         cfg["matrix"]["lr"] = [args.lr]
         main(cfg, tag=f"_lr{args.lr:g}")
     else:                                                       # full matrix, sequential
