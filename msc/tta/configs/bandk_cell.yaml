@@ -1,0 +1,40 @@
+# Experiment #1 — band-limited (k<=7) PDE residual objective.
+# Clones the E_rangeN plateau cell (lr=3e-4, N=160) that banked the late wall
+# (held-out late k<=7 = 0.581). Only change vs E_rangeN: adapt.pde_band_kmax.
+#
+# Tests whether the late wall is poisoned by the instantaneous residual's high-k
+# (aliased/under-resolved at Re500/128^2). The held-out metric is UNCHANGED
+# (eval.band_eval, k<=7), so `heldout_final.late` is directly comparable to 0.581.
+#
+# Run BOTH arms, same seed, in-session (clean A/B):
+#   treatment : pde_band_kmax: 7   (this file)
+#   control   : pde_band_kmax: null  (set below, rerun) -> reproduces E_rangeN late ~0.581
+#   optional  : pde_band_kmax: 16    (is k<=7 special, or any high-k removal?)
+# Decision rule:
+#   late < 0.581 -> instantaneous-residual high-k poisons late (resolution-bound, -> exp #2)
+#   late ~ 0.581 -> high-k not the lever; wall is temporal (-> temporal/multi-step residual)
+#   late > 0.581 -> high-k carried real late signal; removing it hurts
+#
+# Run (single GPU):
+#   CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$PWD python -m msc.tta.runner msc/tta/configs/bandk_cell.yaml
+experiment: E_bandK
+seed: 0
+ckpt: pretrain-kol/pvqq97sq/checkpoints/best.ckpt   # op100
+data_re: 500
+split:
+  adapt:   [0, 200]
+  heldout: [200, 300]
+  sub_t: 2
+adapt:
+  pool_stride: 1
+  pool_n: 160
+  steps: 12000
+  lr: 3.0e-4
+  ic_weight: 5.0
+  pde_weight: 1.0
+  adapt_nu: 500          # oracle ν=1/500
+  pde_band_kmax: 7       # <-- the knob; null = full-field control (E_rangeN)
+  probe_every: 200
+  probe_subset: 25
+fit_thresh: 0.10
+out: msc/tta/runs/
