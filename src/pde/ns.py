@@ -4,6 +4,24 @@ import numpy as np
 from neuralop import LpLoss
 
 
+def cheb_band_mask(S: int, kmax: int, device) -> Tensor:
+    """(S, S) float mask: 1 where max(|kx|, |ky|) <= kmax, else 0.
+    Chebyshev/L∞ band matching the k<=7 eval convention in msc/tta/eval.py
+    (n_modes=8 -> modes 0..7). fft ordering, integer wavenumbers."""
+    k = torch.fft.fftfreq(S, d=1.0 / S).to(device)        # integer-valued
+    keep = k.abs() <= kmax
+    return (keep[:, None] & keep[None, :]).to(torch.float32)
+
+
+def cheb_lowpass(field: Tensor, kmax: int) -> Tensor:
+    """Spatially band-limit (B, S, S, T) real field to max(|kx|,|ky|) <= kmax.
+    Differentiable (pure torch.fft); returns the real part."""
+    S = field.shape[1]
+    mask = cheb_band_mask(S, kmax, field.device)
+    fh = torch.fft.fft2(field, dim=(1, 2)) * mask[None, :, :, None]
+    return torch.fft.ifft2(fh, dim=(1, 2)).real
+
+
 class NSVorticity:
     """NS vorticity equation: ∂ω/∂t + u·∇ω − ν∇²ω = f(x,y).
     residual() returns the LHS; for a true solution LHS == f."""
@@ -76,12 +94,19 @@ class NSVorticity:
 class KFLoss:
     def __init__(self, re: float, t_interval: float = 1.0,
                  data_weight: float = 1.0, pde_weight: float = 0.0,
-                 ic_weight: float = 0.0):
+                 ic_weight: float = 0.0, pde_band_kmax: int | None = None):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
         self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
         self.pde_weight = pde_weight
         self.ic_weight = ic_weight
+        # None -> full-field residual (unchanged). int -> penalise only the
+        # k<=pde_band_kmax (Chebyshev) band of the residual, matching the eval band.
+        # Must keep the forcing band (k=4): below it `forcing` is zeroed and
+        # lp.rel(Du, 0) blows up to a garbage ~1/eps loss with no NaN to flag it.
+        assert pde_band_kmax is None or pde_band_kmax >= 4, \
+            f"pde_band_kmax={pde_band_kmax} drops the k=4 forcing -> degenerate residual loss"
+        self.pde_band_kmax = pde_band_kmax
 
     def __call__(self, pred: Tensor, target: Tensor) -> dict[str, Tensor]:
         """
@@ -95,6 +120,9 @@ class KFLoss:
         data = self.lp.rel(w, y)
         forcing = self.ns.get_forcing(w.shape[1], w.device).expand(w.shape[0], w.shape[1], w.shape[2], w.shape[3] - 2)
         Du, _ = self.ns.residual(w)
+        if self.pde_band_kmax is not None:
+            Du      = cheb_lowpass(Du, self.pde_band_kmax)
+            forcing = cheb_lowpass(forcing, self.pde_band_kmax)   # forcing is k=4 -> no-op for kmax>=4
         pde = self.lp.rel(Du, forcing)
 
         u_in = w[:, :, :, 0]      # prediction at t=0, shape (B, S, S)

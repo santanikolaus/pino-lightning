@@ -1,8 +1,9 @@
 import sys
 import pytest
 import torch
+import numpy as np
 
-from src.pde.ns import NSVorticity, KFLoss
+from src.pde.ns import NSVorticity, KFLoss, cheb_band_mask, cheb_lowpass
 
 sys.path.insert(0, "/Users/nick/Downloads/paper-pino")
 from train_utils.losses import FDM_NS_vorticity
@@ -765,3 +766,172 @@ class TestNSVorticityRe100:
         assert not torch.allclose(res_100, res_40, atol=1e-4), (
             "re=100 and re=40 produce identical residuals — viscosity coefficient not applied"
         )
+
+
+# ---------------------------------------------------------------------------
+# Class TestChebBandMask  (new: helpers A)
+# ---------------------------------------------------------------------------
+
+
+class TestChebBandMask:
+
+    @pytest.mark.parametrize("kmax,expected_sum", [
+        (0, 1),
+        (3, 49),
+        (7, 225),
+    ], ids=["kmax=0", "kmax=3", "kmax=7"])
+    def test_mode_count(self, kmax, expected_sum):
+        mask = cheb_band_mask(S=16, kmax=kmax, device="cpu")
+        assert mask.sum().item() == expected_sum
+
+    def test_dtype_float32(self):
+        mask = cheb_band_mask(S=16, kmax=3, device="cpu")
+        assert mask.dtype == torch.float32
+
+    def test_shape(self):
+        mask = cheb_band_mask(S=16, kmax=3, device="cpu")
+        assert mask.shape == (16, 16)
+
+    def test_device_cpu(self):
+        mask = cheb_band_mask(S=16, kmax=3, device="cpu")
+        assert mask.device.type == "cpu"
+
+    def test_corner_mode_kept(self):
+        # fftfreq(16, d=1/16)[3] == 3.0 == kmax, so (3,3) must be 1
+        mask = cheb_band_mask(S=16, kmax=3, device="cpu")
+        assert mask[3, 3].item() == 1.0
+
+    def test_out_of_band_mode_excluded(self):
+        # fftfreq(16, d=1/16)[4] == 4.0 == kmax+1, so (4,0) must be 0
+        mask = cheb_band_mask(S=16, kmax=3, device="cpu")
+        assert mask[4, 0].item() == 0.0
+
+    def test_values_binary(self):
+        mask = cheb_band_mask(S=16, kmax=5, device="cpu")
+        assert torch.all((mask == 0.0) | (mask == 1.0))
+
+
+# ---------------------------------------------------------------------------
+# Class TestChebLowpass  (new: helpers B)
+# ---------------------------------------------------------------------------
+
+
+class TestChebLowpass:
+
+    @pytest.mark.parametrize("k_signal,kmax,expect_zero", [
+        (5, 3, True),   # k=5 > kmax=3 → zeroed
+        (2, 7, False),  # k=2 <= kmax=7 → preserved
+        (8, 7, True),   # k=8 == S/2, Nyquist, just above kmax=7 → zeroed
+    ], ids=["k5_kmax3_zero", "k2_kmax7_preserved", "k8_kmax7_zero"])
+    def test_single_wavenumber_field(self, k_signal, kmax, expect_zero):
+        S, B, T = 16, 2, 10
+        idxs = torch.arange(S, dtype=torch.float)
+        cos_k = torch.cos(2 * np.pi * k_signal * idxs / S)
+        field = cos_k.reshape(1, S, 1, 1).expand(B, S, S, T).clone()
+        out = cheb_lowpass(field, kmax=kmax)
+        if expect_zero:
+            torch.testing.assert_close(out, torch.zeros_like(out), atol=1e-5, rtol=0)
+        else:
+            torch.testing.assert_close(out, field, atol=1e-5, rtol=0)
+
+    def test_idempotent(self):
+        torch.manual_seed(0)
+        field = torch.randn(2, 16, 16, 10)
+        lp1 = cheb_lowpass(field, kmax=3)
+        lp2 = cheb_lowpass(lp1, kmax=3)
+        torch.testing.assert_close(lp2, lp1, atol=1e-5, rtol=0)
+
+    def test_output_real_and_finite(self):
+        torch.manual_seed(1)
+        field = torch.randn(2, 16, 16, 10)
+        out = cheb_lowpass(field, kmax=7)
+        assert out.is_floating_point()
+        assert torch.isfinite(out).all()
+
+    def test_gradients_flow(self):
+        field = torch.randn(2, 16, 16, 10, requires_grad=True)
+        cheb_lowpass(field, kmax=5).sum().backward()
+        assert field.grad is not None
+        assert torch.isfinite(field.grad).all()
+        assert field.grad.abs().sum().item() > 0.0
+
+    def test_output_shape_preserved(self):
+        field = torch.randn(3, 16, 16, 8)
+        out = cheb_lowpass(field, kmax=4)
+        assert out.shape == field.shape
+
+
+# ---------------------------------------------------------------------------
+# Class TestKFLossBandKmax  (new: KFLoss pde_band_kmax parameter C)
+# ---------------------------------------------------------------------------
+
+
+class TestKFLossBandKmax:
+
+    @pytest.fixture
+    def pred_target(self):
+        torch.manual_seed(42)
+        B, S, T = 2, 16, 10
+        return torch.randn(B, 1, S, S, T), torch.randn(B, S, S, T)
+
+    def test_none_matches_default(self, pred_target):
+        pred, target = pred_target
+        out_default = KFLoss(re=40, data_weight=0.0, pde_weight=1.0)(pred, target)
+        out_none    = KFLoss(re=40, data_weight=0.0, pde_weight=1.0, pde_band_kmax=None)(pred, target)
+        torch.testing.assert_close(out_none["pde"], out_default["pde"], atol=1e-6, rtol=1e-6)
+
+    def test_full_band_matches_none(self, pred_target):
+        pred, target = pred_target
+        S = pred.shape[2]
+        out_none     = KFLoss(re=40, data_weight=0.0, pde_weight=1.0)(pred, target)
+        out_full     = KFLoss(re=40, data_weight=0.0, pde_weight=1.0, pde_band_kmax=S // 2)(pred, target)
+        torch.testing.assert_close(out_full["pde"], out_none["pde"], atol=1e-5, rtol=1e-5)
+
+    def test_restricted_band_le_full_field(self, pred_target):
+        pred, target = pred_target
+        out_none = KFLoss(re=40, data_weight=0.0, pde_weight=1.0)(pred, target)
+        out_band = KFLoss(re=40, data_weight=0.0, pde_weight=1.0, pde_band_kmax=7)(pred, target)
+        assert out_band["pde"].item() <= out_none["pde"].item()
+
+    def test_gradients_flow_through_banded_pde(self):
+        torch.manual_seed(3)
+        B, S, T = 2, 16, 10
+        pred   = torch.randn(B, 1, S, S, T, requires_grad=True)
+        target = torch.randn(B, S, S, T)
+        loss_fn = KFLoss(re=40, data_weight=0.0, pde_weight=1.0, pde_band_kmax=7)
+        loss_fn(pred, target)["loss"].backward()
+        assert pred.grad is not None
+        assert torch.isfinite(pred.grad).all()
+        assert pred.grad.abs().sum().item() > 0.0
+
+    def test_analytical_solution_pde_near_zero_with_band(self):
+        """ω = −4cos(4y)·t is exact at re=∞; banding at kmax=7 keeps residual ≈ 0."""
+        S, T = 16, 10
+        t_interval = 1.0
+        t_vals = torch.arange(T, dtype=torch.float) * (t_interval / (T - 1))
+        y = torch.tensor(np.linspace(0, 2 * np.pi, S, endpoint=False), dtype=torch.float)
+        cos_4y = -4 * torch.cos(4 * y)
+        w = (cos_4y.reshape(1, 1, S, 1) * t_vals.reshape(1, 1, 1, T)).expand(1, S, S, T).clone()
+        pred   = w.unsqueeze(1)
+        target = torch.randn(1, S, S, T)
+        loss_fn = KFLoss(re=float("inf"), t_interval=t_interval,
+                         data_weight=0.0, pde_weight=1.0, pde_band_kmax=7)
+        out = loss_fn(pred, target)
+        assert out["pde"].item() < 1e-5, f"pde = {out['pde'].item():.2e}"
+
+    def test_weight_arithmetic_with_band(self):
+        torch.manual_seed(9)
+        B, S, T = 2, 16, 10
+        pred   = torch.randn(B, 1, S, S, T)
+        target = torch.randn(B, S, S, T)
+        dw, pw, iw = 0.5, 2.0, 1.5
+        loss_fn = KFLoss(re=40, data_weight=dw, pde_weight=pw, ic_weight=iw, pde_band_kmax=7)
+        out = loss_fn(pred, target)
+        expected = dw * out["data"] + pw * out["pde"] + iw * out["ic"]
+        torch.testing.assert_close(out["loss"], expected, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.parametrize("bad_kmax", [0, 3])
+    def test_kmax_below_forcing_band_rejected(self, bad_kmax):
+        """kmax < 4 zeroes the k=4 forcing -> degenerate loss; must fail loudly."""
+        with pytest.raises(AssertionError):
+            KFLoss(re=40, pde_band_kmax=bad_kmax)

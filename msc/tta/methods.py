@@ -47,9 +47,11 @@ class FullWeightTTA(Method):
     def __init__(self, *, re: int, lr: float, steps: int,
                  ic_weight: float = 5.0, pde_weight: float = 1.0,
                  probes=None, probe_every: int = 50, seed: int = 0,
-                 stop_on_fit=None, fit_probe: str = "pool"):
+                 stop_on_fit=None, fit_probe: str = "pool",
+                 pde_band_kmax: int | None = None):
         self.re, self.lr, self.steps = re, lr, steps
         self.ic_weight, self.pde_weight = ic_weight, pde_weight
+        self.pde_band_kmax = pde_band_kmax      # None -> full residual; int -> k<=kmax band
         self.probes, self.probe_every, self.seed = probes or {}, probe_every, seed
         # early-stop once fit_probe's val_l2 reaches stop_on_fit (matched-fit line):
         # past it the pool only overfits further — nothing more to learn from the cell.
@@ -63,7 +65,8 @@ class FullWeightTTA(Method):
         model.train()                              # no-op for FNO (no BN/dropout); correct-by-convention
         opt = torch.optim.Adam(model.parameters(), lr=self.lr)
         loss_fn = KFLoss(re=self.re, data_weight=0.0,
-                         pde_weight=self.pde_weight, ic_weight=self.ic_weight)
+                         pde_weight=self.pde_weight, ic_weight=self.ic_weight,
+                         pde_band_kmax=self.pde_band_kmax)
         loader = DataLoader(dataset, batch_size=1, shuffle=True)
 
         hist = {"step": [], "train_pde": [], "train_ic": [],
