@@ -99,7 +99,8 @@ def run_cell(cfg: dict) -> dict:
                            ic_weight=a["ic_weight"], pde_weight=a["pde_weight"],
                            probes={"pool": pool_ds, "heldout": heldout_probe},
                            probe_every=a["probe_every"], seed=cfg.get("seed", 0),
-                           stop_on_fit=fit_thresh, fit_probe="pool")
+                           stop_on_fit=fit_thresh, fit_probe="pool",
+                           pde_band_kmax=a.get("pde_band_kmax"))
     adapted = method.adapt(op, pool_ds, device)
     h = method.history
 
@@ -137,6 +138,7 @@ def _save(cfg, h, final, pool_idx, pool_val_final, fit_step, at_fit) -> Path:
         "experiment": cfg["experiment"], "ckpt": cfg["ckpt"],
         "lr": cfg["adapt"]["lr"], "ic_weight": cfg["adapt"]["ic_weight"],
         "pool_n": cfg["adapt"]["pool_n"], "adapt_nu": cfg["adapt"]["adapt_nu"],
+        "pde_band_kmax": cfg["adapt"].get("pde_band_kmax"),
         "steps": cfg["adapt"]["steps"], "pool_indices": pool_idx, "seed": cfg.get("seed", 0),
         "git_sha": sha, "git_dirty": dirty,
         "pool_val_l2_final": pool_val_final, "pool_fit": fit_step is not None,
