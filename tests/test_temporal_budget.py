@@ -9,12 +9,13 @@ Validates the two pieces the Step-1 diagnostic rests on:
 """
 import pytest
 
-# Skip the whole file (cleanly, no collection crash) when the heavy deps aren't
-# installed locally — these tests are meant to run in the server env.
+# Gate on CUDA: these run in the server (GPU) env. Locally (no CUDA) the whole file
+# skips cleanly at collection — never crashes or holds up a local test run.
 torch = pytest.importorskip("torch")
-pytest.importorskip("neuralop")
+if not torch.cuda.is_available():
+    pytest.skip("temporal_budget: CUDA (server) env only", allow_module_level=True)
 
-from scripts.temporal_budget import (   # noqa: E402  (after importorskip guard)
+from scripts.temporal_budget import (   # noqa: E402  (after CUDA gate)
     trunc_time, time_spectrum_fractions, compute_part_a, NTMODES,
 )
 
