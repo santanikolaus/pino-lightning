@@ -1,0 +1,44 @@
+# Reachability gate (PINO variant) — supervised data + band-limited PDE residual.
+#
+# Companion to reach_gate.yaml (data-only). QUESTION: does the physics residual,
+# as a REGULARIZER on top of labels, push held-out late BELOW the data-only ceiling?
+# = PINO's core claim (physics improves generalization) tested in the TTA setting.
+#   data+pde late < data-only late -> physics helps generalization (carry to step 2)
+#   data+pde late ~ data-only late -> physics adds nothing once labels are present
+#
+# RATIO data:pde = 5:1 — the codebase PINO-KF standard (kf_ablation1_op100_nmodes16,
+# toggles.md). data LEADS (the identifying signal); pde is a LIGHT regularizer,
+# deliberately subordinate: we found the residual is non-identifying, so a dominant
+# pde term would pull toward PDE-valid-but-wrong fields. (More conservative: 10:1.)
+# pde is band-limited k<=7 — the full residual is aliased at Re500/128^2; this is
+# the cleaner regularizer and matches the eval band.
+#
+# A/B vs reach_gate.yaml: identical split / N / LR / steps; only the objective differs.
+# READOUT: same as reach_gate.yaml — min `heldout_k7_late` over the curve (history.npz),
+# vs the data-only ceiling and op500 0.473.
+#
+# Run (LR sweep, sequential on one GPU):
+#   CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$PWD python -m msc.tta.runner msc/tta/configs/reach_gate_pino.yaml
+experiment: R_reach_pino
+seed: 0
+ckpt: pretrain-kol/pvqq97sq/checkpoints/best.ckpt   # op100
+data_re: 500
+split:
+  adapt:   [0, 200]
+  heldout: [200, 300]
+  sub_t: 2
+adapt:
+  pool_stride: 1
+  steps: 6000
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 0.0
+  adapt_nu: 500          # oracle nu=1/500 (pde active here)
+  pde_band_kmax: 7       # band-limited residual (full is aliased at Re500/128^2)
+  probe_every: 200
+  probe_subset: 25
+matrix:
+  lr:     [1.0e-3, 3.0e-4, 1.0e-4]
+  pool_n: [160]
+fit_thresh: 0.0
+out: msc/tta/runs/
