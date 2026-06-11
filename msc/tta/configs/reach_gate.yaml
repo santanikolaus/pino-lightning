@@ -1,0 +1,47 @@
+# Reachability gate — supervised (data-loss) adaptation of op100 -> Re500.
+#
+# QUESTION: can adapt-FROM-op100 reach op500's held-out late (~0.473) under FULL
+# supervision? Bounds reachability UNDER DATA SUPERVISION — a proxy for "can the
+# operator even output the right held-out field" — NOT a ceiling for the
+# self-consistency objective (for that we'd rerun the data-operator under consistency).
+#
+# Objective = pure DATA loss (data=1, pde=0, ic=0): pool GT trajectories fit the
+# weights. label-USING by design — a diagnostic ceiling, NOT the TTA method.
+# Needs the `data_weight` plumbing in methods.py/runner.py (added with this config).
+#
+# Same pool/data as the banked plateau cell (N=160, stride-1) -> direct A/B vs the
+# residual control (E_rangeN/bandk late 0.578): swap the objective, hold data fixed.
+#
+# READOUT: this fits the pool fast, so the matched-fit early-stop is DISABLED
+# (fit_thresh: 0.0 -> runs the full budget). Read held-out late k<=7 from the probe
+# curve (history.npz `heldout_k7_late`) — its MINIMUM is the reachable ceiling;
+# `heldout_late_final` may overfit late. Compare vs wall 0.51-0.55 and op500 0.473:
+#   min late ~0.47  -> good field reachable on held-out -> objective IS the lever
+#                      -> BUILD self-consistency (step 2).
+#   min late ~0.55  -> wall is reachability/generalization -> no objective fixes it
+#                      -> redirect (optimization/architecture, or accept the floor).
+#
+# Run (LR sweep, sequential on one GPU):
+#   CUDA_VISIBLE_DEVICES=0 PYTHONPATH=$PWD python -m msc.tta.runner msc/tta/configs/reach_gate.yaml
+experiment: R_reach
+seed: 0
+ckpt: pretrain-kol/pvqq97sq/checkpoints/best.ckpt   # op100 (the adaptation START)
+data_re: 500
+split:
+  adapt:   [0, 200]
+  heldout: [200, 300]    # disjoint held-out (buffer [160:200])
+  sub_t: 2
+adapt:
+  pool_stride: 1
+  steps: 6000
+  data_weight: 1.0       # <-- supervised: pool GT trajectories fit the weights
+  pde_weight: 0.0
+  ic_weight: 0.0         # the data term already supervises the t=0 frame
+  adapt_nu: 500          # residual telemetry only; the data loss ignores nu
+  probe_every: 200
+  probe_subset: 25
+matrix:
+  lr:     [1.0e-3, 3.0e-4, 1.0e-4]
+  pool_n: [160]
+fit_thresh: 0.0          # disable matched-fit early-stop (run full budget; see READOUT)
+out: msc/tta/runs/

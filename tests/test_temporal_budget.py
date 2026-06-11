@@ -10,7 +10,7 @@ Validates the two pieces the Step-1 diagnostic rests on:
 import torch
 
 from scripts.temporal_budget import (
-    trunc_time, time_spectrum_fractions, compute_part_a, NTMODES,
+    trunc_time, time_spectrum_fractions, compute_part_a, decompose_resid_t8, NTMODES,
 )
 
 
@@ -75,6 +75,16 @@ def test_part_a_roundtrip_8mode_field_has_no_capacity_gap():
     assert m["a2_early"] < 1e-4 and m["a2_late"] < 1e-4       # field unchanged
     assert abs(m["r8_l"] - m["floor_l"]) < 1e-4              # residual unchanged (the gap)
     assert abs(m["r8_e"] - m["floor_e"]) < 1e-4
+
+
+def test_decompose_8mode_field_zero_deltas():
+    # an 8-mode field is unchanged by truncation (pad=0) -> every per-term delta ~0,
+    # and the total residual collapses to the floor (the identity check of the split).
+    gt = _gt(freqs=(0, 2, 5, 7))
+    d = decompose_resid_t8(gt, re=500, device=torch.device("cpu"), pad=0)
+    for term in ("Dwt", "Dadv", "Ddiff"):
+        assert d[term][0] < 1e-4 and d[term][1] < 1e-4
+    assert abs(d["total"][1] - d["floor"][1]) < 1e-4
 
 
 def test_part_a_roundtrip_highmode_field_shows_gap():

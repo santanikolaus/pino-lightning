@@ -118,6 +118,41 @@ def compute_part_a(gt: torch.Tensor, re: int, device, pad: int = PAD) -> dict:
     }
 
 
+def decompose_resid_t8(gt: torch.Tensor, re: int, device, pad: int = PAD) -> dict:
+    """Where does resid_t@8 come from? Split the 8-time-mode residual blowup into its
+    PDE terms. Full GT satisfies the eq (Du_gt-forcing ~ floor), so
+        resid_t@8 = Du_tr - forcing ~= Dwt + Dadv + Ddiff,  D(.) = trunc - full term.
+    Returns each term's k<=7 magnitude (rel to forcing), early/late -> the dominant
+    term is the source. Uses NSVorticity.residual's (wt,adv,diff) tuple (the ood
+    ResidualDecomposer primitive), applied to the truncated GT instead of a model."""
+    S, T = gt.shape[1], gt.shape[-1]
+    nE = max(1, T // 8)
+    rE, rL = slice(0, nE), slice(T - 2 - nE, T - 2)
+    ns = NSVorticity(re=re, t_interval=setup.T_INTERVAL)
+    fb = cheb_lowpass(ns.get_forcing(S, device).expand(gt.shape[0], S, S, T - 2), KMAX)
+
+    Du_g, (wt_g, adv_g, dif_g) = ns.residual(gt)
+    Du_t, (wt_t, adv_t, dif_t) = ns.residual(trunc_time(gt, pad=pad))
+
+    def ratio(x, fr):                                   # ||band(x)[fr]|| / ||band(forcing)[fr]||
+        xb = cheb_lowpass(x, KMAX)[..., fr]
+        return float((xb.pow(2).sum() / fb[..., fr].pow(2).sum().clamp_min(1e-30)).sqrt())
+
+    terms = {"Dwt": wt_t - wt_g, "Dadv": adv_t - adv_g, "Ddiff": dif_t - dif_g,
+             "floor": Du_g - ns.get_forcing(S, device), "total": Du_t - ns.get_forcing(S, device)}
+    return {k: (ratio(v, rE), ratio(v, rL)) for k, v in terms.items()}
+
+
+def part_c(gt: torch.Tensor, re: int, device) -> None:
+    d = decompose_resid_t8(gt, re, device)
+    print(f"\n=== PART C — resid_t@8 term decomposition (Re{re}, k<=7, rel to forcing) ===")
+    print(f"{'term':>7}{'early':>9}{'late':>9}")
+    for k in ("Dwt", "Dadv", "Ddiff", "floor", "total"):
+        print(f"{k:>7}{d[k][0]:>9.3f}{d[k][1]:>9.3f}")
+    print("Dwt=Δtime-deriv, Dadv=Δadvection, Ddiff=Δdiffusion (trunc-full); "
+          "dominant term = source of the resid_t@8 blowup.")
+
+
 def part_a(gt: torch.Tensor, re: int, device) -> None:
     m = compute_part_a(gt, re, device)
     print(f"\n=== PART A — GT temporal budget (Re{re}, k<=7 band, n={gt.shape[0]}) ===")
@@ -136,8 +171,9 @@ def part_b(gt: torch.Tensor, ops: list[int], device) -> None:
     from src.models.kf_fno import kf_forward
     from msc.tta.setup import resolve_ckpt
     from msc.tta.eval import cheb_bins, band_power_t, K_REP
-    import yaml
-    ckpts = yaml.safe_load((setup.ROOT / "documentation" / "paths.yaml").read_text())["pretrain_checkpoints"]
+    # pretrain-kol run ids per operator (matches msc/tta/configs/*.yaml + tta-roadmap.md).
+    # paths.yaml has no committed checkpoint key, so reference the ckpt files directly.
+    CKPT = {100: "pvqq97sq", 200: "4em1mfrx", 300: "1iix0n42", 500: "38o0kj3y", 1000: "7gshngfh"}
 
     n, S, T = gt.shape[0], gt.shape[1], gt.shape[-1]
     nE = max(1, T // 8)
@@ -147,7 +183,7 @@ def part_b(gt: torch.Tensor, ops: list[int], device) -> None:
     print(f"\n=== PART B — reachable-target check (k<=7, late {nE} frames, n={n}) ===")
     print(f"{'op':>5}{'late_k7':>10}{'err<=8mode':>12}{'err>8mode':>12}{'frac>8':>9}")
     for op in ops:
-        model = setup.load_model(resolve_ckpt(ckpts[f"re{op}"]), device)
+        model = setup.load_model(resolve_ckpt(f"pretrain-kol/{CKPT[op]}/checkpoints/best.ckpt"), device)
         late_per = np.zeros(n)
         e_le = e_gt = 0.0
         for i in range(n):
@@ -177,7 +213,7 @@ def main():
     ap.add_argument("--offset", type=int, default=200)      # held-out [200:300]
     ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--ops", type=int, nargs="+", default=[300, 500])
-    ap.add_argument("--part", choices=["A", "B", "both"], default="both")
+    ap.add_argument("--part", choices=["A", "B", "C", "both"], default="both")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -187,6 +223,8 @@ def main():
           f"(T={gt.shape[-1]}, {NTMODES} time-modes, pad={PAD})")
     if args.part in ("A", "both"):
         part_a(gt, args.re, device)
+    if args.part in ("C", "both"):
+        part_c(gt, args.re, device)
     if args.part in ("B", "both"):
         part_b(gt, args.ops, device)
 
