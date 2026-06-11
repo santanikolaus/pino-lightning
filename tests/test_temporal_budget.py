@@ -7,9 +7,14 @@ Validates the two pieces the Step-1 diagnostic rests on:
                            weighting must NOT report more in-band than energy
                            (the whole point: derivatives shift mass to high modes).
 """
-import torch
+import pytest
 
-from scripts.temporal_budget import (
+# Skip the whole file (cleanly, no collection crash) when the heavy deps aren't
+# installed locally — these tests are meant to run in the server env.
+torch = pytest.importorskip("torch")
+pytest.importorskip("neuralop")
+
+from scripts.temporal_budget import (   # noqa: E402  (after importorskip guard)
     trunc_time, time_spectrum_fractions, compute_part_a, NTMODES,
 )
 
