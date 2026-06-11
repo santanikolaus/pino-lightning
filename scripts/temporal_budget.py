@@ -136,8 +136,9 @@ def part_b(gt: torch.Tensor, ops: list[int], device) -> None:
     from src.models.kf_fno import kf_forward
     from msc.tta.setup import resolve_ckpt
     from msc.tta.eval import cheb_bins, band_power_t, K_REP
-    import yaml
-    ckpts = yaml.safe_load((setup.ROOT / "documentation" / "paths.yaml").read_text())["pretrain_checkpoints"]
+    # pretrain-kol run ids per operator (matches msc/tta/configs/*.yaml + tta-roadmap.md).
+    # paths.yaml has no committed checkpoint key, so reference the ckpt files directly.
+    CKPT = {100: "pvqq97sq", 200: "4em1mfrx", 300: "1iix0n42", 500: "38o0kj3y", 1000: "7gshngfh"}
 
     n, S, T = gt.shape[0], gt.shape[1], gt.shape[-1]
     nE = max(1, T // 8)
@@ -147,7 +148,7 @@ def part_b(gt: torch.Tensor, ops: list[int], device) -> None:
     print(f"\n=== PART B — reachable-target check (k<=7, late {nE} frames, n={n}) ===")
     print(f"{'op':>5}{'late_k7':>10}{'err<=8mode':>12}{'err>8mode':>12}{'frac>8':>9}")
     for op in ops:
-        model = setup.load_model(resolve_ckpt(ckpts[f"re{op}"]), device)
+        model = setup.load_model(resolve_ckpt(f"pretrain-kol/{CKPT[op]}/checkpoints/best.ckpt"), device)
         late_per = np.zeros(n)
         e_le = e_gt = 0.0
         for i in range(n):
