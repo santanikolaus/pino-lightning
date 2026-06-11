@@ -97,6 +97,7 @@ def run_cell(cfg: dict) -> dict:
     op = setup.load_model(cfg["ckpt"], device)
     method = FullWeightTTA(re=a["adapt_nu"], lr=a["lr"], steps=a["steps"],
                            ic_weight=a["ic_weight"], pde_weight=a["pde_weight"],
+                           data_weight=a.get("data_weight", 0.0),
                            probes={"pool": pool_ds, "heldout": heldout_probe},
                            probe_every=a["probe_every"], seed=cfg.get("seed", 0),
                            stop_on_fit=fit_thresh, fit_probe="pool",
@@ -137,6 +138,7 @@ def _save(cfg, h, final, pool_idx, pool_val_final, fit_step, at_fit) -> Path:
     summary = {
         "experiment": cfg["experiment"], "ckpt": cfg["ckpt"],
         "lr": cfg["adapt"]["lr"], "ic_weight": cfg["adapt"]["ic_weight"],
+        "data_weight": cfg["adapt"].get("data_weight", 0.0),
         "pool_n": cfg["adapt"]["pool_n"], "adapt_nu": cfg["adapt"]["adapt_nu"],
         "pde_band_kmax": cfg["adapt"].get("pde_band_kmax"),
         "steps": cfg["adapt"]["steps"], "pool_indices": pool_idx, "seed": cfg.get("seed", 0),
