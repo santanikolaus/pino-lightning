@@ -7,15 +7,9 @@ Validates the two pieces the Step-1 diagnostic rests on:
                            weighting must NOT report more in-band than energy
                            (the whole point: derivatives shift mass to high modes).
 """
-import pytest
+import torch
 
-# Gate on CUDA: these run in the server (GPU) env. Locally (no CUDA) the whole file
-# skips cleanly at collection — never crashes or holds up a local test run.
-torch = pytest.importorskip("torch")
-if not torch.cuda.is_available():
-    pytest.skip("temporal_budget: CUDA (server) env only", allow_module_level=True)
-
-from scripts.temporal_budget import (   # noqa: E402  (after CUDA gate)
+from scripts.temporal_budget import (
     trunc_time, time_spectrum_fractions, compute_part_a, NTMODES,
 )
 
