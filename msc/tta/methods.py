@@ -46,11 +46,15 @@ class FullWeightTTA(Method):
 
     def __init__(self, *, re: int, lr: float, steps: int,
                  ic_weight: float = 5.0, pde_weight: float = 1.0,
+                 data_weight: float = 0.0,
                  probes=None, probe_every: int = 50, seed: int = 0,
                  stop_on_fit=None, fit_probe: str = "pool",
                  pde_band_kmax: int | None = None):
         self.re, self.lr, self.steps = re, lr, steps
         self.ic_weight, self.pde_weight = ic_weight, pde_weight
+        # data_weight > 0 supervises on the pool GT trajectories — NOT label-free.
+        # Default 0.0 keeps the standard TTA objective (IC + residual only).
+        self.data_weight = data_weight
         self.pde_band_kmax = pde_band_kmax      # None -> full residual; int -> k<=kmax band
         self.probes, self.probe_every, self.seed = probes or {}, probe_every, seed
         # early-stop once fit_probe's val_l2 reaches stop_on_fit (matched-fit line):
@@ -64,7 +68,7 @@ class FullWeightTTA(Method):
         setup.enable_gradient_checkpointing(model)
         model.train()                              # no-op for FNO (no BN/dropout); correct-by-convention
         opt = torch.optim.Adam(model.parameters(), lr=self.lr)
-        loss_fn = KFLoss(re=self.re, data_weight=0.0,
+        loss_fn = KFLoss(re=self.re, data_weight=self.data_weight,
                          pde_weight=self.pde_weight, ic_weight=self.ic_weight,
                          pde_band_kmax=self.pde_band_kmax)
         loader = DataLoader(dataset, batch_size=1, shuffle=True)
@@ -81,7 +85,7 @@ class FullWeightTTA(Method):
                 ic, target = batch["x"].to(device), batch["y"].to(device)
                 pred = kf_forward(model, ic, target.shape[-1], time_scale=setup.TIME_SCALE,
                                   temporal_pad=setup.TEMPORAL_PAD)
-                out = loss_fn(pred, target)            # data weighted 0 -> IC + residual only
+                out = loss_fn(pred, target)            # data_weight 0 -> IC+residual; >0 -> supervised
                 opt.zero_grad(); out["loss"].backward(); opt.step()
                 step += 1
                 if step % self.probe_every == 0 or step >= self.steps:
