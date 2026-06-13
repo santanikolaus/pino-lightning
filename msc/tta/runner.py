@@ -95,13 +95,16 @@ def run_cell(cfg: dict) -> dict:
           f" probe_subset={len(heldout_probe)}", flush=True)
 
     op = setup.load_model(cfg["ckpt"], device)
+    save_every = cfg.get("save_every", 0)
+    ckpt_cb = _deepdive_saver(cfg, a) if save_every else None
     method = FullWeightTTA(re=a["adapt_nu"], lr=a["lr"], steps=a["steps"],
                            ic_weight=a["ic_weight"], pde_weight=a["pde_weight"],
                            data_weight=a.get("data_weight", 0.0),
                            probes={"pool": pool_ds, "heldout": heldout_probe},
                            probe_every=a["probe_every"], seed=cfg.get("seed", 0),
                            stop_on_fit=fit_thresh, fit_probe="pool",
-                           pde_band_kmax=a.get("pde_band_kmax"))
+                           pde_band_kmax=a.get("pde_band_kmax"),
+                           save_every=save_every, ckpt_cb=ckpt_cb)
     adapted = method.adapt(op, pool_ds, device)
     h = method.history
 
@@ -128,6 +131,19 @@ def _lightning_state_dict(model: torch.nn.Module) -> dict:
     """Wrap a bare FNO's weights in the Lightning `model.*` layout that
     setup.load_model strict-loads, so adapted ckpts load with the SAME loader."""
     return {"state_dict": {f"model.{k}": v for k, v in model.state_dict().items()}}
+
+
+def _deepdive_saver(cfg, a):
+    """Return a callback that writes the adapted FNO into a fresh deepdive_* dir per step."""
+    ddir = (Path(cfg["out"]) / cfg["experiment"]
+            / f"deepdive_lr{a['lr']:g}_N{a['pool_n']}_{datetime.now():%Y%m%d_%H%M%S}")
+    ddir.mkdir(parents=True, exist_ok=True)
+    print(f"  deep-dive: saving weights every {cfg['save_every']} steps -> {ddir}", flush=True)
+
+    def _save_step(model, step):
+        torch.save(_lightning_state_dict(model), ddir / f"step{step:05d}.ckpt")
+        print(f"  [deep-dive saved step {step:>5} -> {ddir.name}/step{step:05d}.ckpt]", flush=True)
+    return _save_step
 
 
 def _save(cfg, adapted, h, final, pool_idx, pool_val_final, fit_step, at_fit) -> Path:
@@ -220,9 +236,13 @@ if __name__ == "__main__":
     ap.add_argument("--save_weights", action="store_true",
                     help="persist the adapted FNO to <rundir>/adapted.ckpt (Lightning layout, "
                          "loadable by setup.load_model). Off by default; opt in for re-adapt runs.")
+    ap.add_argument("--save_every", type=int, default=0,
+                    help="deep-dive: also save the adapted FNO every N steps to a deepdive_* dir "
+                         "(step{N:05d}.ckpt, Lightning layout). 0 = off.")
     args = ap.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
     cfg["save_weights"] = args.save_weights
+    cfg["save_every"] = args.save_every
     if args.lr is not None and args.pool_n is not None:        # single cell
         cfg.pop("matrix", None)
         cfg["adapt"]["lr"], cfg["adapt"]["pool_n"] = args.lr, args.pool_n

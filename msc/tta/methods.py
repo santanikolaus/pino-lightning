@@ -49,7 +49,8 @@ class FullWeightTTA(Method):
                  data_weight: float = 0.0,
                  probes=None, probe_every: int = 50, seed: int = 0,
                  stop_on_fit=None, fit_probe: str = "pool",
-                 pde_band_kmax: int | None = None):
+                 pde_band_kmax: int | None = None,
+                 save_every: int = 0, ckpt_cb=None):
         self.re, self.lr, self.steps = re, lr, steps
         self.ic_weight, self.pde_weight = ic_weight, pde_weight
         # data_weight > 0 supervises on the pool GT trajectories — NOT label-free.
@@ -60,6 +61,7 @@ class FullWeightTTA(Method):
         # early-stop once fit_probe's val_l2 reaches stop_on_fit (matched-fit line):
         # past it the pool only overfits further — nothing more to learn from the cell.
         self.stop_on_fit, self.fit_probe = stop_on_fit, fit_probe
+        self.save_every, self.ckpt_cb = save_every, ckpt_cb
         self.history = None
 
     def adapt(self, model, dataset, device):
@@ -78,6 +80,8 @@ class FullWeightTTA(Method):
         print(f"  {'step':>6} | live probe (mean over samples): val / residual / aggr-k<=7",
               flush=True)
         self._log(hist, 0, None, model, device)        # step-0 baseline
+        if self.ckpt_cb and self.save_every:
+            self.ckpt_cb(model, 0)
 
         step, done = 0, False
         while not done:
@@ -94,8 +98,11 @@ class FullWeightTTA(Method):
                        hist["probe"][self.fit_probe][-1]["val_l2"].mean() <= self.stop_on_fit:
                         print(f"  [early-stop: {self.fit_probe} val_l2 ≤ {self.stop_on_fit} "
                               f"at step {step}]", flush=True)
-                        done = True; break
-                if step >= self.steps:
+                        done = True
+                if self.ckpt_cb and self.save_every and \
+                   (step % self.save_every == 0 or step >= self.steps or done):
+                    self.ckpt_cb(model, step)
+                if done or step >= self.steps:
                     done = True; break
         self.history = self._finalize(hist)
         return model.eval()
