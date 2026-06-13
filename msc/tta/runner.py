@@ -116,7 +116,7 @@ def run_cell(cfg: dict) -> dict:
           f"{(at_fit['k7_aggr'] if at_fit else float('nan')):.4f}  aggr_final={final['err_k7']:.4f}"
           f"  [op100 {OP100_AGGR} / op500 {OP500_AGGR}]", flush=True)
 
-    rundir = _save(cfg, h, final, pool_idx, pool_val_final, fit_step, at_fit)
+    rundir = _save(cfg, adapted, h, final, pool_idx, pool_val_final, fit_step, at_fit)
     return {"lr": a["lr"], "pool_n": a["pool_n"], "pool_fit_step": fit_step,
             "pool_fit": fit_step is not None, "pool_val_final": pool_val_final,
             "heldout_aggr_at_fit": at_fit["k7_aggr"] if at_fit else None,
@@ -124,7 +124,13 @@ def run_cell(cfg: dict) -> dict:
             "heldout_late_final": float(final["late"]), "rundir": str(rundir)}
 
 
-def _save(cfg, h, final, pool_idx, pool_val_final, fit_step, at_fit) -> Path:
+def _lightning_state_dict(model: torch.nn.Module) -> dict:
+    """Wrap a bare FNO's weights in the Lightning `model.*` layout that
+    setup.load_model strict-loads, so adapted ckpts load with the SAME loader."""
+    return {"state_dict": {f"model.{k}": v for k, v in model.state_dict().items()}}
+
+
+def _save(cfg, adapted, h, final, pool_idx, pool_val_final, fit_step, at_fit) -> Path:
     sha, dirty = _git_meta()
     resolved = {**cfg, "_resolved": {"pool_indices": pool_idx, "git_sha": sha,
                                      "git_dirty": dirty, "seed": cfg.get("seed", 0)}}
@@ -149,6 +155,9 @@ def _save(cfg, h, final, pool_idx, pool_val_final, fit_step, at_fit) -> Path:
                           ("err_k7", "err_full", "early", "late", "resu_f7", "resgt_f7")},
     }
     (rundir / "summary.json").write_text(json.dumps(summary, indent=2))
+    if cfg.get("save_weights"):
+        torch.save(_lightning_state_dict(adapted), rundir / "adapted.ckpt")
+        print(f"  saved weights -> {rundir / 'adapted.ckpt'}", flush=True)
     _plot(h, str(rundir / "curve.png"))
     print(f"  saved -> {rundir}", flush=True)
     return rundir
@@ -208,8 +217,12 @@ if __name__ == "__main__":
                     help="alone → LR row (this LR × all N). with --pool_n → single cell.")
     ap.add_argument("--pool_n", type=int, default=None,
                     help="alone → N row (this N × all LRs; 1 GPU sweeps LR). with --lr → single cell.")
+    ap.add_argument("--save_weights", action="store_true",
+                    help="persist the adapted FNO to <rundir>/adapted.ckpt (Lightning layout, "
+                         "loadable by setup.load_model). Off by default; opt in for re-adapt runs.")
     args = ap.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
+    cfg["save_weights"] = args.save_weights
     if args.lr is not None and args.pool_n is not None:        # single cell
         cfg.pop("matrix", None)
         cfg["adapt"]["lr"], cfg["adapt"]["pool_n"] = args.lr, args.pool_n
