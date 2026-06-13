@@ -125,8 +125,16 @@ def run_op(model, dataset, device) -> dict:
 def main():
     ap = argparse.ArgumentParser(description="Exp 1 — amplitude/phase split of the late wall")
     ap.add_argument("--ops", nargs="+", default=["op100", "op300", "op500"])
+    ap.add_argument("--ckpt", nargs="+", default=None,
+                    help="label=path pairs to score arbitrary checkpoints (overrides --ops); "
+                         "Lightning layout, loaded by setup.load_model")
     ap.add_argument("--n", type=int, default=None, help="cap instances (smoke); default full split")
     args = ap.parse_args()
+    if args.ckpt:
+        ckpts = dict(item.split("=", 1) for item in args.ckpt)
+        ops = list(ckpts)
+    else:
+        ckpts, ops = CKPTS, args.ops
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     h0, h1 = HELDOUT
@@ -136,34 +144,34 @@ def main():
     print(f"Exp 1 amp/phase  heldout={HELDOUT} n={len(dataset)} device={device}\n")
 
     results = {}
-    print(f"{'op':<7}{'window':<7}{'relL2':<9}{'phase%':<8}{'amp%':<8}{'spec%':<8}  (spec=steerable lever)")
-    print("-" * 55)
-    for op in args.ops:
-        res = run_op(setup.load_model(CKPTS[op], device), dataset, device)
+    print(f"{'op':<12}{'window':<7}{'relL2':<9}{'phase%':<8}{'amp%':<8}{'spec%':<8}  (spec=steerable lever)")
+    print("-" * 60)
+    for op in ops:
+        res = run_op(setup.load_model(ckpts[op], device), dataset, device)
         results[op] = res
         for name in ("early", "late", "aggr"):
             m = res["per_window"][name]
-            print(f"{op:<7}{name:<7}{m['relL2']:<9.4f}{100*m['phase_pct']:<8.1f}"
+            print(f"{op:<12}{name:<7}{m['relL2']:<9.4f}{100*m['phase_pct']:<8.1f}"
                   f"{100*m['amp_pct']:<8.1f}{100*m['spec_pct']:<8.1f}")
-        # anchor: pooled k≤7 aggr vs banked (validates T and G only, never A)
-        d = res["per_window"]["aggr"]["relL2"] - AGGR_REF.get(op, np.nan)
-        print(f"  anchor aggr={res['per_window']['aggr']['relL2']:.4f} vs banked {AGGR_REF.get(op)}  Δ={d:+.4f}\n")
+        agg, ref = res["per_window"]["aggr"]["relL2"], AGGR_REF.get(op)
+        tail = f"vs banked {ref}  Δ={agg-ref:+.4f}" if ref is not None else "(no banked ref)"
+        print(f"  anchor aggr={agg:.4f}  {tail}\n")
 
     print("late per radial shell k=0..7  (ph = phase%, sp = systematic-spectrum%):")
     print(f"{'':<8}" + "".join(f"k{b:<5}" for b in range(K_REP + 1)))
-    for op in args.ops:
-        print(f"{op+' ph':<8}" + "".join(f"{100*p:<6.0f}" for p in results[op]["phase_by_k"]))
-        print(f"{op+' sp':<8}" + "".join(f"{100*p:<6.0f}" for p in results[op]["spec_by_k"]))
+    for op in ops:
+        print(f"{op+' ph':<14}" + "".join(f"{100*p:<6.0f}" for p in results[op]["phase_by_k"]))
+        print(f"{op+' sp':<14}" + "".join(f"{100*p:<6.0f}" for p in results[op]["spec_by_k"]))
 
     # save (npz arrays per op) + a compact json summary
     save = {}
-    for op in args.ops:
+    for op in ops:
         for arr in ("Tb", "Ab", "Gb", "Ub"):
             save[f"{op}_{arr}"] = results[op][arr]
     np.savez(OUT / "amp_phase.npz", heldout=np.array(HELDOUT), **save)
     summary = {op: {"per_window": results[op]["per_window"],
                     "phase_by_k": results[op]["phase_by_k"],
-                    "spec_by_k": results[op]["spec_by_k"]} for op in args.ops}
+                    "spec_by_k": results[op]["spec_by_k"]} for op in ops}
     (OUT / "amp_phase_summary.json").write_text(json.dumps(summary, indent=2, default=float))
 
     _plot(results, args.ops)
