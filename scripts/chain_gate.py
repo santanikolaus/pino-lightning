@@ -29,7 +29,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import yaml
 
 from src.datasets.kf_dataset import KFDataset
 from src.models.kf_fno import kf_forward
@@ -40,10 +39,10 @@ HELDOUT = (200, 300)        # locked eval window (matches matrix_lrN / e1_cell c
 DATA_RE = 500
 OUT = setup.ROOT / "msc" / "tta" / "outputs" / "chain_gate"
 
-
-def _ckpts() -> dict:
-    ck = yaml.safe_load((setup.ROOT / "documentation" / "paths.yaml").read_text())["pretrain_checkpoints"]
-    return {"op100": ck["re100"], "op300": ck["re300"], "op500": ck["re500"]}
+# checkpoint ids as referenced by every msc/tta config (setup.load_model resolves relative paths)
+CKPTS = {"op100": "pretrain-kol/pvqq97sq/checkpoints/best.ckpt",
+         "op300": "pretrain-kol/1iix0n42/checkpoints/best.ckpt",
+         "op500": "pretrain-kol/38o0kj3y/checkpoints/best.ckpt"}
 
 
 def oneshot_traj(model, gt) -> torch.Tensor:
@@ -150,7 +149,6 @@ def main():
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpts = _ckpts()
     h0, h1 = HELDOUT
     full = KFDataset(str(setup.data_path(DATA_RE)), n_samples=h1 - h0, offset=h0, sub_t=setup.SUB_T)
     dataset = full if args.n is None else torch.utils.data.Subset(full, range(min(args.n, len(full))))
@@ -160,7 +158,7 @@ def main():
           f"n={len(dataset)}  device={device}\n")
     summary = {}
     for op in args.ops:
-        model = setup.load_model(ckpts[op], device)
+        model = setup.load_model(CKPTS[op], device)
         res = run_op(model, dataset, device, args.stride, args.source)
         rep = paired_report(res["per"])
         po, pc = res["pooled"]["os"], res["pooled"]["ch"]

@@ -25,6 +25,15 @@ projects:
   # original Li et al. PINO reference implementation
   # experiment outputs → exp/; saved checkpoints → checkpoints/
 
+pretrain_checkpoints:
+  # W&B project: megafuchs-johannes-kepler-universit-t-linz/pretrain-kol/<id>
+  # pattern: .../pino-lightning/pretrain-kol/<id>/checkpoints/best.ckpt
+  re100:  /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/pvqq97sq/checkpoints/best.ckpt  # 1_pino-re100-pretrain
+  re200:  pretrain-kol/4em1mfrx/checkpoints/best.ckpt   # 1_pino-re200-pretrain
+  re300:  pretrain-kol/1iix0n42/checkpoints/best.ckpt   # 1_pino-re300-pretrain
+  re500:  pretrain-kol/38o0kj3y/checkpoints/best.ckpt   # 1_pino-re500-pretrain
+  re1000: pretrain-kol/7gshngfh/checkpoints/best.ckpt   # 1_pino-re1000-pretrain-indep
+
 data:
   darcy_binary: /system/user/studentwork/wehofer/data/darcy_binary
   # Darcy flow, binary permeability field (3.7 GB)
