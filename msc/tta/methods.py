@@ -14,7 +14,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.models.kf_fno import kf_forward
-from src.pde.ns import KFLoss
+from src.pde.ns import KFLoss, radial_energy_spectrum, spectral_alignment_loss
 from . import setup, eval as ev
 
 
@@ -50,7 +50,7 @@ class FullWeightTTA(Method):
                  probes=None, probe_every: int = 50, seed: int = 0,
                  stop_on_fit=None, fit_probe: str = "pool",
                  pde_band_kmax: int | None = None,
-                 save_every: int = 0, ckpt_cb=None):
+                 save_every: int = 0, ckpt_cb=None, spec_weight: float = 0.0):
         self.re, self.lr, self.steps = re, lr, steps
         self.ic_weight, self.pde_weight = ic_weight, pde_weight
         # data_weight > 0 supervises on the pool GT trajectories — NOT label-free.
@@ -62,6 +62,7 @@ class FullWeightTTA(Method):
         # past it the pool only overfits further — nothing more to learn from the cell.
         self.stop_on_fit, self.fit_probe = stop_on_fit, fit_probe
         self.save_every, self.ckpt_cb = save_every, ckpt_cb
+        self.spec_weight = spec_weight
         self.history = None
 
     def adapt(self, model, dataset, device):
@@ -74,8 +75,13 @@ class FullWeightTTA(Method):
                          pde_weight=self.pde_weight, ic_weight=self.ic_weight,
                          pde_band_kmax=self.pde_band_kmax)
         loader = DataLoader(dataset, batch_size=1, shuffle=True)
+        spec_target = kinf = None
+        if self.spec_weight:
+            kinf = ev.cheb_bins(dataset[0]["y"].shape[0], device)
+            ics = torch.stack([dataset[i]["y"][..., 0] for i in range(len(dataset))]).to(device)
+            spec_target = radial_energy_spectrum(ics.unsqueeze(-1), kinf, ev.K_REP).detach()
 
-        hist = {"step": [], "train_pde": [], "train_ic": [],
+        hist = {"step": [], "train_pde": [], "train_ic": [], "train_spec": [],
                 "probe": {name: [] for name in self.probes}}
         print(f"  {'step':>6} | live probe (mean over samples): val / residual / aggr-k<=7",
               flush=True)
@@ -89,8 +95,14 @@ class FullWeightTTA(Method):
                 ic, target = batch["x"].to(device), batch["y"].to(device)
                 pred = kf_forward(model, ic, target.shape[-1], time_scale=setup.TIME_SCALE,
                                   temporal_pad=setup.TEMPORAL_PAD)
-                out = loss_fn(pred, target)            # data_weight 0 -> IC+residual; >0 -> supervised
-                opt.zero_grad(); out["loss"].backward(); opt.step()
+                out = loss_fn(pred, target)
+                loss = out["loss"]
+                if self.spec_weight:
+                    assert spec_target is not None and kinf is not None
+                    spec = spectral_alignment_loss(pred.squeeze(1), spec_target, kinf, ev.K_REP)
+                    loss = loss + self.spec_weight * spec
+                    out["spec"] = spec.detach()
+                opt.zero_grad(); loss.backward(); opt.step()
                 step += 1
                 if step % self.probe_every == 0 or step >= self.steps:
                     self._log(hist, step, out, model, device)
@@ -111,6 +123,7 @@ class FullWeightTTA(Method):
         hist["step"].append(step)
         hist["train_pde"].append(float(out["pde"]) if out is not None else np.nan)
         hist["train_ic"].append(float(out["ic"]) if out is not None else np.nan)
+        hist["train_spec"].append(float(out["spec"]) if (out is not None and "spec" in out) else np.nan)
         cells = []
         for name, ds in self.probes.items():
             d = ev.probe(model, ds, device, nu=self.re)
@@ -122,7 +135,7 @@ class FullWeightTTA(Method):
     def _finalize(self, hist) -> dict:
         """Flatten to an npz-friendly dict: scalars (n_steps,) + per probe/metric
         arrays '<name>_<metric>' of shape (n_steps, N)."""
-        flat = {k: np.array(hist[k]) for k in ("step", "train_pde", "train_ic")}
+        flat = {k: np.array(hist[k]) for k in ("step", "train_pde", "train_ic", "train_spec")}
         for name, snaps in hist["probe"].items():          # snaps: list[ dict[metric -> (N,)] ]
             for metric in snaps[0]:
                 flat[f"{name}_{metric}"] = np.stack([s[metric] for s in snaps])  # (n_steps, N)
