@@ -22,6 +22,24 @@ def cheb_lowpass(field: Tensor, kmax: int) -> Tensor:
     return torch.fft.ifft2(fh, dim=(1, 2)).real
 
 
+def radial_energy_spectrum(field: Tensor, kinf: Tensor, kmax: int) -> Tensor:
+    """(B,S,S,T) real -> (kmax+1,) mean radial energy per L∞ shell (over batch+time).
+    Differentiable; kinf is the integer L∞-wavenumber map (cheb_bins convention)."""
+    fh = torch.fft.fft2(field, dim=(1, 2))
+    power = (fh.real ** 2 + fh.imag ** 2).mean(dim=(0, 3))
+    return torch.stack([power[kinf == ki].sum() for ki in range(kmax + 1)])
+
+
+def spectral_alignment_loss(pred: Tensor, target_spec: Tensor, kinf: Tensor,
+                            kmax: int, eps: float = 1e-8) -> Tensor:
+    """Relative L2 between √E(k) of pred and a precomputed target spectrum, over k≤kmax.
+    pred (B,S,S,T); target_spec (kmax+1,). Pulls predicted energy-per-scale onto the
+    target's — the steerable lever measured by amp_phase_split. Zero when matched."""
+    pred_spec = radial_energy_spectrum(pred, kinf, kmax)
+    mismatch = ((pred_spec + eps).sqrt() - (target_spec + eps).sqrt()).pow(2).sum()
+    return mismatch / (target_spec.sum() + eps)
+
+
 class NSVorticity:
     """NS vorticity equation: ∂ω/∂t + u·∇ω − ν∇²ω = f(x,y).
     residual() returns the LHS; for a true solution LHS == f."""

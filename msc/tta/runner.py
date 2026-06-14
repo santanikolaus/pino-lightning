@@ -104,7 +104,8 @@ def run_cell(cfg: dict) -> dict:
                            probe_every=a["probe_every"], seed=cfg.get("seed", 0),
                            stop_on_fit=fit_thresh, fit_probe="pool",
                            pde_band_kmax=a.get("pde_band_kmax"),
-                           save_every=save_every, ckpt_cb=ckpt_cb)
+                           save_every=save_every, ckpt_cb=ckpt_cb,
+                           spec_weight=a.get("spec_weight", 0.0))
     adapted = method.adapt(op, pool_ds, device)
     h = method.history
 
@@ -239,10 +240,14 @@ if __name__ == "__main__":
     ap.add_argument("--save_every", type=int, default=0,
                     help="deep-dive: also save the adapted FNO every N steps to a deepdive_* dir "
                          "(step{N:05d}.ckpt, Lightning layout). 0 = off.")
+    ap.add_argument("--spec_weight", type=float, default=None,
+                    help="λ on the spectral-alignment loss term (radial E(k) match); off when unset")
     args = ap.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
     cfg["save_weights"] = args.save_weights
     cfg["save_every"] = args.save_every
+    if args.spec_weight is not None:
+        cfg["adapt"]["spec_weight"] = args.spec_weight
     if args.lr is not None and args.pool_n is not None:        # single cell
         cfg.pop("matrix", None)
         cfg["adapt"]["lr"], cfg["adapt"]["pool_n"] = args.lr, args.pool_n
