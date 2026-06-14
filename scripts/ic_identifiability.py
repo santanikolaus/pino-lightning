@@ -21,10 +21,13 @@ THOUGHT 2 — band-resolved spectral ceiling (k≤1 vs k≤7).
   We build that ceiling as an oracle on the late window: rescale each shell's modes to
   the GT shell energy (phase + within-shell ratios kept) = the realisable spectral-loss
   ceiling; and set every mode |û|=|ĝ| (phase kept) = the absolute amplitude ceiling.
-  Applied to band k≤1 (the steerable sliver) and k≤7, scored as late k≤7 relL2. If the
-  k≤1 oracle barely beats baseline ⇒ masking to the clean band recovers little ⇒ the
-  ceiling, not dilution, is the limit. Oracles use GT (the tail) on purpose — they are
-  upper bounds, not a label-free method.
+  A third oracle, full-complex, replaces the band's modes with GT magnitude AND phase =
+  the phase-AWARE ceiling. The split per band: amp_lever = base−modemag (phase-blind
+  ceiling, already ~dead), POS_lever = modemag−full (the value of positioning a loss
+  cannot reach phase-blind). POS_lever≈0 at low band ⇒ the model already has low-k
+  position ⇒ the predictable band has no positioning error to fix and the error band
+  (k≥2) is chaos ⇒ chaos/representation is the wall. Bands {k≤1,k≤7}; scored as late k≤7
+  relL2. Oracles use GT (the tail) on purpose — upper bounds, not a label-free method.
 
 Run (server): PYTHONPATH=$PWD python scripts/ic_identifiability.py [--ops op100 ...]
                                                                    [--ckpt label=path ...]
@@ -112,6 +115,16 @@ def oracle_mode_magnitude(pred, gt, kinf, band, eps=1e-12):
     return torch.fft.ifft2(uh, dim=(0, 1)).real
 
 
+def oracle_full_complex(pred, gt, kinf, band):
+    """Replace pred's modes in shells ≤ band with GT's full complex modes (magnitude AND
+    phase = positioning), keep the rest -> phase-AWARE ceiling. (S,S,Tl) real. The gap
+    modemag−full is the value of positioning a phase-blind loss cannot reach."""
+    uh, gh = torch.fft.fft2(pred, dim=(0, 1)), torch.fft.fft2(gt, dim=(0, 1))
+    sel = (kinf <= band)[:, :, None]
+    uh = torch.where(sel, gh, uh)
+    return torch.fft.ifft2(uh, dim=(0, 1)).real
+
+
 def pearson(x, y) -> float:
     x, y = np.asarray(x, float), np.asarray(y, float)
     if x.std() < 1e-12 or y.std() < 1e-12:
@@ -137,7 +150,7 @@ def run_op(model, dataset, device, ns, bands) -> dict:
     kinf = cheb_bins(dataset[0]["y"].shape[0], device)
     viol = {n: [] for n in ns}; drift = {n: [] for n in ns}
     late = []
-    orc = {b: {"base": [], "shellE": [], "modemag": []} for b in bands}
+    orc = {b: {"base": [], "shellE": [], "modemag": [], "full": []} for b in bands}
     for i in range(len(dataset)):
         gt = dataset[i]["y"].unsqueeze(0).to(device)            # (1,S,S,T)
         with torch.no_grad():
@@ -156,10 +169,13 @@ def run_op(model, dataset, device, ns, bands) -> dict:
                                          cheb_lowpass(gl[None], K_REP)[0]))
             se = oracle_shell_energy(pl, gl, kinf, b)
             mm = oracle_mode_magnitude(pl, gl, kinf, b)
+            fc = oracle_full_complex(pl, gl, kinf, b)
             orc[b]["shellE"].append(rel_l2(cheb_lowpass(se[None], K_REP)[0],
                                            cheb_lowpass(gl[None], K_REP)[0]))
             orc[b]["modemag"].append(rel_l2(cheb_lowpass(mm[None], K_REP)[0],
                                             cheb_lowpass(gl[None], K_REP)[0]))
+            orc[b]["full"].append(rel_l2(cheb_lowpass(fc[None], K_REP)[0],
+                                         cheb_lowpass(gl[None], K_REP)[0]))
     return {"viol": viol, "drift": drift, "late": np.array(late), "orc": orc, "n": len(dataset)}
 
 
@@ -181,14 +197,17 @@ def report(op, res, ns, bands):
     print("  pearson r is a cross-instance SCREEN only (hardness confound = bystander trap), NOT causal:")
     print("    r≈0 is consistent with non-identifying (moments phase-blind, wall is phase); r>0 = confounded, not a GO.")
     print("  caveat: 4 moments, no multiple-comparison correction; M_n on full field vs k≤7 error x-axis.")
-    print("THOUGHT 2 — band-resolved spectral ceiling (late k≤7 relL2; oracles use GT):")
-    print(f"  {'band':>5} {'baseline':>9} {'shellE(loss ceil)':>18} {'modemag(amp ceil)':>18}")
+    print("THOUGHT 2 — band-resolved spectral/position ceiling (late k≤7 relL2; oracles use GT):")
+    print(f"  {'band':>5} {'base':>8} {'shellE':>8} {'modemag':>8} {'full':>8} "
+          f"{'amp_lev':>8} {'POS_lev':>8}")
     for b in bands:
         o = res["orc"][b]
-        print(f"  k≤{b:<3} {np.mean(o['base']):>9.4f} {np.mean(o['shellE']):>18.4f} "
-              f"{np.mean(o['modemag']):>18.4f}")
-    print("  (shellE≈baseline ⇒ E(k)-matching on that band buys ~nothing; gap to modemag = "
-          "within-shell scatter; both leave phase = the wall)")
+        base, mm, fc = np.mean(o["base"]), np.mean(o["modemag"]), np.mean(o["full"])
+        print(f"  k≤{b:<3} {base:>8.4f} {np.mean(o['shellE']):>8.4f} {mm:>8.4f} {fc:>8.4f} "
+              f"{base - mm:>8.4f} {mm - fc:>8.4f}")
+    print("  amp_lev=base−modemag (phase-blind ceiling); POS_lev=modemag−full (value of positioning).")
+    print("  POS_lev≈0 at low band ⇒ model already has low-k position ⇒ chaos/representation is the wall.")
+    print("  floors for context: op500(best-FNO)=0.473, full-GT-traj-sup=0.522, current adapt=0.580.")
 
 
 def main():
@@ -269,6 +288,12 @@ def selftest():
         "shellE cannot touch pure-phase error (the wall)"
     assert abs(rel_l2(cheb_lowpass(mm_r[None], K_REP)[0], cheb_lowpass(gl[None], K_REP)[0]) - base_roll) < 1e-4, \
         "modemag cannot touch pure-phase error (the wall)"
+    fc_r = oracle_full_complex(roll, gl, kinf, K_REP)
+    assert rel_l2(cheb_lowpass(fc_r[None], K_REP)[0], cheb_lowpass(gl[None], K_REP)[0]) < 1e-4, \
+        "full-complex repairs phase too -> recovers GT in band"
+    fc_b = oracle_full_complex(roll, gl, kinf, 1)
+    assert rel_l2(cheb_lowpass(fc_b[None], K_REP)[0], cheb_lowpass(gl[None], K_REP)[0]) < base_roll - 1e-6, \
+        "full-complex on k≤1 must beat baseline on a low-k phase error"
 
     x = np.linspace(0, 1, 50)
     assert abs(pearson(x, 2 * x + 1) - 1.0) < 1e-9 and abs(pearson(x, -x) + 1.0) < 1e-9, "pearson lin"
