@@ -1,0 +1,47 @@
+# @package _global_
+# UNO arm matched to the FNO@32 run (re500-256-fno-m32-h64): the U-Net-style
+# counterpart of the high-mode flat FNO. Same data/loss/eval/resolution/time;
+# vary ONLY the architecture (U-shaped FNO vs flat FNO), at 32 modes.
+# Param-matched: UNO hidden=52 @32 modes ≈ 83.1M ≈ FNO@32 h64 83.9M.
+# Tests: does the U-architecture help where doubling modes (16->32) did not?
+# grad_checkpoint=true: UNO-aware checkpointing. Needs a >=25 GB card (fits the 32 GB GV100;
+#   activations are mode-independent so ~same footprint as UNO@16, +~1 GB params).
+
+defaults:
+  - override /model: uno_kf
+  - override /callbacks: kf
+
+grad_checkpoint: true
+
+model:
+  uno_n_modes: [[32, 32, 8], [32, 32, 8], [32, 32, 8], [32, 32, 8]]
+
+logger:
+  wandb:
+    project: pathB-256
+    name: re500-256-uno-m32
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res256_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 500
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
