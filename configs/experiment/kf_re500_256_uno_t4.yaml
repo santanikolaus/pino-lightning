@@ -1,0 +1,42 @@
+# @package _global_
+# UNO arm, reduced TIME resolution (sub_t=4 -> T=32). Fits 12 GB TITAN V (student09).
+# Identical to kf_re500_256_uno.yaml EXCEPT data.sub_t: 2 -> 4.
+# Purpose: paired against the sub_t=2 reference to isolate what temporal resolution costs;
+#   if t4 matches t2, standardize on t4 (cheaper, fits 12 GB).
+# A/B note: only comparable to an FNO arm run at the SAME sub_t.
+
+defaults:
+  - override /model: uno_kf
+  - override /callbacks: kf
+
+grad_checkpoint: true
+
+logger:
+  wandb:
+    project: pathB-256
+    name: re500-256-uno-t4
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res256_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 4
+  num_workers: 0
+
+loss:
+  re: 500
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
