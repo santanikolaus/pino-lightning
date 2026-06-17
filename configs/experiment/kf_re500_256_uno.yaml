@@ -18,7 +18,7 @@ grad_checkpoint: true
 logger:
   wandb:
     project: pathB-256
-    name: re500-256-uno-h52
+    name: re500-256-uno-t2
 
 trainer:
   max_epochs: 150
