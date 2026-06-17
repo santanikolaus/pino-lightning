@@ -1,0 +1,14 @@
+model_arch: uno
+data_channels: 4        # gridx, gridy, gridt, IC vorticity
+out_channels: 1         # predicted vorticity
+hidden_channels: 52     # param-matched to FNO n16 h64 arm: ~20.8M vs 21.0M
+n_layers: 4
+uno_out_channels: [52, 52, 52, 52]
+uno_n_modes: [[16, 16, 8], [16, 16, 8], [16, 16, 8], [16, 16, 8]]   # x, y, t per layer
+uno_scalings: [[1, 1, 1], [0.5, 0.5, 1], [2, 2, 1], [1, 1, 1]]      # one spatial U; time unscaled; per-dim product = 1
+lifting_channels: 128
+projection_channels: 128
+positional_embedding: null   # prepare_input injects [gridx,gridy,gridt,ic]; default 'grid' would add 3 ch (guarded in _build_uno)
+channel_mlp_skip: linear     # U-skip concatenation changes channel count; 'soft-gating' default requires in==out
+norm: null
+fno_skip: linear
