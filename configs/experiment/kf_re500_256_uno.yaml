@@ -1,0 +1,46 @@
+# @package _global_
+# UNO arm of the architecture A/B vs FNO@256² (kf_re500_256_n16_h64.yaml).
+# Same data/loss/eval; vary ONLY the architecture (U-shaped FNO vs flat FNO).
+# Param-matched: UNO hidden=52 ≈ 20.8M ≈ FNO n16 h64 21.0M.
+#
+# grad_checkpoint=false: the current checkpoint hook (msc/tta/setup.py) is FNO-only
+#   and crashes UNO (ModuleList + horizontal skips). UNO-aware checkpointing is step 3.
+#   Memory footprint at 256² on the P40 is UNVERIFIED. If this OOMs, step 3 is a
+#   prerequisite — NOT optional. UNO's downsampling MAY fit where dense FNO OOM'd;
+#   that is exactly what the server launch tests.
+
+defaults:
+  - override /model: uno_kf
+  - override /callbacks: kf
+
+grad_checkpoint: false
+
+logger:
+  wandb:
+    project: pathB-256
+    name: re500-256-uno-h52
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res256_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 500
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5

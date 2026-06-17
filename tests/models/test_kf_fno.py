@@ -8,6 +8,7 @@ from src.models.kf_fno import get_grid3d, prepare_input, build_fno_kf, kf_forwar
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 _KF_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "fno_kf.yaml"
+_UNO_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "uno_kf.yaml"
 
 
 def _load_kf_config():
@@ -122,6 +123,161 @@ def test_model_forward_shape():
     assert torch.isfinite(out).all(), (
         "Forward pass produced NaN or Inf. Check stabilizer config in fno_kf.yaml."
     )
+
+
+# ---------------------------------------------------------------------------
+# Block 1.1: model_arch dispatch seam
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("arch", ["uno", "UNO"])
+def test_uno_arch_routes_to_uno_builder(monkeypatch, arch):
+    """A config with model_arch=uno (any case) must dispatch to _build_uno.
+
+    Routing is asserted directly via a sentinel rather than on the stub's
+    NotImplementedError, so this test stays green once 1.2 fills _build_uno in.
+    """
+    seen = {}
+
+    def _sentinel(model_cfg):
+        seen["cfg"] = model_cfg
+        return "UNO_SENTINEL"
+
+    monkeypatch.setattr("src.models.kf_fno._build_uno", _sentinel)
+    result = build_fno_kf({"model_arch": arch, "data_channels": 4, "out_channels": 1})
+    assert result == "UNO_SENTINEL"
+    assert str(seen["cfg"]["model_arch"]).lower() == "uno"
+
+
+# ---------------------------------------------------------------------------
+# Block 1.2: UNO builder
+# ---------------------------------------------------------------------------
+
+def _minimal_uno_cfg():
+    """Small but valid 4-layer 3D UNO config (down 0.5 then up 2.0, balanced per dim)."""
+    return {
+        "model_arch": "uno",
+        "data_channels": 4,
+        "out_channels": 1,
+        "hidden_channels": 16,
+        "n_layers": 4,
+        "uno_out_channels": [16, 16, 16, 16],
+        "uno_n_modes": [[4, 4, 4], [4, 4, 4], [4, 4, 4], [4, 4, 4]],
+        "uno_scalings": [[1, 1, 1], [0.5, 0.5, 1], [2, 2, 1], [1, 1, 1]],
+        "lifting_channels": 32,
+        "projection_channels": 32,
+        "positional_embedding": None,
+        "channel_mlp_skip": "linear",
+    }
+
+
+def test_uno_builds_from_config():
+    """build_fno_kf(uno cfg) returns a UNO with the config's in/out channels and depth."""
+    from neuralop.models import UNO  # type: ignore[import]
+    model = build_fno_kf(_minimal_uno_cfg())
+    assert isinstance(model, UNO)
+    assert model.in_channels == 4
+    assert model.out_channels == 1
+    assert model.n_layers == 4
+
+
+def test_uno_positional_embedding_disabled():
+    """KF channel contract: positional_embedding must stay None.
+
+    Our prepare_input already injects [gridx,gridy,gridt,ic] as the 4 channels.
+    If UNO defaulted to 'grid' it would prepend a 3-channel grid embedding,
+    feeding the UNO arm a 7-channel input vs the FNO arm's 4 — a silent A/B
+    confound that a forward-shape test would not catch.
+    """
+    model = build_fno_kf(_minimal_uno_cfg())
+    assert model.positional_embedding is None
+
+
+# ---------------------------------------------------------------------------
+# Block 1.3: channel-contract guard
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad", [
+    pytest.param("__omit__", id="key_omitted"),
+    pytest.param("grid",     id="explicit_grid"),
+])
+def test_uno_rejects_grid_positional_embedding(bad):
+    """A uno config that omits positional_embedding (defaults to 'grid') or sets it
+    to 'grid' must fail fast — only the builder guard protects the future yaml config."""
+    cfg = _minimal_uno_cfg()
+    if bad == "__omit__":
+        cfg.pop("positional_embedding")
+    else:
+        cfg["positional_embedding"] = bad
+    with pytest.raises(ValueError, match="positional_embedding"):
+        build_fno_kf(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Block 1.4: end-to-end roundtrip (DictConfig -> build -> kf_forward)
+# ---------------------------------------------------------------------------
+
+def test_uno_kf_forward_roundtrip():
+    """Full path from a Hydra-style DictConfig through kf_forward.
+
+    Pins, in one test: DictConfig/nested-ListConfig handling, builder, the real
+    prepare_input + channels-first usage path, and the down(0.5)/up(2.0) spatial
+    roundtrip back to the input resolution.
+    """
+    from omegaconf import OmegaConf  # type: ignore[import]
+    cfg = OmegaConf.create(_minimal_uno_cfg())
+    model = build_fno_kf(cfg)
+    model.eval()
+
+    B, S, T = 2, 16, 10
+    ic = torch.randn(B, S, S)
+    with torch.no_grad():
+        out = kf_forward(model, ic, T)
+
+    assert out.shape == (B, 1, S, S, T), (
+        f"Expected (B={B}, 1, S={S}, S={S}, T={T}), got {tuple(out.shape)}. "
+        "Check uno_scalings balance per dim and S divisibility by the downsample factor."
+    )
+    assert torch.isfinite(out).all()
+
+
+def test_uno_backward_trainable():
+    """A built UNO must be trainable: every parameter receives a finite gradient.
+
+    Forward-only roundtrip would miss a detached graph or an in-place op that
+    breaks autograd; this pins that the operator can actually be optimized.
+    """
+    from omegaconf import OmegaConf  # type: ignore[import]
+    model = build_fno_kf(OmegaConf.create(_minimal_uno_cfg()))
+
+    B, S, T = 2, 16, 10
+    ic = torch.randn(B, S, S)
+    loss = kf_forward(model, ic, T).pow(2).mean()
+    loss.backward()
+
+    params = list(model.parameters())
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in params), (
+        "Some parameters received no gradient or a non-finite gradient — "
+        "the constructed UNO is not cleanly trainable."
+    )
+
+
+def test_uno_kf_yaml_builds_and_forwards():
+    """The committed configs/model/uno_kf.yaml must build and forward.
+
+    Pins the real config file (key names, list lengths, positional_embedding=null,
+    channel_mlp_skip) so a typo surfaces in CI, not at server launch. S=32 keeps the
+    0.5-downsample bottleneck (16) >= the 16 spatial modes the config requests.
+    """
+    with open(_UNO_CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+    model = build_fno_kf(cfg)
+    model.eval()
+    B, S, T = 1, 32, 16
+    ic = torch.randn(B, S, S)
+    with torch.no_grad():
+        out = kf_forward(model, ic, T)
+    assert out.shape == (B, 1, S, S, T)
+    assert torch.isfinite(out).all()
 
 
 # ---------------------------------------------------------------------------
