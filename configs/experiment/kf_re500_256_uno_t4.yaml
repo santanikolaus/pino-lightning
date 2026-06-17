@@ -1,15 +1,20 @@
 # @package _global_
-# UNO arm, reduced TIME resolution (sub_t=4 -> T=32). Fits 12 GB TITAN V (student09).
-# Identical to kf_re500_256_uno.yaml EXCEPT data.sub_t: 2 -> 4.
-# Purpose: paired against the sub_t=2 reference to isolate what temporal resolution costs;
-#   if t4 matches t2, standardize on t4 (cheaper, fits 12 GB).
-# A/B note: only comparable to an FNO arm run at the SAME sub_t.
+# UNO arm to fit a 12 GB TITAN V (student09). TWO deltas vs the sub_t=2 reference
+# (kf_re500_256_uno.yaml): data.sub_t 2->4 (T=32) AND lifting/projection 128->64.
+# The lifting trim halves the ~1.1 GB C-independent intermediates (the last ~1 GB to clear
+# 12 GB); near-zero param change (pointwise), stays ~20.8M.
+# NOTE: this run differs from the t2 reference in BOTH sub_t and lifting — the comparison
+#   shows their COMBINED effect, not sub_t alone (deliberate, to avoid restarting the P40).
 
 defaults:
   - override /model: uno_kf
   - override /callbacks: kf
 
 grad_checkpoint: true
+
+model:
+  lifting_channels: 64
+  projection_channels: 64
 
 logger:
   wandb:
