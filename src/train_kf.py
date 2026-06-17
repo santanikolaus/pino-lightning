@@ -23,6 +23,11 @@ def main(cfg: DictConfig) -> None:
 
     module = KFLitModule(cfg)
 
+    if cfg.get("grad_checkpoint", False):
+        from msc.tta.setup import enable_gradient_checkpointing
+        enable_gradient_checkpointing(module.model)
+        print("[grad-checkpoint] enabled on module.model", flush=True)
+
     warm_start_ckpt = cfg.get("warm_start_ckpt", None)
     if warm_start_ckpt:
         import torch
