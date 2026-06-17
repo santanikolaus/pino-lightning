@@ -3,17 +3,17 @@
 # Same data/loss/eval; vary ONLY the architecture (U-shaped FNO vs flat FNO).
 # Param-matched: UNO hidden=52 ≈ 20.8M ≈ FNO n16 h64 21.0M.
 #
-# grad_checkpoint=false: the current checkpoint hook (msc/tta/setup.py) is FNO-only
-#   and crashes UNO (ModuleList + horizontal skips). UNO-aware checkpointing is step 3.
-#   Memory footprint at 256² on the P40 is UNVERIFIED. If this OOMs, step 3 is a
-#   prerequisite — NOT optional. UNO's downsampling MAY fit where dense FNO OOM'd;
-#   that is exactly what the server launch tests.
+# grad_checkpoint=true: UNO-aware checkpointing (msc/tta/setup._enable_uno_gradient_checkpointing)
+#   recovers activation memory while preserving the horizontal skips. Required to fit 256²
+#   on a 12 GB TITAN V (raw peak ~12.25 GB OOMs); ~1.3x compute ceiling (all 4 blocks).
+#   Keeps the 21M-vs-21M A/B clean (no model change). Selective subset can trim toward
+#   ~1.2x once measured on GPU.
 
 defaults:
   - override /model: uno_kf
   - override /callbacks: kf
 
-grad_checkpoint: false
+grad_checkpoint: true
 
 logger:
   wandb:
