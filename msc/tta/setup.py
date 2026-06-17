@@ -56,14 +56,17 @@ def load_model(ckpt: str, device: torch.device) -> torch.nn.Module:
     return model.to(device).eval()
 
 
-def enable_gradient_checkpointing(model: torch.nn.Module) -> torch.nn.Module:
-    """Wrap each FNO layer in gradient checkpointing to trade ~33% compute for activation memory.
+def enable_gradient_checkpointing(model: torch.nn.Module, checkpoint_layers=None) -> torch.nn.Module:
+    """Wrap each operator layer in gradient checkpointing to trade compute for activation memory.
 
-    neuralop FNO.forward loops: for layer_idx in range(n_layers): x = fno_blocks(x, layer_idx)
-    We replace that loop with checkpointed calls so intermediate activations are recomputed
-    during backward instead of retained. Lifting, projection, and positional embedding are
-    left unchanged (small tensors, not the bottleneck).
+    Dispatches on architecture: UNO (has horizontal_skips_map) needs a U-aware variant
+    that preserves the skip concatenations; FNO uses the flat-loop variant below.
+    checkpoint_layers selects which block indices to checkpoint (None = all); only the
+    UNO path honors it.
     """
+    if hasattr(model, "horizontal_skips_map"):
+        return _enable_uno_gradient_checkpointing(model, checkpoint_layers)
+
     import types
     import torch.utils.checkpoint as ckpt
 
@@ -88,6 +91,62 @@ def enable_gradient_checkpointing(model: torch.nn.Module) -> torch.nn.Module:
             def _layer(x, idx=layer_idx, os=out_shapes[layer_idx]):
                 return fno_blocks(x, idx, output_shape=os)
             x = ckpt.checkpoint(_layer, x, use_reentrant=False)
+        if domain_padding is not None:
+            x = domain_padding.unpad(x)
+        return projection(x)
+
+    model.forward = types.MethodType(_checkpointed_forward, model)
+    return model
+
+
+def _enable_uno_gradient_checkpointing(model, checkpoint_layers=None):
+    """U-aware checkpointing: mirrors UNO.forward, recomputing selected blocks in backward.
+
+    Unlike the FNO variant, this preserves the horizontal skip connections (encoder
+    outputs concatenated onto decoder inputs). checkpoint_layers = None checkpoints all
+    blocks (~1.3x compute ceiling); a subset trades less memory for less recompute.
+    """
+    import types
+    import torch.utils.checkpoint as ckpt
+    from neuralop.layers.resample import resample
+
+    n_layers = model.n_layers
+    skips_map = model.horizontal_skips_map
+    fno_blocks = model.fno_blocks
+    horizontal_skips = model.horizontal_skips
+    lifting = model.lifting
+    projection = model.projection
+    domain_padding = model.domain_padding
+    positional_embedding = model.positional_embedding
+    end_to_end_scaling_factor = model.end_to_end_scaling_factor
+    n_dim = model.n_dim
+    layers = set(range(n_layers)) if checkpoint_layers is None else set(checkpoint_layers)
+
+    def _checkpointed_forward(_self, x, **_kwargs):
+        if positional_embedding is not None:
+            x = positional_embedding(x)
+        x = lifting(x)
+        if domain_padding is not None:
+            x = domain_padding.pad(x)
+        output_shape = [int(round(i * j)) for i, j in
+                        zip(x.shape[-n_dim:], end_to_end_scaling_factor)]
+        skip_outputs = {}
+        cur_output = None
+        for idx in range(n_layers):
+            if idx in skips_map:
+                skip_val = skip_outputs[skips_map[idx]]
+                factors = [m / n for m, n in zip(x.shape, skip_val.shape)][-n_dim:]
+                x = torch.cat([x, resample(skip_val, factors, list(range(-n_dim, 0)))], dim=1)
+            if idx == n_layers - 1:
+                cur_output = output_shape
+            if idx in layers:
+                def _block(inp, i=idx, os=cur_output):
+                    return fno_blocks[i](inp, output_shape=os)
+                x = ckpt.checkpoint(_block, x, use_reentrant=False)
+            else:
+                x = fno_blocks[idx](x, output_shape=cur_output)
+            if idx in skips_map.values():
+                skip_outputs[idx] = horizontal_skips[str(idx)](x)
         if domain_padding is not None:
             x = domain_padding.unpad(x)
         return projection(x)
