@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint
 
 
 class PeriodicConv3d(torch.nn.Module):
@@ -38,10 +39,14 @@ class DoubleConv(torch.nn.Module):
     """Two periodic convs, each followed by GroupNorm + SiLU. Preserves (S, S, T).
 
     (B, in_channels, S, S, T) -> (B, out_channels, S, S, T)
+
+    If grad_checkpoint is set, activations are discarded in the forward pass and
+    recomputed during backward (memory↓, ~25% compute↑). Only active in training.
     """
 
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(self, in_channels: int, out_channels: int, grad_checkpoint: bool = False):
         super().__init__()
+        self.grad_checkpoint = grad_checkpoint
         self.block = torch.nn.Sequential(
             PeriodicConv3d(in_channels, out_channels),
             _group_norm(out_channels),
@@ -52,6 +57,8 @@ class DoubleConv(torch.nn.Module):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        if self.grad_checkpoint and self.training:
+            return checkpoint(self.block, x, use_reentrant=False)
         return self.block(x)
 
 
@@ -61,10 +68,10 @@ class DownBlock(torch.nn.Module):
     (B, in_channels, S, S, T) -> (B, out_channels, S/2, S/2, T)
     """
 
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(self, in_channels: int, out_channels: int, grad_checkpoint: bool = False):
         super().__init__()
         self.pool = torch.nn.MaxPool3d(kernel_size=(2, 2, 1), stride=(2, 2, 1))
-        self.conv = DoubleConv(in_channels, out_channels)
+        self.conv = DoubleConv(in_channels, out_channels, grad_checkpoint)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.conv(self.pool(x))
@@ -81,9 +88,10 @@ class UpBlock(torch.nn.Module):
     out:  (B, out_channels,  S,   S,   T)
     """
 
-    def __init__(self, in_channels: int, skip_channels: int, out_channels: int):
+    def __init__(self, in_channels: int, skip_channels: int, out_channels: int,
+                 grad_checkpoint: bool = False):
         super().__init__()
-        self.conv = DoubleConv(in_channels + skip_channels, out_channels)
+        self.conv = DoubleConv(in_channels + skip_channels, out_channels, grad_checkpoint)
 
     def forward(self, x: Tensor, skip: Tensor) -> Tensor:
         x = F.interpolate(x, size=skip.shape[2:], mode="trilinear", align_corners=False)
@@ -103,20 +111,21 @@ class UNet3D(torch.nn.Module):
     """
 
     def __init__(self, in_channels: int = 4, out_channels: int = 1,
-                 base_channels: int = 64, depth: int = 3):
+                 base_channels: int = 64, depth: int = 3, grad_checkpoint: bool = False):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.base_channels = base_channels
         self.depth = depth
+        self.grad_checkpoint = grad_checkpoint
 
         ch = [base_channels * 2 ** i for i in range(depth + 1)]
-        self.stem = DoubleConv(in_channels, ch[0])
+        self.stem = DoubleConv(in_channels, ch[0], grad_checkpoint)
         self.downs = torch.nn.ModuleList(
-            DownBlock(ch[i - 1], ch[i]) for i in range(1, depth + 1)
+            DownBlock(ch[i - 1], ch[i], grad_checkpoint) for i in range(1, depth + 1)
         )
         self.ups = torch.nn.ModuleList(
-            UpBlock(ch[i], ch[i - 1], ch[i - 1]) for i in range(depth, 0, -1)
+            UpBlock(ch[i], ch[i - 1], ch[i - 1], grad_checkpoint) for i in range(depth, 0, -1)
         )
         self.head = torch.nn.Conv3d(ch[0], out_channels, kernel_size=1)
 

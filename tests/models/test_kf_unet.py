@@ -83,6 +83,20 @@ def test_unet_head_respects_out_channels(out_channels):
     assert out.shape == (1, out_channels, 16, 16, 5)
 
 
+def test_unet_grad_checkpoint_threads_and_trains():
+    """grad_checkpoint=True must propagate to all DoubleConvs and still produce
+    finite gradients on every parameter (recompute path is autograd-correct)."""
+    model = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=2,
+                   grad_checkpoint=True)
+    assert model.stem.grad_checkpoint is True
+    assert all(d.conv.grad_checkpoint for d in model.downs)
+    assert all(u.conv.grad_checkpoint for u in model.ups)
+    loss = model(torch.randn(1, 4, 16, 16, 5)).pow(2).mean()
+    loss.backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all()
+               for p in model.parameters())
+
+
 def test_unet_backward_trainable():
     """Every parameter must receive a finite gradient — no detached/in-place breaks."""
     model = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=3)
