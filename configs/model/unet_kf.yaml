@@ -1,0 +1,8 @@
+model_arch: unet
+data_channels: 4       # gridx, gridy, gridt, IC vorticity (set by prepare_input)
+out_channels: 1        # predicted vorticity
+base_channels: 64      # encoder widths [64,128,256,512] at depth=3 → ~23.4M params
+                       # (param-comparable to FNO n16 h64 arm ~21M)
+depth: 3               # spatial downsamples; bottleneck at S/8. S must be divisible by 8.
+                       # x,y use circular padding (periodic torus); t zero-padded + never
+                       # down/upsampled, mirroring the FNO's temporal_pad asymmetry.
