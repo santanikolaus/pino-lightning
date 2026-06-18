@@ -48,6 +48,21 @@ data:
   # Re ∈ {100,200,250,300,350,400,500,1000}; T128 only; shape (300, 129, 128, 128)
   # T64 and T256 files deleted 2026-04-18 (wrong spatial res for T256; unused for T64)
 
+  ns_re500_res512: /system/user/studentwork/wehofer/data/ns/re500_res512
+  # native 512² Re500 GT (resolution arm), Re500 ONLY
+  # 300 per-chain files NS_fine_Re500_T128_res512_part{0..299}.npy, each (129,512,512)
+  # generation layout (one chain/file) — NOT KFDataset-readable; use scripts/res512_gate load_res512
+
+  ns_re500_res256: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res256_part0.npy
+  # 256² Re500 GT, KFDataset-layout single file (300, 129, 256, 256), ~10 GB
+  # spectral FFT-crop downsample of res512 via scripts/materialize_res256.py
+  # in-band identical to 512²: residual floor k≤7=0.0184 k≤42=0.1596, energy retention k≤128=1.0
+
+  ns_re100_res256: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res256_part0.npy
+  # 256² Re100 ID training data (Path-B), KFDataset-layout single file (300, 129, 256, 256), ~10 GB
+  # native 256² generation via scripts/generate_pilot.py --re 100 --x_res 256, stacked by scripts/stack_parts.py
+  # per-chain parts deleted after stacking (byte-identical, redundant)
+
 outputs:
   hydra_outputs: /system/user/studentwork/wehofer/pino-lightning/outputs
   # Hydra multirun / single-run output logs, organised by date (YYYY-MM-DD/)
