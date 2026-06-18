@@ -503,3 +503,50 @@ class TestTemporalPadWiring:
             f"temporal_pad=0 produced output with time-axis size {out.shape[-1]} "
             f"(expected {T}). The guard in kf_forward is broken."
         )
+
+
+# ---------------------------------------------------------------------------
+# TestKFLitModuleUNet — integration: UNet operator through the full pipeline
+# ---------------------------------------------------------------------------
+
+def _make_unet_cfg(S_depth_ok: bool = True):
+    """KFLitModule cfg with model_arch=unet. base/depth small for CPU speed."""
+    model_cfg = _Bunch(model_arch="unet", data_channels=4, out_channels=1,
+                       base_channels=8, depth=3)
+    loss_cfg = _Bunch(re=500.0, t_interval=1.0, data_weight=5.0, pde_weight=1.0, ic_weight=1.0)
+    opt_cfg = _Bunch(learning_rate=1e-3, weight_decay=0.0, milestones=[25, 50], gamma=0.5)
+    data_cfg = _Bunch(T=8, time_scale=1.0, temporal_pad=0)
+    return _Bunch(model=model_cfg, loss=loss_cfg, opt=opt_cfg, data=data_cfg)
+
+
+class TestKFLitModuleUNet:
+    """End-to-end: cfg → KFLitModule(unet) → training_step → backward.
+
+    The unit tests cover UNet3D in isolation; these pin the one path they don't:
+    the real config dispatch, kf_forward permute, KFLoss (data+pde+ic) on the
+    UNet output, and gradient flow back into every UNet parameter.
+    """
+
+    def test_builds_unet_operator(self):
+        module = KFLitModule(_make_unet_cfg())
+        from src.models.kf_unet import UNet3D
+        assert isinstance(module.model, UNet3D)
+
+    def test_training_step_finite_scalar_loss(self):
+        torch.manual_seed(0)
+        module = KFLitModule(_make_unet_cfg())
+        batch = _make_batch(B=1, S=16, T=8)   # S=16 divisible by 2**depth=8
+        loss = module.training_step(batch, 0)
+        assert loss.dim() == 0 and torch.isfinite(loss) and loss.item() > 0.0
+
+    def test_backward_populates_all_unet_grads(self):
+        torch.manual_seed(0)
+        module = KFLitModule(_make_unet_cfg())
+        batch = _make_batch(B=1, S=16, T=8)
+        loss = module.training_step(batch, 0)
+        loss.backward()
+        params = list(module.model.parameters())
+        assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in params), (
+            "Some UNet parameter received no gradient through the KFLoss path — "
+            "the data/pde/ic loss may not be differentiable end-to-end on the UNet output."
+        )

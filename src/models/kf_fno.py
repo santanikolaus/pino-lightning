@@ -75,6 +75,22 @@ def _build_uno(model_cfg) -> torch.nn.Module:
     return UNO(**cfg)
 
 
+def _build_unet(model_cfg) -> torch.nn.Module:
+    """Construct a UNet3D from a flat KF model config (model_arch=unet).
+
+    Maps data_channels -> in_channels and drops model_arch; remaining keys
+    (out_channels, base_channels, depth) match the UNet3D constructor.
+    """
+    from src.models.kf_unet import UNet3D
+    cfg = {
+        k: OmegaConf.to_container(v, resolve=True) if OmegaConf.is_config(v) else v
+        for k, v in dict(model_cfg).items()
+    }
+    cfg.pop("model_arch", None)
+    cfg["in_channels"] = cfg.pop("data_channels")
+    return UNet3D(**cfg)
+
+
 def build_fno_kf(config) -> torch.nn.Module:
     """Instantiate the KF operator from a config mapping.
 
@@ -112,8 +128,11 @@ def build_fno_kf(config) -> torch.nn.Module:
         wrapped = _Bunch({'model': model_dict})
 
     model_cfg = wrapped.model if hasattr(wrapped, 'model') else wrapped['model']
-    if str(model_cfg['model_arch']).lower() == 'uno':
+    arch = str(model_cfg['model_arch']).lower()
+    if arch == 'uno':
         return _build_uno(model_cfg)
+    if arch == 'unet':
+        return _build_unet(model_cfg)
     return get_model(wrapped)
 
 

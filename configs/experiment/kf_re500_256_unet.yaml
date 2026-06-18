@@ -1,0 +1,46 @@
+# @package _global_
+# UNet arm — op500 @256², vanilla 3D UNet (base=64, depth=3, ~23.4M params).
+# Controlled A/B vs kf_re500_256_n16_h64.yaml: identical data/loss/optimizer,
+# only the model swapped (FNO n_modes=[16,16,8] h64 → UNet). Tests whether a
+# mode-free convolutional operator beats the spectral mode cap on the k≤7 wall.
+# x,y circular (periodic), t zero-padded; S=256 divisible by 2**depth=8.
+
+defaults:
+  - override /model: unet_kf
+  - override /callbacks: kf
+
+grad_checkpoint: false   # bigger card; UNet3D activations fit without recompute
+
+logger:
+  wandb:
+    project: pathB-256
+    name: re500-256-unet-b64-d3
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res256_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+model:
+  base_channels: 64
+  depth: 3
+
+loss:
+  re: 500
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
