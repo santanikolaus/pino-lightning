@@ -113,7 +113,8 @@ def band_eval(model: torch.nn.Module, dataset, device,
         "pull_ok": resu_f7 >= RESW_THRESH,
         "gt_clean": resgt_f7 <= GTRES_THRESH,
         "err_t": err_t,
-        "err_pt": err_pt,          # (n_bands, T) joint band x time — see plotting (k>7 invalid for under-res GT)
+        "err_pt": err_pt,          # (n_bands, T) joint band x time error power
+        "gt_pt": gt_pt,            # (n_bands, T) joint band x time GT power (per-band relerr-vs-t denom)
         "bp_u": u_pt.sum(1), "bp_gt": gt_pt.sum(1), "bp_err": err_pt.sum(1),
         "bp_res_u": bp_resu, "bp_res_gt": bp_resgt,
     }

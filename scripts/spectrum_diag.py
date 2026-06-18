@@ -25,6 +25,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import NullFormatter
 import numpy as np
 import yaml
 
@@ -59,8 +60,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--paths_yaml", default="documentation/paths.yaml")
     parser.add_argument("--n_snapshots", type=int, default=500)
-    parser.add_argument("--n_modes", type=int, default=16,
-                        help="FNO spatial mode cutoff (kf_re500_256_n16 → 16)")
+    parser.add_argument("--n_modes", default="16,32",
+                        help="FNO spatial mode cutoffs, comma-sep (trained: 16,32)")
     parser.add_argument("--k_forcing", type=int, default=4,
                         help="KF forcing wavenumber (energy injection scale)")
     parser.add_argument("--out", default="scripts/outputs/spectrum_diag.png")
@@ -80,11 +81,19 @@ def main():
 
     k1 = k[1:].astype(float)
     logratio = np.log10(e500[1:] / e100[1:])
+    modes = sorted(int(m) for m in str(args.n_modes).split(","))
 
     # thesis band vocabulary (anchor the offset to the established landmarks)
-    refs = [(args.k_forcing, "k_f", "tab:green"), (7, "k≤7", "gray"),
-            (args.n_modes, "n_modes", "black"), (42, "k≤42", "brown")]
-    refs = [(kk, lab, col) for kk, lab, col in refs if kk <= k1[-1]]
+    refs = [(args.k_forcing, "k_f", "tab:green"), (7, "k≤7", "gray"), (42, "k≤42", "brown")]
+    refs += [(m, f"n{m}", "black") for m in modes]
+    refs = sorted((kk, lab, col) for kk, lab, col in refs if kk <= k1[-1])
+
+    xticks = [t for t in (1, 2, 4, 8, 16, 32, 64, 128) if t <= k1[-1]]
+
+    def int_xaxis(ax):
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([str(t) for t in xticks])
+        ax.xaxis.set_minor_formatter(NullFormatter())
 
     fig, (ax0, ax1, ax2) = plt.subplots(1, 3, figsize=(20, 5.5))
 
@@ -95,10 +104,11 @@ def main():
         ax.loglog(k1, e[6] * (k1 / k1[5]) ** -3, "k--", lw=0.7, alpha=0.5, label="k⁻³")
         if not np.isnan(kd):
             ax.axvline(kd, color="green", ls="--", lw=1.0, label=f"k_d={kd:.0f}")
-        ax.axvline(args.n_modes, color="black", ls=":", lw=1.0, label=f"n_modes={args.n_modes}")
+        for m in modes:
+            ax.axvline(m, color="black", ls=":", lw=1.0, label=f"n_modes={m}")
         ax.set_xlabel("k"); ax.set_ylabel("E(k)")
         ax.set_title(f"Re={re} radial energy spectrum")
-        ax.grid(True, which="both", alpha=0.3); ax.legend(fontsize=8)
+        ax.grid(True, which="both", alpha=0.3); ax.legend(fontsize=8); int_xaxis(ax)
 
     ax0.set_ylim(*ax1.get_ylim())                      # shared scale → offset readable
 
@@ -113,7 +123,7 @@ def main():
             ax2.axvline(kd, color=c, ls="--", lw=0.9, alpha=0.6, label=f"k_d(Re{re})={kd:.0f}")
     ax2.set_xlabel("k"); ax2.set_ylabel("log₁₀ E_Re500 / E_Re100")
     ax2.set_title("Spectral offset (where adaptation must act)")
-    ax2.grid(True, which="both", alpha=0.3); ax2.legend(fontsize=7, ncol=2)
+    ax2.grid(True, which="both", alpha=0.3); ax2.legend(fontsize=7, ncol=2); int_xaxis(ax2)
 
     fig.tight_layout()
     out = Path(args.out); out.parent.mkdir(parents=True, exist_ok=True)
