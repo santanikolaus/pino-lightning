@@ -43,8 +43,8 @@ def main():
     ap.add_argument("--sources", nargs="+", default=["oracle", "model"])
     ap.add_argument("--offset", type=int, default=260)
     ap.add_argument("--n", type=int, default=40)
-    ap.add_argument("--kc", type=int, default=7,
-                    help="band split for hi_oracle/lo_oracle restarts (closure gate)")
+    ap.add_argument("--kc", type=int, nargs="+", default=[7],
+                    help="band split(s) for hi_oracle/lo_oracle restarts (closure-gate kc sweep)")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
     device = torch.device(args.device)
@@ -60,32 +60,36 @@ def main():
         rows = {}
         os_late = None
         print(f"== {op} ==", flush=True)
-        print(f"  {'source':>7} {'stride':>6} {'early':>7} {'late':>7} {'aggr':>7} "
+        print(f"  {'source':>9} {'kc':>3} {'stride':>6} {'early':>7} {'late':>7} {'aggr':>7} "
               f"{'late win%':>9} {'Δ̄ late':>8}")
         for source in args.sources:
-            for stride in args.strides:
-                res = run_op(model, ds, device, stride, source, args.kc)
-                rep = paired_report(res["per"])
-                pc = res["pooled"]["ch"]
-                if os_late is None:
-                    po = res["pooled"]["os"]
-                    os_late = po["late"]
-                    print(f"  {'oneshot':>7} {'-':>6} {po['early']:>7.3f} {po['late']:>7.3f} "
-                          f"{po['aggr']:>7.3f} {'-':>9} {'-':>8}", flush=True)
-                rows[f"{source}_s{stride}"] = {
-                    "early": pc["early"], "late": pc["late"], "aggr": pc["aggr"],
-                    "late_win_pct": rep["frac_improved"], "delta_late": rep["delta_mean"],
-                    "wilcoxon_p": rep["wilcoxon_p"]}
-                print(f"  {source:>7} {stride:>6} {pc['early']:>7.3f} {pc['late']:>7.3f} "
-                      f"{pc['aggr']:>7.3f} {rep['frac_improved']:>8.0%} {rep['delta_mean']:>+8.3f}",
-                      flush=True)
+            kcs = args.kc if source in ("hi_oracle", "lo_oracle") else [args.kc[0]]
+            for kc in kcs:
+                for stride in args.strides:
+                    res = run_op(model, ds, device, stride, source, kc)
+                    rep = paired_report(res["per"])
+                    pc = res["pooled"]["ch"]
+                    if os_late is None:
+                        po = res["pooled"]["os"]
+                        os_late = po["late"]
+                        print(f"  {'oneshot':>9} {'-':>3} {'-':>6} {po['early']:>7.3f} "
+                              f"{po['late']:>7.3f} {po['aggr']:>7.3f} {'-':>9} {'-':>8}", flush=True)
+                    kc_tag = kc if source in ("hi_oracle", "lo_oracle") else "-"
+                    rows[f"{source}_kc{kc_tag}_s{stride}"] = {
+                        "kc": kc_tag, "early": pc["early"], "late": pc["late"], "aggr": pc["aggr"],
+                        "late_win_pct": rep["frac_improved"], "delta_late": rep["delta_mean"],
+                        "wilcoxon_p": rep["wilcoxon_p"]}
+                    print(f"  {source:>9} {str(kc_tag):>3} {stride:>6} {pc['early']:>7.3f} "
+                          f"{pc['late']:>7.3f} {pc['aggr']:>7.3f} {rep['frac_improved']:>8.0%} "
+                          f"{rep['delta_mean']:>+8.3f}", flush=True)
         summary[op] = {"oneshot_late": os_late, "rows": rows}
         print(flush=True)
 
     print("read: oracle late ≪ oneshot (lever real) + model late ≥ oneshot (own fields weak) "
           "⇒ self-consistency training is the lever, transfers to 256.")
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    out = OUT.with_name(f"chain_gate_256_{'-'.join(args.sources)}_kc{args.kc}.json")
+    kc_tag = "-".join(str(k) for k in args.kc)
+    out = OUT.with_name(f"chain_gate_256_{'-'.join(args.sources)}_kc{kc_tag}.json")
     out.write_text(json.dumps({"offset": args.offset, "n": args.n, "kc": args.kc,
                                "sources": args.sources, "results": summary},
                               indent=2, default=float))
