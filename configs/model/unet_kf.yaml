@@ -8,3 +8,9 @@ depth: 3               # spatial downsamples; bottleneck at S/8. S must be divis
                        # down/upsampled, mirroring the FNO's temporal_pad asymmetry.
 grad_checkpoint: true  # recompute DoubleConv activations in backward; required to fit
                        # base=64 @256²×65 on a 32GB card (~34GB → ~22GB). ~25% slower step.
+temporal_mixer: none   # none|spectral|conv|attn — global coupling along t at the bottleneck.
+                       # none = baseline. Others fix the long-horizon energy collapse of
+                       # local temporal convs; all zero-init residual (identity at start).
+temporal_mixer_modes: 16   # spectral: lowest temporal Fourier modes kept (≤ T//2+1)
+temporal_mixer_kernel: 31  # conv: depthwise temporal kernel size (odd)
+temporal_mixer_heads: 4    # attn: number of attention heads

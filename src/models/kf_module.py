@@ -52,7 +52,10 @@ class KFLitModule(L.LightningModule):
         target = batch["y"].to(self.device)
         T = target.shape[-1]  # include IC frame: full T+1 frames
         pred = self(ic, T=T)
-        losses = self.loss_fn(pred, target)
+        # PDE residual multiplies by wavenumbers up to k=S/2 and squares them, which
+        # overflows fp16 (→ NaN); compute the physics loss in fp32 even under AMP.
+        with torch.autocast(device_type=self.device.type, enabled=False):
+            losses = self.loss_fn(pred.float(), target.float())
         self.log("train_loss", losses["loss"], prog_bar=True, on_step=True, on_epoch=True)
         self.log("train_data_loss", losses["data"], on_step=True, on_epoch=True)
         self.log("train_pde_loss", losses["pde"], on_step=True, on_epoch=True)
@@ -64,11 +67,13 @@ class KFLitModule(L.LightningModule):
         target = batch["y"].to(self.device)
         T = target.shape[-1]  # include IC frame: full T+1 frames
         pred = self(ic, T=T)
-        w = pred.squeeze(1)
-        y = target  # supervise all T frames including IC at t=0
-        l2 = LpLoss(d=3, p=2, reduction="mean").rel(w, y)
+        with torch.autocast(device_type=self.device.type, enabled=False):
+            pred = pred.float()
+            w = pred.squeeze(1)
+            y = target.float()  # supervise all T frames including IC at t=0
+            l2 = LpLoss(d=3, p=2, reduction="mean").rel(w, y)
+            losses = self.loss_fn(pred, y)
         self.log("val_l2", l2, prog_bar=True, on_step=False, on_epoch=True)
-        losses = self.loss_fn(pred, target)
         self.log("val_ic_loss", losses["ic"], on_step=False, on_epoch=True)
         # Stash one batch for KFVisualizerCallback (overwritten each step, last batch kept)
         self._val_batch = {"pred": pred.detach().cpu(), "target": target.detach().cpu()}

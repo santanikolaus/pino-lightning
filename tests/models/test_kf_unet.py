@@ -5,7 +5,10 @@ import torch
 import yaml
 
 from src.models.kf_fno import build_fno_kf, kf_forward
-from src.models.kf_unet import DoubleConv, DownBlock, PeriodicConv3d, UNet3D, UpBlock
+from src.models.kf_unet import (
+    DoubleConv, DownBlock, PeriodicConv3d, UNet3D, UpBlock,
+    build_temporal_mixer,
+)
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 _UNET_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "unet_kf.yaml"
@@ -104,6 +107,118 @@ def test_unet_backward_trainable():
     loss.backward()
     params = list(model.parameters())
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in params)
+
+
+# ---------------------------------------------------------------------------
+# Option A: bottleneck temporal mixers
+# ---------------------------------------------------------------------------
+
+_MIXERS = ["spectral", "conv", "attn"]
+
+
+@pytest.mark.parametrize("kind", _MIXERS)
+def test_temporal_mixer_preserves_shape(kind):
+    """Every mixer maps (B,C,H,W,T) -> (B,C,H,W,T) unchanged in dims."""
+    mix = build_temporal_mixer(kind, channels=8).eval()
+    x = torch.randn(2, 8, 4, 4, 9)
+    assert mix(x).shape == x.shape
+
+
+@pytest.mark.parametrize("kind", _MIXERS)
+def test_temporal_mixer_identity_at_init(kind):
+    """Zero-init residual: at construction every mixer must be the identity, so
+    adding one cannot perturb the baseline before any training."""
+    torch.manual_seed(0)
+    mix = build_temporal_mixer(kind, channels=8).eval()
+    x = torch.randn(2, 8, 4, 4, 9)
+    with torch.no_grad():
+        torch.testing.assert_close(mix(x), x, atol=1e-5, rtol=0.0)
+
+
+@pytest.mark.parametrize("kind", _MIXERS)
+def test_temporal_mixer_is_t_agnostic(kind):
+    """Mixers must run for different T without rebuild (no fixed-T parameter)."""
+    mix = build_temporal_mixer(kind, channels=8).eval()
+    for T in (9, 16, 65):
+        x = torch.randn(1, 8, 4, 4, T)
+        assert mix(x).shape == (1, 8, 4, 4, T)
+
+
+@pytest.mark.parametrize("kind", _MIXERS)
+def test_temporal_mixer_couples_time_after_training_signal(kind):
+    """After a nonzero parameter update the mixer must stop being the identity,
+    i.e. it actually couples across t (zero-init does not freeze learning)."""
+    torch.manual_seed(0)
+    mix = build_temporal_mixer(kind, channels=8)
+    x = torch.randn(2, 8, 4, 4, 9)
+    mix(x).pow(2).mean().backward()
+    grads = [p.grad for p in mix.parameters() if p.grad is not None]
+    assert grads and any(g.abs().sum() > 0 for g in grads), (
+        "no parameter received a nonzero gradient; mixer cannot learn coupling"
+    )
+
+
+def test_temporal_mixer_none_is_identity_module():
+    assert isinstance(build_temporal_mixer("none", channels=8), torch.nn.Identity)
+
+
+def test_conv_mixer_rejects_even_kernel():
+    """Even temporal kernel cannot preserve T with symmetric padding; reject early
+    so a misconfigured sweep fails at construction, not after GPU allocation."""
+    with pytest.raises(AssertionError):
+        build_temporal_mixer("conv", channels=8, kernel=32)
+
+
+def test_spectral_mixer_modes_exceeding_nyquist_stay_finite():
+    """Requesting more modes than T//2+1 must cap silently and stay finite, not
+    index past the rfft output (a plausible misconfig: modes > available freqs)."""
+    mix = build_temporal_mixer("spectral", channels=8, modes=64)  # T=16 -> 9 freqs
+    with torch.no_grad():
+        for p in mix.parameters():
+            p.add_(0.1 + 0.1j)
+        out = mix(torch.randn(1, 8, 4, 4, 16))
+    assert out.shape == (1, 8, 4, 4, 16) and torch.isfinite(out).all()
+
+
+def test_temporal_mixer_rejects_unknown():
+    with pytest.raises(ValueError, match="temporal_mixer"):
+        build_temporal_mixer("bogus", channels=8)
+
+
+def test_spectral_mixer_finite_under_fp16_input():
+    """Spectral mixer forces fp32 FFT internally; an fp16 input must yield finite
+    fp16 output (the AMP path used at train time)."""
+    mix = build_temporal_mixer("spectral", channels=8, modes=4)
+    with torch.no_grad():
+        for p in mix.parameters():
+            p.add_(0.1 + 0.1j)            # leave identity so the FFT path is exercised
+        out = mix(torch.randn(1, 8, 4, 4, 16, dtype=torch.float16))
+    assert out.dtype == torch.float16 and torch.isfinite(out).all()
+
+
+@pytest.mark.parametrize("kind", _MIXERS + ["none"])
+def test_unet_with_temporal_mixer_forward_and_backward(kind):
+    """UNet3D with each mixer keeps the I/O contract and stays trainable."""
+    model = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=2,
+                   temporal_mixer=kind, temporal_mixer_modes=4, temporal_mixer_kernel=3)
+    x = torch.randn(1, 4, 16, 16, 7)
+    out = model(x)
+    assert out.shape == (1, 1, 16, 16, 7) and torch.isfinite(out).all()
+    out.pow(2).mean().backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all()
+               for p in model.parameters())
+
+
+def test_unet_temporal_mixer_none_matches_plain_unet():
+    """temporal_mixer='none' must be bit-identical to omitting the arg (Identity
+    insertion), so the baseline run is provably unchanged by the new flag."""
+    torch.manual_seed(0)
+    a = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=2)
+    torch.manual_seed(0)
+    b = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=2, temporal_mixer="none")
+    x = torch.randn(1, 4, 16, 16, 7)
+    with torch.no_grad():
+        torch.testing.assert_close(a(x), b(x), atol=0.0, rtol=0.0)
 
 
 # ---------------------------------------------------------------------------

@@ -539,6 +539,25 @@ class TestKFLitModuleUNet:
         loss = module.training_step(batch, 0)
         assert loss.dim() == 0 and torch.isfinite(loss) and loss.item() > 0.0
 
+    def test_loss_computed_in_fp32_for_fp16_pred(self):
+        """Under AMP the model emits fp16, whose limited range makes the PDE term
+        overflow to NaN. training_step must recast pred to fp32 before the loss.
+        We capture the dtype the loss actually sees, with a forward that emits fp16.
+        """
+        torch.manual_seed(0)
+        module = KFLitModule(_make_unet_cfg())
+        seen = {}
+        orig = module.loss_fn
+        module.loss_fn = lambda p, t: (seen.update(dtype=p.dtype), orig(p, t))[1]
+        real_fwd = module.forward
+        module.forward = lambda ic, **kw: real_fwd(ic, **kw).half()
+        batch = _make_batch(B=1, S=16, T=8)
+        loss = module.training_step(batch, 0)
+        assert seen["dtype"] == torch.float32, (
+            f"loss_fn saw {seen['dtype']}; training_step must recast fp16 pred to fp32."
+        )
+        assert torch.isfinite(loss)
+
     def test_backward_populates_all_unet_grads(self):
         torch.manual_seed(0)
         module = KFLitModule(_make_unet_cfg())
