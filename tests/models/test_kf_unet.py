@@ -196,6 +196,19 @@ def test_spectral_mixer_finite_under_fp16_input():
     assert out.dtype == torch.float16 and torch.isfinite(out).all()
 
 
+def test_attn_mixer_finite_under_fp16_input():
+    """fp16 attention softmax overflows to NaN; the mixer must force fp32 internally
+    and return finite fp16 output (the AMP path that diverged in the first sweep).
+    """
+    torch.manual_seed(0)
+    mix = build_temporal_mixer("attn", channels=8, heads=2)
+    with torch.no_grad():
+        for p in mix.parameters():
+            p.add_(0.5)                    # break identity so attention actually runs
+        out = mix(torch.randn(1, 8, 4, 4, 16, dtype=torch.float16))
+    assert out.dtype == torch.float16 and torch.isfinite(out).all()
+
+
 def test_spectral_mixer_weight_is_real_for_amp():
     """The spectral weight must be a REAL parameter: AMP's GradScaler cannot unscale
     ComplexFloat grads, so a complex nn.Parameter crashes at the first optimizer step.

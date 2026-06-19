@@ -109,15 +109,45 @@ class NSVorticity:
         return Du, (wt, adv, diff)
 
 
+def frame_weights(T: int, p: float, alpha: float, device, dtype=torch.float32) -> Tensor:
+    """Per-frame loss weights w_t = 1 + alpha*(t/(T-1))^p for t=0..T-1, normalized to mean 1.
+
+    alpha sets the late-emphasis strength (alpha=0 -> uniform, recovers the baseline loss);
+    p shapes the ramp. Mean-1 normalization keeps the weighted loss scale comparable to the
+    uniform loss so the effective learning rate is unchanged. Returns shape (T,)."""
+    t = torch.linspace(0.0, 1.0, T, device=device, dtype=dtype)
+    w = 1.0 + alpha * t.pow(p)
+    return w * (T / w.sum())
+
+
+def time_weighted_rel(pred: Tensor, target: Tensor, w_t: Tensor, eps: float = 1e-8) -> Tensor:
+    """Time-weighted relative L2 over (B,S,S,T), per-sample mean-of-ratios.
+
+    Per frame t: a_t = spatial squared error, b_t = spatial GT energy. Returns
+    mean_B sqrt(sum_t w_t a_t / sum_t b_t). With w_t == 1 this equals
+    LpLoss(d=3,p=2,reduction='mean').rel(pred, target) exactly — the baseline data term."""
+    a = (pred - target).pow(2).sum(dim=(1, 2))   # (B, T)
+    b = target.pow(2).sum(dim=(1, 2))            # (B, T)
+    num = (w_t * a).sum(dim=1)                   # (B,)
+    den = b.sum(dim=1)                           # (B,)
+    return torch.sqrt(num / (den + eps)).mean()
+
+
 class KFLoss:
     def __init__(self, re: float, t_interval: float = 1.0,
                  data_weight: float = 1.0, pde_weight: float = 0.0,
-                 ic_weight: float = 0.0, pde_band_kmax: int | None = None):
+                 ic_weight: float = 0.0, pde_band_kmax: int | None = None,
+                 time_weight_p: float = 2.0, time_weight_alpha: float = 0.0):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
         self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
         self.pde_weight = pde_weight
         self.ic_weight = ic_weight
+        # time_weight_alpha == 0 -> uniform data term (baseline, byte-identical to lp.rel).
+        # alpha > 0 -> late-weighted data term w_t = 1 + alpha*(t/T)^p; lever acts on the
+        # data term ONLY (pde/ic untouched).
+        self.time_weight_p = time_weight_p
+        self.time_weight_alpha = time_weight_alpha
         # None -> full-field residual (unchanged). int -> penalise only the
         # k<=pde_band_kmax (Chebyshev) band of the residual, matching the eval band.
         # Must keep the forcing band (k=4): below it `forcing` is zeroed and
@@ -135,7 +165,12 @@ class KFLoss:
         w = pred.squeeze(1)        # (B, S, S, T)
         y = target                 # (B, S, S, T) — supervise all frames incl. IC at t=0
 
-        data = self.lp.rel(w, y)
+        if self.time_weight_alpha == 0.0:
+            data = self.lp.rel(w, y)
+        else:
+            w_t = frame_weights(w.shape[-1], self.time_weight_p,
+                                self.time_weight_alpha, w.device, w.dtype)
+            data = time_weighted_rel(w, y, w_t)
         forcing = self.ns.get_forcing(w.shape[1], w.device).expand(w.shape[0], w.shape[1], w.shape[2], w.shape[3] - 2)
         Du, _ = self.ns.residual(w)
         if self.pde_band_kmax is not None:

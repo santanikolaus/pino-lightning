@@ -90,9 +90,11 @@ class TemporalAttnMixer(torch.nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         B, C, H, W, T = x.shape
         seq = x.permute(0, 2, 3, 4, 1).reshape(B * H * W, T, C)   # (B*H*W, T, C)
-        out, _ = self.attn(seq, seq, seq)
+        # fp16 attention softmax overflows -> NaN; force fp32 under AMP (cf. PDE loss).
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            out, _ = self.attn(seq.float(), seq.float(), seq.float())
         out = out.reshape(B, H, W, T, C).permute(0, 4, 1, 2, 3)
-        return x + out
+        return x + out.to(x.dtype)
 
 
 def build_temporal_mixer(kind: str, channels: int, *, modes: int = 16,
