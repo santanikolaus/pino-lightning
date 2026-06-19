@@ -12,5 +12,7 @@ temporal_mixer: none   # none|spectral|conv|attn — global coupling along t at 
                        # none = baseline. Others fix the long-horizon energy collapse of
                        # local temporal convs; all zero-init residual (identity at start).
 temporal_mixer_modes: 16   # spectral: lowest temporal Fourier modes kept (≤ T//2+1)
+                           # spatial: lowest spatial modes kept per x,y axis (k≤modes)
 temporal_mixer_kernel: 31  # conv: depthwise temporal kernel size (odd)
 temporal_mixer_heads: 4    # attn: number of attention heads
+spatial_mixer_hidden: 64   # spatial: 1x1 channel-bottleneck width for the FNO block

@@ -1,0 +1,49 @@
+# @package _global_
+# Time-weighting mechanism test — op100 @128², FNO n_modes=[8,8,8], hidden=128.
+# Identical to kf_pino_re100_pretrain (same data/opt/model) EXCEPT the data term is
+# late-weighted: w_t = 1 + alpha*(t/T)^p, mean-1 normalized (alpha=0 -> uniform baseline).
+# Lever acts on the data term only; pde/ic unchanged. Question: does up-weighting late
+# frames lower late k<=7 vs the uniform baseline without raising early k<=7?
+#
+# Sweep alpha to probe hyper-parameter sensitivity (p fixed=2), e.g.:
+#   python -m src.train_kf -m experiment=kf_re100_timeweight \
+#       loss.time_weight_alpha=0,1,2,4 trainer.devices='[1]'
+# alpha=0 is the same-code baseline (cross-check vs pretrain-kol/pvqq97sq load guard).
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: timeweight-kol
+    name: re100-tw-a${loss.time_weight_alpha}-p${loss.time_weight_p}
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+  time_weight_p: 2.0
+  time_weight_alpha: 2.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0
+  hidden_channels: 128

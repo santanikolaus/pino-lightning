@@ -6,7 +6,7 @@ import yaml
 
 from src.models.kf_fno import build_fno_kf, kf_forward
 from src.models.kf_unet import (
-    DoubleConv, DownBlock, PeriodicConv3d, UNet3D, UpBlock,
+    DoubleConv, DownBlock, PeriodicConv3d, SpatialSpectralMixer, UNet3D, UpBlock,
     build_temporal_mixer,
 )
 
@@ -113,7 +113,7 @@ def test_unet_backward_trainable():
 # Option A: bottleneck temporal mixers
 # ---------------------------------------------------------------------------
 
-_MIXERS = ["spectral", "conv", "attn"]
+_MIXERS = ["spectral", "conv", "attn", "spatial"]
 
 
 @pytest.mark.parametrize("kind", _MIXERS)
@@ -215,6 +215,80 @@ def test_spectral_mixer_weight_is_real_for_amp():
     """
     mix = build_temporal_mixer("spectral", channels=8, modes=4)
     assert all(not p.is_complex() for p in mix.parameters())
+
+
+# ---------------------------------------------------------------------------
+# Spatial FNO bottleneck mixer (channel-mixing spectral conv over x,y)
+# ---------------------------------------------------------------------------
+
+def test_spatial_mixer_mode_capping_stays_finite():
+    """modes far above the bottleneck Nyquist must cap on BOTH spatial axes
+    (m1=min(modes,H//2), m2=min(modes,W//2+1)) and not index past the rfft output."""
+    mix = build_temporal_mixer("spatial", channels=8, modes=64)  # H=W=4 -> m1=2, m2=3
+    with torch.no_grad():
+        for p in mix.parameters():
+            p.add_(0.1)
+        out = mix(torch.randn(1, 8, 4, 4, 16))
+    assert out.shape == (1, 8, 4, 4, 16) and torch.isfinite(out).all()
+
+
+def test_spatial_mixer_finite_under_autocast():
+    """The AMP train path: under autocast the 1x1 convs run in low precision while
+    the 2D FFT is forced fp32 (complex weights stay fp32). Output must stay finite —
+    fp16/bf16 in the FFT would overflow the k-weighted spectrum to NaN."""
+    mix = build_temporal_mixer("spatial", channels=8, modes=4)
+    with torch.no_grad():
+        for p in mix.parameters():
+            p.add_(0.1)                    # break identity so the FFT path is exercised
+        with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+            out = mix(torch.randn(1, 8, 8, 8, 16))
+    assert torch.isfinite(out).all()
+
+
+def test_spatial_mixer_weights_are_real_for_amp():
+    """Spectral weights stored REAL (view_as_complex in forward): a complex
+    nn.Parameter crashes AMP's GradScaler, same constraint as the temporal mixer."""
+    mix = build_temporal_mixer("spatial", channels=8, modes=4)
+    assert all(not p.is_complex() for p in mix.parameters())
+
+
+def test_spatial_mixer_spectral_path_trains_despite_zero_init_up():
+    """Identity-at-init is via a ZERO up-projection, not zero spectral weights. At
+    init the gradient to w_lo/w_hi is exactly zero (chain cut at up.weight==0); after
+    up moves off zero the spectral weights must receive a real gradient and learn."""
+    torch.manual_seed(0)
+    mix = build_temporal_mixer("spatial", channels=8, modes=4)
+    with torch.no_grad():
+        for p in mix.parameters():
+            p.add_(0.1)                    # move up off zero so the chain connects
+    mix(torch.randn(2, 8, 8, 8, 9)).pow(2).mean().backward()
+    assert mix.w_lo.grad.abs().sum() > 0 and mix.w_hi.grad.abs().sum() > 0
+
+
+def test_spatial_mixer_shift_equivariance_xy():
+    """Spectral conv + 1x1 convs commute with a periodic spatial shift, so rolling
+    the input along x or y must roll the output identically. Pins the FFT axes to
+    (x,y)=(2,3): a stray dim= would break this while passing shape/identity checks."""
+    torch.manual_seed(0)
+    mix = build_temporal_mixer("spatial", channels=4, modes=3).eval()
+    with torch.no_grad():
+        for p in mix.parameters():
+            p.add_(0.1)                    # break identity so the spectral path runs
+        x = torch.randn(1, 4, 8, 8, 5)
+        for axis in (2, 3):
+            rolled_out = torch.roll(mix(x), shifts=1, dims=axis)
+            out_rolled = mix(torch.roll(x, shifts=1, dims=axis))
+            torch.testing.assert_close(rolled_out, out_rolled, atol=1e-4, rtol=0.0)
+
+
+def test_unet_spatial_mixer_hidden_passthrough():
+    """spatial_mixer_hidden must reach the SpatialSpectralMixer constructor, not be
+    declared on UNet3D and silently dropped before build_temporal_mixer."""
+    model = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=2,
+                   temporal_mixer="spatial", temporal_mixer_modes=4,
+                   spatial_mixer_hidden=16)
+    assert isinstance(model.temporal_mixer, SpatialSpectralMixer)
+    assert model.temporal_mixer.down.out_channels == min(16, 8 * 2 ** 2)
 
 
 @pytest.mark.parametrize("kind", _MIXERS + ["none"])
