@@ -97,9 +97,53 @@ class TemporalAttnMixer(torch.nn.Module):
         return x + out.to(x.dtype)
 
 
+class SpatialSpectralMixer(torch.nn.Module):
+    """FNO-style spectral conv over (x,y) at the bottleneck WITH channel mixing,
+    made cheap by a 1x1 channel bottleneck (channels -> hidden -> channels). Keeps
+    the lowest `modes` spatial Fourier modes per axis; for each kept mode all
+    `hidden` channels mix (the FNO ingredient a plain conv lacks). Acts per (batch,
+    t). Zero-init up-projection -> identity at start (baseline-safe); the spectral
+    weights are NOT zero, so they get a real gradient once `up` moves off zero.
+    FFT forced fp32 under AMP; complex weights stored real (view_as_complex) so the
+    GradScaler can unscale grads. (B,C,H,W,T) -> (B,C,H,W,T).
+    """
+
+    def __init__(self, channels: int, modes: int = 8, hidden: int = 64):
+        super().__init__()
+        h = min(hidden, channels)
+        self.modes = modes
+        self.down = torch.nn.Conv3d(channels, h, 1)
+        self.up = torch.nn.Conv3d(h, channels, 1)
+        scale = 1.0 / (h * h)
+        self.w_lo = torch.nn.Parameter(scale * torch.randn(h, h, modes, modes, 2))
+        self.w_hi = torch.nn.Parameter(scale * torch.randn(h, h, modes, modes, 2))
+        torch.nn.init.zeros_(self.up.weight)
+        torch.nn.init.zeros_(self.up.bias)
+
+    @staticmethod
+    def _mix(xf: Tensor, w: Tensor) -> Tensor:
+        wc = torch.view_as_complex(w.contiguous())
+        return torch.einsum("bihwt,iohw->bohwt", xf, wc)
+
+    def forward(self, x: Tensor) -> Tensor:
+        H, W = x.shape[2], x.shape[3]
+        z = self.down(x)
+        m1 = min(self.modes, H // 2)
+        m2 = min(self.modes, W // 2 + 1)
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            zf = torch.fft.rfft2(z.float(), dim=(2, 3))        # (B,h,H,W//2+1,T)
+            out = torch.zeros_like(zf)
+            if m1 > 0:
+                out[:, :, :m1, :m2] = self._mix(zf[:, :, :m1, :m2], self.w_lo[:, :, :m1, :m2])
+                out[:, :, -m1:, :m2] = self._mix(zf[:, :, -m1:, :m2], self.w_hi[:, :, :m1, :m2])
+            mixed = torch.fft.irfft2(out, s=(H, W), dim=(2, 3))  # (B,h,H,W,T) real
+        return x + self.up(mixed.to(x.dtype))
+
+
 def build_temporal_mixer(kind: str, channels: int, *, modes: int = 16,
-                         kernel: int = 31, heads: int = 4) -> torch.nn.Module:
-    """Construct a bottleneck temporal mixer. 'none' -> Identity (baseline)."""
+                         kernel: int = 31, heads: int = 4, hidden: int = 64) -> torch.nn.Module:
+    """Construct a bottleneck mixer. 'none' -> Identity (baseline). 'spatial' is the
+    channel-mixing FNO spectral block over x,y; the rest act on the t axis."""
     kind = str(kind).lower()
     if kind == "none":
         return torch.nn.Identity()
@@ -109,7 +153,10 @@ def build_temporal_mixer(kind: str, channels: int, *, modes: int = 16,
         return TemporalConvMixer(channels, kernel)
     if kind == "attn":
         return TemporalAttnMixer(channels, heads)
-    raise ValueError(f"unknown temporal_mixer '{kind}'; expected none|spectral|conv|attn")
+    if kind == "spatial":
+        return SpatialSpectralMixer(channels, modes=modes, hidden=hidden)
+    raise ValueError(
+        f"unknown temporal_mixer '{kind}'; expected none|spectral|conv|attn|spatial")
 
 
 def _group_norm(channels: int) -> torch.nn.GroupNorm:
@@ -196,7 +243,8 @@ class UNet3D(torch.nn.Module):
     def __init__(self, in_channels: int = 4, out_channels: int = 1,
                  base_channels: int = 64, depth: int = 3, grad_checkpoint: bool = False,
                  temporal_mixer: str = "none", temporal_mixer_modes: int = 16,
-                 temporal_mixer_kernel: int = 31, temporal_mixer_heads: int = 4):
+                 temporal_mixer_kernel: int = 31, temporal_mixer_heads: int = 4,
+                 spatial_mixer_hidden: int = 64):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -213,6 +261,7 @@ class UNet3D(torch.nn.Module):
         self.temporal_mixer = build_temporal_mixer(
             temporal_mixer, ch[depth], modes=temporal_mixer_modes,
             kernel=temporal_mixer_kernel, heads=temporal_mixer_heads,
+            hidden=spatial_mixer_hidden,
         )
         self.ups = torch.nn.ModuleList(
             UpBlock(ch[i], ch[i - 1], ch[i - 1], grad_checkpoint) for i in range(depth, 0, -1)
