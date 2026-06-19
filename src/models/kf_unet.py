@@ -29,6 +29,84 @@ class PeriodicConv3d(torch.nn.Module):
         return self.conv(x)
 
 
+class TemporalSpectralMixer(torch.nn.Module):
+    """FNO-style global coupling along t: rfft, scale the lowest `modes` temporal
+    Fourier modes per channel, irfft. Residual with zero-init weights → starts as
+    identity. (B,C,H,W,T) -> (B,C,H,W,T). T-agnostic (modes capped at T//2+1).
+    FFT is forced to fp32 (fp16 rfft is lossy/overflow-prone under AMP).
+    """
+
+    def __init__(self, channels: int, modes: int = 16):
+        super().__init__()
+        self.modes = modes
+        self.weight = torch.nn.Parameter(torch.zeros(channels, modes, dtype=torch.cfloat))
+
+    def forward(self, x: Tensor) -> Tensor:
+        T = x.shape[-1]
+        m = min(self.modes, T // 2 + 1)
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            xf = torch.fft.rfft(x.float(), dim=-1)            # (B,C,H,W,T//2+1) complex
+            out = torch.zeros_like(xf)
+            w = self.weight[:, :m].view(1, -1, 1, 1, m)        # (1,C,1,1,m)
+            out[..., :m] = xf[..., :m] * w
+            mixed = torch.fft.irfft(out, n=T, dim=-1)          # (B,C,H,W,T) real fp32
+        return x + mixed.to(x.dtype)
+
+
+class TemporalConvMixer(torch.nn.Module):
+    """Large-kernel depthwise conv along t (zero-pad, non-periodic). Residual with
+    zero-init → starts as identity. Near-global temporal receptive field in one
+    layer. (B,C,H,W,T) -> (B,C,H,W,T). T-agnostic.
+    """
+
+    def __init__(self, channels: int, kernel: int = 31):
+        super().__init__()
+        assert kernel % 2 == 1, "temporal conv kernel must be odd"
+        self.conv = torch.nn.Conv3d(channels, channels, (1, 1, kernel),
+                                    padding=(0, 0, kernel // 2), groups=channels)
+        torch.nn.init.zeros_(self.conv.weight)
+        torch.nn.init.zeros_(self.conv.bias)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.conv(x)
+
+
+class TemporalAttnMixer(torch.nn.Module):
+    """Multi-head self-attention over the time axis at the bottleneck, with each
+    (batch, spatial) position as an independent sequence of T tokens. Residual with
+    zero-init output projection → starts as identity. (B,C,H,W,T) -> (B,C,H,W,T).
+    T-agnostic.
+    """
+
+    def __init__(self, channels: int, heads: int = 4):
+        super().__init__()
+        self.attn = torch.nn.MultiheadAttention(channels, heads, batch_first=True)
+        torch.nn.init.zeros_(self.attn.out_proj.weight)
+        torch.nn.init.zeros_(self.attn.out_proj.bias)
+
+    def forward(self, x: Tensor) -> Tensor:
+        B, C, H, W, T = x.shape
+        seq = x.permute(0, 2, 3, 4, 1).reshape(B * H * W, T, C)   # (B*H*W, T, C)
+        out, _ = self.attn(seq, seq, seq)
+        out = out.reshape(B, H, W, T, C).permute(0, 4, 1, 2, 3)
+        return x + out
+
+
+def build_temporal_mixer(kind: str, channels: int, *, modes: int = 16,
+                         kernel: int = 31, heads: int = 4) -> torch.nn.Module:
+    """Construct a bottleneck temporal mixer. 'none' -> Identity (baseline)."""
+    kind = str(kind).lower()
+    if kind == "none":
+        return torch.nn.Identity()
+    if kind == "spectral":
+        return TemporalSpectralMixer(channels, modes)
+    if kind == "conv":
+        return TemporalConvMixer(channels, kernel)
+    if kind == "attn":
+        return TemporalAttnMixer(channels, heads)
+    raise ValueError(f"unknown temporal_mixer '{kind}'; expected none|spectral|conv|attn")
+
+
 def _group_norm(channels: int) -> torch.nn.GroupNorm:
     """GroupNorm with 8 groups when divisible, else 1 (LayerNorm-like). B=1-safe."""
     groups = 8 if channels % 8 == 0 else 1
@@ -111,18 +189,25 @@ class UNet3D(torch.nn.Module):
     """
 
     def __init__(self, in_channels: int = 4, out_channels: int = 1,
-                 base_channels: int = 64, depth: int = 3, grad_checkpoint: bool = False):
+                 base_channels: int = 64, depth: int = 3, grad_checkpoint: bool = False,
+                 temporal_mixer: str = "none", temporal_mixer_modes: int = 16,
+                 temporal_mixer_kernel: int = 31, temporal_mixer_heads: int = 4):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.base_channels = base_channels
         self.depth = depth
         self.grad_checkpoint = grad_checkpoint
+        self.temporal_mixer_kind = str(temporal_mixer).lower()
 
         ch = [base_channels * 2 ** i for i in range(depth + 1)]
         self.stem = DoubleConv(in_channels, ch[0], grad_checkpoint)
         self.downs = torch.nn.ModuleList(
             DownBlock(ch[i - 1], ch[i], grad_checkpoint) for i in range(1, depth + 1)
+        )
+        self.temporal_mixer = build_temporal_mixer(
+            temporal_mixer, ch[depth], modes=temporal_mixer_modes,
+            kernel=temporal_mixer_kernel, heads=temporal_mixer_heads,
         )
         self.ups = torch.nn.ModuleList(
             UpBlock(ch[i], ch[i - 1], ch[i - 1], grad_checkpoint) for i in range(depth, 0, -1)
@@ -136,6 +221,7 @@ class UNet3D(torch.nn.Module):
             h = down(h)
             if i < self.depth - 1:          # keep every level except the bottleneck
                 skips.append(h)
+        h = self.temporal_mixer(h)          # global coupling along t (Identity if 'none')
         for up in self.ups:
             h = up(h, skips.pop())
         return self.head(h)
