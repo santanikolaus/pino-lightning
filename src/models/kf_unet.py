@@ -39,7 +39,10 @@ class TemporalSpectralMixer(torch.nn.Module):
     def __init__(self, channels: int, modes: int = 16):
         super().__init__()
         self.modes = modes
-        self.weight = torch.nn.Parameter(torch.zeros(channels, modes, dtype=torch.cfloat))
+        # Real storage (C, modes, 2) -> view_as_complex in forward. A complex
+        # nn.Parameter breaks AMP: the GradScaler cannot unscale ComplexFloat grads
+        # ("_amp_foreach_non_finite_check_and_unscale_ not implemented for ComplexFloat").
+        self.weight = torch.nn.Parameter(torch.zeros(channels, modes, 2))
 
     def forward(self, x: Tensor) -> Tensor:
         T = x.shape[-1]
@@ -47,8 +50,8 @@ class TemporalSpectralMixer(torch.nn.Module):
         with torch.autocast(device_type=x.device.type, enabled=False):
             xf = torch.fft.rfft(x.float(), dim=-1)            # (B,C,H,W,T//2+1) complex
             out = torch.zeros_like(xf)
-            w = self.weight[:, :m].view(1, -1, 1, 1, m)        # (1,C,1,1,m)
-            out[..., :m] = xf[..., :m] * w
+            w = torch.view_as_complex(self.weight[:, :m].contiguous())  # (C, m) complex
+            out[..., :m] = xf[..., :m] * w.view(1, -1, 1, 1, m)
             mixed = torch.fft.irfft(out, n=T, dim=-1)          # (B,C,H,W,T) real fp32
         return x + mixed.to(x.dtype)
 

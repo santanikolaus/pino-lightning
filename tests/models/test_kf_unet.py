@@ -175,7 +175,7 @@ def test_spectral_mixer_modes_exceeding_nyquist_stay_finite():
     mix = build_temporal_mixer("spectral", channels=8, modes=64)  # T=16 -> 9 freqs
     with torch.no_grad():
         for p in mix.parameters():
-            p.add_(0.1 + 0.1j)
+            p.add_(0.1)
         out = mix(torch.randn(1, 8, 4, 4, 16))
     assert out.shape == (1, 8, 4, 4, 16) and torch.isfinite(out).all()
 
@@ -191,9 +191,17 @@ def test_spectral_mixer_finite_under_fp16_input():
     mix = build_temporal_mixer("spectral", channels=8, modes=4)
     with torch.no_grad():
         for p in mix.parameters():
-            p.add_(0.1 + 0.1j)            # leave identity so the FFT path is exercised
+            p.add_(0.1)                    # leave identity so the FFT path is exercised
         out = mix(torch.randn(1, 8, 4, 4, 16, dtype=torch.float16))
     assert out.dtype == torch.float16 and torch.isfinite(out).all()
+
+
+def test_spectral_mixer_weight_is_real_for_amp():
+    """The spectral weight must be a REAL parameter: AMP's GradScaler cannot unscale
+    ComplexFloat grads, so a complex nn.Parameter crashes at the first optimizer step.
+    """
+    mix = build_temporal_mixer("spectral", channels=8, modes=4)
+    assert all(not p.is_complex() for p in mix.parameters())
 
 
 @pytest.mark.parametrize("kind", _MIXERS + ["none"])
