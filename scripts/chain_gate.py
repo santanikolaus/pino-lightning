@@ -32,8 +32,11 @@ import torch
 
 from src.datasets.kf_dataset import KFDataset
 from src.models.kf_fno import kf_forward
+from src.pde.ns import cheb_lowpass
 from msc.tta import setup
 from msc.tta.eval import cheb_bins, band_power_t, K_REP
+
+SOURCES = ("oracle", "model", "hi_oracle", "lo_oracle")
 
 HELDOUT = (200, 300)        # locked eval window (matches matrix_lrN / e1_cell configs)
 DATA_RE = 500
@@ -52,12 +55,22 @@ def oneshot_traj(model, gt) -> torch.Tensor:
                       temporal_pad=setup.TEMPORAL_PAD).squeeze(1)
 
 
-def chained_traj(model, gt, stride: int, source: str) -> torch.Tensor:
+def _band_mix(low, high, kc: int):
+    """(1,S,S) field carrying k≤kc (Chebyshev L∞) from `low` and k>kc from `high`."""
+    low_lo = cheb_lowpass(low[..., None], kc)[..., 0]
+    high_lo = cheb_lowpass(high[..., None], kc)[..., 0]
+    return low_lo + (high - high_lo)
+
+
+def chained_traj(model, gt, stride: int, source: str, kc: int = K_REP) -> torch.Tensor:
     """Restart every `stride` frames; stitch each pass's short horizon.
 
-    source='oracle': restart IC = GT field at the restart frame (upper bound).
-    source='model' : restart IC = the PREVIOUS pass's predicted field at that
-                     absolute frame (true autoregressive chaining).
+    source='oracle'   : restart IC = GT field at the restart frame (upper bound).
+    source='model'    : restart IC = the PREVIOUS pass's predicted field at that
+                        absolute frame (true autoregressive chaining).
+    source='hi_oracle': restart IC = own k≤kc + GT k>kc — value of fixing HIGH-k
+                        (closure: does correct high-k drive future k≤7?).
+    source='lo_oracle': restart IC = GT k≤kc + own k>kc — value of fixing LOW-k.
     Frame 0 always starts from the true IC (= one-shot's IC), so early frames are
     mechanically identical to one-shot.
     """
@@ -67,10 +80,19 @@ def chained_traj(model, gt, stride: int, source: str) -> torch.Tensor:
     u_chain = torch.empty_like(gt)
     prev_v, prev_r = None, 0
     for r, nxt in zip(restarts, bounds):
+        gtr = gt[:, :, :, r]
         if r == 0 or source == "oracle":
-            ic_r = gt[:, :, :, r]
-        else:                                          # previous pass's field at absolute frame r
-            ic_r = prev_v[:, :, :, r - prev_r]
+            ic_r = gtr
+        else:
+            own = prev_v[:, :, :, r - prev_r]          # previous pass's field at absolute frame r
+            if source == "model":
+                ic_r = own
+            elif source == "hi_oracle":
+                ic_r = _band_mix(own, gtr, kc)         # own low-k, GT high-k
+            elif source == "lo_oracle":
+                ic_r = _band_mix(gtr, own, kc)         # GT low-k, own high-k
+            else:
+                raise ValueError(f"unknown source {source}")
         v = kf_forward(model, ic_r, T, time_scale=setup.TIME_SCALE,
                        temporal_pad=setup.TEMPORAL_PAD).squeeze(1)     # (1,S,S,T)
         u_chain[:, :, :, r:nxt] = v[:, :, :, 0:nxt - r]
@@ -99,12 +121,12 @@ def split_metrics(ep, gp, nE: int) -> dict:
     }
 
 
-def run_op(model, dataset, device, stride: int, source: str) -> dict:
+def run_op(model, dataset, device, stride: int, source: str, kc: int = K_REP) -> dict:
     S, T = dataset[0]["y"].shape[0], dataset[0]["y"].shape[-1]
     n_bands, kinf = S // 2 + 1, cheb_bins(S, device)
     nE = max(1, T // 8)
-    assert stride > nE, (f"stride={stride} <= nE={nE}: the early window spans a restart, "
-                         "so 'early == one-shot' no longer holds — pick stride > T//8")
+    if stride <= nE:                       # early window spans a restart -> early != one-shot (fine for a sweep)
+        print(f"  note: stride={stride} <= nE={nE}; chained 'early' no longer equals one-shot")
 
     EP = {"os": np.zeros((K_REP + 1, T)), "ch": np.zeros((K_REP + 1, T))}
     GP = np.zeros((K_REP + 1, T))                              # GT power: identical for both
@@ -114,7 +136,7 @@ def run_op(model, dataset, device, stride: int, source: str) -> dict:
         gt = dataset[i]["y"].unsqueeze(0).to(device)           # (1,S,S,T)
         with torch.no_grad():
             traj = {"os": oneshot_traj(model, gt),
-                    "ch": chained_traj(model, gt, stride, source)}
+                    "ch": chained_traj(model, gt, stride, source, kc)}
         ep_gt = band_power_t(gt, kinf, n_bands)[slice(0, K_REP + 1)]
         GP += ep_gt
         for k in ("os", "ch"):
@@ -144,7 +166,9 @@ def main():
     ap = argparse.ArgumentParser(description="Gate A — frozen-operator chaining")
     ap.add_argument("--ops", nargs="+", default=["op100", "op500"])
     ap.add_argument("--stride", type=int, default=16)
-    ap.add_argument("--source", choices=["oracle", "model"], default="oracle")
+    ap.add_argument("--source", choices=list(SOURCES), default="oracle")
+    ap.add_argument("--kc", type=int, default=K_REP,
+                    help="band split for hi_oracle/lo_oracle restarts (Chebyshev L∞)")
     ap.add_argument("--n", type=int, default=None, help="cap instances (smoke); default full split")
     args = ap.parse_args()
 
@@ -159,7 +183,7 @@ def main():
     summary = {}
     for op in args.ops:
         model = setup.load_model(CKPTS[op], device)
-        res = run_op(model, dataset, device, args.stride, args.source)
+        res = run_op(model, dataset, device, args.stride, args.source, args.kc)
         rep = paired_report(res["per"])
         po, pc = res["pooled"]["os"], res["pooled"]["ch"]
         print(f"== {op} ==")
@@ -173,10 +197,12 @@ def main():
                        "pooled_chained": {k: pc[k] for k in ("early", "late", "aggr")},
                        "paired_late": rep}
 
-    meta = {"source": args.source, "stride": args.stride, "heldout": list(HELDOUT),
-            "n": len(dataset), "results": summary}
-    (OUT / f"gate_a_{args.source}_s{args.stride}.json").write_text(json.dumps(meta, indent=2, default=float))
-    print(f"saved -> {OUT / f'gate_a_{args.source}_s{args.stride}.json'}")
+    kc_tag = f"_kc{args.kc}" if args.source in ("hi_oracle", "lo_oracle") else ""
+    meta = {"source": args.source, "stride": args.stride, "kc": args.kc,
+            "heldout": list(HELDOUT), "n": len(dataset), "results": summary}
+    out = OUT / f"gate_a_{args.source}_s{args.stride}{kc_tag}.json"
+    out.write_text(json.dumps(meta, indent=2, default=float))
+    print(f"saved -> {out}")
 
 
 def _plot(op, err_os, err_ch, args):
