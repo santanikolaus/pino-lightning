@@ -1,0 +1,11 @@
+model_checkpoint:
+  _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  monitor: null
+  save_top_k: -1
+  every_n_epochs: 25
+  save_on_train_epoch_end: true
+  filename: "ck-{epoch:03d}"
+
+kf_visualizer:
+  _target_: src.callbacks.kf_visualizer.KFVisualizerCallback
+  log_every_n_epochs: 50
