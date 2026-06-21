@@ -6,8 +6,8 @@ import yaml
 
 from src.models.kf_fno import build_fno_kf, kf_forward
 from src.models.kf_unet import (
-    DoubleConv, DownBlock, PeriodicConv3d, SpatialSpectralMixer, UNet3D, UpBlock,
-    build_temporal_mixer,
+    DoubleConv, DownBlock, PeriodicConv3d, SpatialSpectralDiagMixer,
+    SpatialSpectralMixer, UNet3D, UpBlock, build_temporal_mixer,
 )
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
@@ -113,7 +113,8 @@ def test_unet_backward_trainable():
 # Option A: bottleneck temporal mixers
 # ---------------------------------------------------------------------------
 
-_MIXERS = ["spectral", "conv", "attn", "spatial"]
+_MIXERS = ["spectral", "conv", "attn", "spatial", "spatial_diag"]
+_SPATIAL_KINDS = ["spatial", "spatial_diag"]
 
 
 @pytest.mark.parametrize("kind", _MIXERS)
@@ -221,10 +222,11 @@ def test_spectral_mixer_weight_is_real_for_amp():
 # Spatial FNO bottleneck mixer (channel-mixing spectral conv over x,y)
 # ---------------------------------------------------------------------------
 
-def test_spatial_mixer_mode_capping_stays_finite():
+@pytest.mark.parametrize("kind", _SPATIAL_KINDS)
+def test_spatial_mixer_mode_capping_stays_finite(kind):
     """modes far above the bottleneck Nyquist must cap on BOTH spatial axes
     (m1=min(modes,H//2), m2=min(modes,W//2+1)) and not index past the rfft output."""
-    mix = build_temporal_mixer("spatial", channels=8, modes=64)  # H=W=4 -> m1=2, m2=3
+    mix = build_temporal_mixer(kind, channels=8, modes=64)  # H=W=4 -> m1=2, m2=3
     with torch.no_grad():
         for p in mix.parameters():
             p.add_(0.1)
@@ -232,11 +234,12 @@ def test_spatial_mixer_mode_capping_stays_finite():
     assert out.shape == (1, 8, 4, 4, 16) and torch.isfinite(out).all()
 
 
-def test_spatial_mixer_finite_under_autocast():
-    """The AMP train path: under autocast the 1x1 convs run in low precision while
+@pytest.mark.parametrize("kind", _SPATIAL_KINDS)
+def test_spatial_mixer_finite_under_autocast(kind):
+    """The AMP train path: under autocast the pointwise ops run in low precision while
     the 2D FFT is forced fp32 (complex weights stay fp32). Output must stay finite —
     fp16/bf16 in the FFT would overflow the k-weighted spectrum to NaN."""
-    mix = build_temporal_mixer("spatial", channels=8, modes=4)
+    mix = build_temporal_mixer(kind, channels=8, modes=4)
     with torch.no_grad():
         for p in mix.parameters():
             p.add_(0.1)                    # break identity so the FFT path is exercised
@@ -245,10 +248,11 @@ def test_spatial_mixer_finite_under_autocast():
     assert torch.isfinite(out).all()
 
 
-def test_spatial_mixer_weights_are_real_for_amp():
+@pytest.mark.parametrize("kind", _SPATIAL_KINDS)
+def test_spatial_mixer_weights_are_real_for_amp(kind):
     """Spectral weights stored REAL (view_as_complex in forward): a complex
     nn.Parameter crashes AMP's GradScaler, same constraint as the temporal mixer."""
-    mix = build_temporal_mixer("spatial", channels=8, modes=4)
+    mix = build_temporal_mixer(kind, channels=8, modes=4)
     assert all(not p.is_complex() for p in mix.parameters())
 
 
@@ -265,12 +269,13 @@ def test_spatial_mixer_spectral_path_trains_despite_zero_init_up():
     assert mix.w_lo.grad.abs().sum() > 0 and mix.w_hi.grad.abs().sum() > 0
 
 
-def test_spatial_mixer_shift_equivariance_xy():
-    """Spectral conv + 1x1 convs commute with a periodic spatial shift, so rolling
-    the input along x or y must roll the output identically. Pins the FFT axes to
+@pytest.mark.parametrize("kind", _SPATIAL_KINDS)
+def test_spatial_mixer_shift_equivariance_xy(kind):
+    """Spectral + pointwise ops commute with a periodic spatial shift, so rolling the
+    input along x or y must roll the output identically. Pins the FFT axes to
     (x,y)=(2,3): a stray dim= would break this while passing shape/identity checks."""
     torch.manual_seed(0)
-    mix = build_temporal_mixer("spatial", channels=4, modes=3).eval()
+    mix = build_temporal_mixer(kind, channels=4, modes=3).eval()
     with torch.no_grad():
         for p in mix.parameters():
             p.add_(0.1)                    # break identity so the spectral path runs
@@ -279,6 +284,42 @@ def test_spatial_mixer_shift_equivariance_xy():
             rolled_out = torch.roll(mix(x), shifts=1, dims=axis)
             out_rolled = mix(torch.roll(x, shifts=1, dims=axis))
             torch.testing.assert_close(rolled_out, out_rolled, atol=1e-4, rtol=0.0)
+
+
+def test_spatial_diag_has_no_channel_mixing():
+    """spatial_diag must be channel-diagonal: one complex gain per (channel, mode),
+    no c_in x c_out tensor and no channel-bottleneck projection (that is what makes it
+    the cheap 'coupling only' control vs the full FNO block)."""
+    mix = build_temporal_mixer("spatial_diag", channels=8, modes=4)
+    assert isinstance(mix, SpatialSpectralDiagMixer)
+    assert mix.w_lo.shape == (8, 4, 4, 2)          # (channels, modes, modes, real/imag)
+    assert not hasattr(mix, "down") and not hasattr(mix, "up")
+
+
+def test_spatial_diag_trains_from_init():
+    """Unlike the full block (zero up-projection cuts the chain), the diagonal gain is
+    multiplied directly, so its zero-init weights still receive a nonzero gradient at
+    the first step — it learns immediately."""
+    torch.manual_seed(0)
+    mix = build_temporal_mixer("spatial_diag", channels=8, modes=4)
+    mix(torch.randn(2, 8, 8, 8, 9)).pow(2).mean().backward()
+    assert mix.w_lo.grad.abs().sum() > 0 and mix.w_hi.grad.abs().sum() > 0
+
+
+def test_spatial_diag_channel_isolation():
+    """Contract-level proof of channel-diagonality: a zero-energy channel must stay
+    EXACTLY zero (no leak from active channels). The full SpatialSpectralMixer would
+    fail this — its channel projections mix energy across channels."""
+    torch.manual_seed(0)
+    mix = build_temporal_mixer("spatial_diag", channels=8, modes=4)
+    with torch.no_grad():
+        for p in mix.parameters():
+            p.add_(0.1)                    # break identity so the spectral path runs
+        x = torch.zeros(1, 8, 8, 8, 5)
+        x[:, 0] = torch.randn(1, 8, 8, 5)  # only channel 0 carries energy
+        out = mix(x)
+    assert out[:, 1:].abs().max() == 0                  # empty channels stay exactly zero
+    assert not torch.allclose(out[:, 0], x[:, 0])       # active channel is transformed
 
 
 def test_unet_spatial_mixer_hidden_passthrough():
