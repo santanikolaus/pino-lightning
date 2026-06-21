@@ -244,7 +244,7 @@ class UNet3D(torch.nn.Module):
                  base_channels: int = 64, depth: int = 3, grad_checkpoint: bool = False,
                  temporal_mixer: str = "none", temporal_mixer_modes: int = 16,
                  temporal_mixer_kernel: int = 31, temporal_mixer_heads: int = 4,
-                 spatial_mixer_hidden: int = 64):
+                 spatial_mixer_hidden: int = 64, spatial_mixer_levels=()):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -267,12 +267,29 @@ class UNet3D(torch.nn.Module):
             UpBlock(ch[i], ch[i - 1], ch[i - 1], grad_checkpoint) for i in range(depth, 0, -1)
         )
         self.head = torch.nn.Conv3d(ch[0], out_channels, kernel_size=1)
+        # Optional EXTRA spatial spectral blocks at non-bottleneck encoder levels
+        # (the bottleneck uses temporal_mixer). Level i = output of downs[i], width
+        # ch[i+1]; valid i in 0..depth-2. Default () -> none, baseline unchanged.
+        # Built last so enabling it does not shift the RNG init of the other modules.
+        for i in spatial_mixer_levels:
+            if not 0 <= i < depth - 1:
+                raise ValueError(
+                    f"spatial_mixer_level {i} out of range; use 0..{depth - 2} "
+                    "(the bottleneck is the temporal_mixer slot)")
+        self.extra_mixers = torch.nn.ModuleDict({
+            str(i): SpatialSpectralMixer(ch[i + 1], modes=temporal_mixer_modes,
+                                         hidden=spatial_mixer_hidden)
+            for i in spatial_mixer_levels
+        })
 
     def forward(self, x: Tensor) -> Tensor:
         h = self.stem(x)
         skips = [h]
         for i, down in enumerate(self.downs):
             h = down(h)
+            key = str(i)
+            if key in self.extra_mixers:    # extra spatial coupling at this level
+                h = self.extra_mixers[key](h)
             if i < self.depth - 1:          # keep every level except the bottleneck
                 skips.append(h)
         h = self.temporal_mixer(h)          # global coupling along t (Identity if 'none')
