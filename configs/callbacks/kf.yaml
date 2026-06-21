@@ -3,8 +3,10 @@ model_checkpoint:
   monitor: val_l2
   mode: min
   save_top_k: 1
-  save_last: true
+  save_last: false
   filename: best
+  # default: best.ckpt only. To also keep the true final-epoch weights, set the
+  # top-level flag save_final_ckpt=true (writes final.ckpt post-fit; see src/train_kf.py).
 
 kf_visualizer:
   _target_: src.callbacks.kf_visualizer.KFVisualizerCallback

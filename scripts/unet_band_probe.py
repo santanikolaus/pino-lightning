@@ -20,9 +20,10 @@ TEST_OFFSET, TEST_N = 260, 40
 SUB_T = 2
 
 
-def unet_cfg(mixer):
+def unet_cfg(mixer, modes, hidden):
     return dict(model_arch="unet", data_channels=4, out_channels=1,
-                base_channels=64, depth=3, temporal_mixer=mixer)
+                base_channels=64, depth=3, temporal_mixer=mixer,
+                temporal_mixer_modes=modes, spatial_mixer_hidden=hidden)
 
 
 def load_model(cfg, ckpt, device):
@@ -38,6 +39,8 @@ def main():
     p.add_argument("--ckpt", required=True)
     p.add_argument("--data", required=True)
     p.add_argument("--mixer", default="none")
+    p.add_argument("--modes", type=int, default=8)
+    p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--device", default="cuda")
     args = p.parse_args()
     device = torch.device(args.device)
@@ -48,7 +51,7 @@ def main():
     T = ds_val[0]["y"].shape[-1]
     print(f"data={args.data}\n  val n={VAL_N} off={VAL_OFFSET} | test n={TEST_N} off={TEST_OFFSET} | S={S} T={T}", flush=True)
 
-    model = load_model(unet_cfg(args.mixer), args.ckpt, device)
+    model = load_model(unet_cfg(args.mixer, args.modes, args.hidden), args.ckpt, device)
     pr = tta_eval.probe(model, ds_val, device, nu=500)
     val_l2 = float(pr["val_l2"].mean())
     print(f"  LOAD GUARD val_l2 (val, LpLoss d3p2 rel) = {val_l2:.4f}", flush=True)
