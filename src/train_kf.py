@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
@@ -42,6 +44,12 @@ def main(cfg: DictConfig) -> None:
 
     trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=logger)
     trainer.fit(module, datamodule=datamodule)
+
+    if cfg.get("save_final_ckpt", False):
+        ckpt_dir = trainer.checkpoint_callback.dirpath or trainer.default_root_dir
+        final_path = str(Path(ckpt_dir) / "final.ckpt")
+        trainer.save_checkpoint(final_path)
+        print(f"[save-final] wrote {final_path}", flush=True)
 
 
 if __name__ == "__main__":
