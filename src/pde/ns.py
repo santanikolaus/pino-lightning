@@ -133,11 +133,67 @@ def time_weighted_rel(pred: Tensor, target: Tensor, w_t: Tensor, eps: float = 1e
     return torch.sqrt(num / (den + eps)).mean()
 
 
+def cheb_shell_index(S: int, device) -> Tensor:
+    """(S, S) integer L-infinity Chebyshev shell index max(|kx|,|ky|), matching the
+    eval-side cheb_bins convention (msc/tta/eval.py) so train and eval bands coincide."""
+    k = torch.fft.fftfreq(S, d=1.0 / S).to(device).round().long().abs()
+    return torch.maximum(k[:, None], k[None, :])
+
+
+def shell_weights(gt_k: Tensor, k_lo: int, k_hi: int, mode: str = "equalize",
+                  beta: float = 1.0, eps: float = 1e-12) -> Tensor:
+    """Per-shell loss weights (B, n_bands) from per-sample GT shell energy gt_k.
+
+    Shells in [k_lo,k_hi] are reweighted (normalized to mean 1 over the band so they
+    sit on the same scale as the weight-1 shells outside); all others stay 1.
+      equalize: w_k = (E_k+eps)^(-beta); beta=0 -> all ones (baseline), beta=1 ->
+                w_k*E_k constant => every shell contributes equally regardless of energy.
+      ramp:     w_k proportional to k -> linear up-tilt toward higher shells."""
+    w = torch.ones_like(gt_k)
+    band = slice(k_lo, k_hi + 1)
+    if mode == "equalize":
+        wb = (gt_k[:, band] + eps).pow(-beta)
+    elif mode == "ramp":
+        ks = torch.arange(k_lo, k_hi + 1, device=gt_k.device, dtype=gt_k.dtype)
+        wb = ks.expand(gt_k.shape[0], -1).clone()
+    else:
+        raise ValueError(f"unknown band mode {mode!r}")
+    w[:, band] = wb / wb.mean(dim=1, keepdim=True)
+    return w
+
+
+def band_weighted_rel(pred: Tensor, target: Tensor, k_lo: int, k_hi: int,
+                      mode: str = "equalize", beta: float = 1.0,
+                      eps: float = 1e-12) -> Tensor:
+    """Per-Chebyshev-shell weighted relative L2 over (B,S,S,T), per-sample mean-of-ratios.
+
+    Numerator AND denominator carry the same per-shell weight w_k (shell_weights), so the
+    loss is sqrt(sum_k w_k err_k / sum_k w_k gt_k) and scale is preserved. With
+    equalize/beta=0 every w_k=1 and this equals LpLoss(d=3,p=2,reduction='mean').rel
+    exactly. E_k is the per-sample GT shell energy aggregated over time."""
+    B, S = pred.shape[0], pred.shape[1]
+    nb = S // 2 + 1
+    kinf = cheb_shell_index(S, pred.device).reshape(-1)               # (S*S,)
+    eh = torch.fft.fft2(pred - target, dim=(1, 2))
+    gh = torch.fft.fft2(target, dim=(1, 2))
+    pe = (eh.real ** 2 + eh.imag ** 2).sum(dim=3).reshape(B, -1)      # (B, S*S)
+    pg = (gh.real ** 2 + gh.imag ** 2).sum(dim=3).reshape(B, -1)
+    err_k = torch.zeros(B, nb, device=pred.device, dtype=pe.dtype).index_add_(1, kinf, pe)
+    gt_k = torch.zeros(B, nb, device=pred.device, dtype=pg.dtype).index_add_(1, kinf, pg)
+
+    w = shell_weights(gt_k, k_lo, k_hi, mode, beta, eps)
+    num = (w * err_k).sum(dim=1)
+    den = (w * gt_k).sum(dim=1)
+    return torch.sqrt(num / (den + eps)).mean()
+
+
 class KFLoss:
     def __init__(self, re: float, t_interval: float = 1.0,
                  data_weight: float = 1.0, pde_weight: float = 0.0,
                  ic_weight: float = 0.0, pde_band_kmax: int | None = None,
-                 time_weight_p: float = 2.0, time_weight_alpha: float = 0.0):
+                 time_weight_p: float = 2.0, time_weight_alpha: float = 0.0,
+                 band_mode: str | None = None, band_beta: float = 1.0,
+                 band_k_lo: int = 2, band_k_hi: int = 7):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
         self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
@@ -152,6 +208,16 @@ class KFLoss:
         # k<=pde_band_kmax (Chebyshev) band of the residual, matching the eval band.
         # Must keep the forcing band (k=4): below it `forcing` is zeroed and
         # lp.rel(Du, 0) blows up to a garbage ~1/eps loss with no NaN to flag it.
+        # band_mode None -> data term unchanged (baseline). 'equalize'/'ramp' -> per-
+        # Chebyshev-shell reweight of the data loss over [band_k_lo, band_k_hi]. Composing
+        # band + time-weight is future work; guard against silently dropping one lever.
+        assert band_mode in (None, "equalize", "ramp"), f"bad band_mode {band_mode!r}"
+        if band_mode is not None and time_weight_alpha != 0.0:
+            raise NotImplementedError("band_mode + time_weight_alpha not yet composable")
+        self.band_mode = band_mode
+        self.band_beta = band_beta
+        self.band_k_lo = band_k_lo
+        self.band_k_hi = band_k_hi
         assert pde_band_kmax is None or pde_band_kmax >= 4, \
             f"pde_band_kmax={pde_band_kmax} drops the k=4 forcing -> degenerate residual loss"
         self.pde_band_kmax = pde_band_kmax
@@ -165,7 +231,10 @@ class KFLoss:
         w = pred.squeeze(1)        # (B, S, S, T)
         y = target                 # (B, S, S, T) — supervise all frames incl. IC at t=0
 
-        if self.time_weight_alpha == 0.0:
+        if self.band_mode is not None:
+            data = band_weighted_rel(w, y, self.band_k_lo, self.band_k_hi,
+                                     self.band_mode, self.band_beta)
+        elif self.time_weight_alpha == 0.0:
             data = self.lp.rel(w, y)
         else:
             w_t = frame_weights(w.shape[-1], self.time_weight_p,

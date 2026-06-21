@@ -1,0 +1,54 @@
+# @package _global_
+# Band-weighting mechanism test — op100 @128², FNO n_modes=[8,8,8], hidden=128.
+# Identical to kf_pino_re100_pretrain (same data/opt/model) EXCEPT the data term is
+# per-Chebyshev-shell reweighted over [band_k_lo, band_k_hi]; band_mode=null -> uniform
+# baseline. Lever acts on the data term only; pde/ic unchanged. Question: does equalizing
+# cross-shell energy lower late k<=7 vs the L2-biased uniform baseline?
+#
+# 3-arm dose-response (baseline-energy -> equal). Launch each as its own run:
+#   ramp:  python -m src.train_kf -m experiment=kf_re100_bandweight loss.band_mode=ramp     trainer.devices='[1]'
+#   half:  python -m src.train_kf -m experiment=kf_re100_bandweight loss.band_mode=equalize loss.band_beta=0.5 trainer.devices='[1]'
+#   full:  python -m src.train_kf -m experiment=kf_re100_bandweight loss.band_mode=equalize loss.band_beta=1.0 trainer.devices='[1]'
+# This file's defaults below are the full-equalize arm, so a bare run == full.
+# Precondition: every shell in [band_k_lo, band_k_hi] must carry GT energy (holds for k=2-7);
+# (E_k+eps)^-beta is unbounded on an empty shell. Do not widen the band into k>7.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: bandweight-kol
+    name: re100-band-${loss.band_mode}-b${loss.band_beta}
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+  band_mode: equalize
+  band_beta: 1.0
+  band_k_lo: 2
+  band_k_hi: 7
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0
+  hidden_channels: 128
