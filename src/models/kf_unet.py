@@ -140,10 +140,44 @@ class SpatialSpectralMixer(torch.nn.Module):
         return x + self.up(mixed.to(x.dtype))
 
 
+class SpatialSpectralDiagMixer(torch.nn.Module):
+    """Channel-DIAGONAL spectral conv over (x,y): global spatial coupling per channel,
+    NO cross-channel mixing (cf. SpatialSpectralMixer). One complex gain per channel
+    per kept mode (no c_in x c_out, no channel-bottleneck projections). Two-corner
+    low-pass k<=modes. Tests whether global low-k coupling ALONE — without the FNO
+    channel mixing — suffices. Residual, zero-init weights -> identity at start (and
+    the gain is multiplied directly, so weights get a real gradient from the start).
+    FFT forced fp32 under AMP; weights stored real (view_as_complex) so the GradScaler
+    can unscale grads. (B,C,H,W,T) -> (B,C,H,W,T).
+    """
+
+    def __init__(self, channels: int, modes: int = 8):
+        super().__init__()
+        self.modes = modes
+        self.w_lo = torch.nn.Parameter(torch.zeros(channels, modes, modes, 2))
+        self.w_hi = torch.nn.Parameter(torch.zeros(channels, modes, modes, 2))
+
+    def forward(self, x: Tensor) -> Tensor:
+        C, H, W = x.shape[1], x.shape[2], x.shape[3]
+        m1 = min(self.modes, H // 2)
+        m2 = min(self.modes, W // 2 + 1)
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            xf = torch.fft.rfft2(x.float(), dim=(2, 3))
+            out = torch.zeros_like(xf)
+            if m1 > 0:
+                lo = torch.view_as_complex(self.w_lo[:, :m1, :m2].contiguous())
+                hi = torch.view_as_complex(self.w_hi[:, :m1, :m2].contiguous())
+                out[:, :, :m1, :m2] = xf[:, :, :m1, :m2] * lo.view(1, C, m1, m2, 1)
+                out[:, :, -m1:, :m2] = xf[:, :, -m1:, :m2] * hi.view(1, C, m1, m2, 1)
+            mixed = torch.fft.irfft2(out, s=(H, W), dim=(2, 3))
+        return x + mixed.to(x.dtype)
+
+
 def build_temporal_mixer(kind: str, channels: int, *, modes: int = 16,
                          kernel: int = 31, heads: int = 4, hidden: int = 64) -> torch.nn.Module:
     """Construct a bottleneck mixer. 'none' -> Identity (baseline). 'spatial' is the
-    channel-mixing FNO spectral block over x,y; the rest act on the t axis."""
+    channel-mixing FNO spectral block over x,y; 'spatial_diag' is the same global
+    spatial coupling WITHOUT channel mixing; the rest act on the t axis."""
     kind = str(kind).lower()
     if kind == "none":
         return torch.nn.Identity()
@@ -155,8 +189,11 @@ def build_temporal_mixer(kind: str, channels: int, *, modes: int = 16,
         return TemporalAttnMixer(channels, heads)
     if kind == "spatial":
         return SpatialSpectralMixer(channels, modes=modes, hidden=hidden)
+    if kind == "spatial_diag":
+        return SpatialSpectralDiagMixer(channels, modes=modes)
     raise ValueError(
-        f"unknown temporal_mixer '{kind}'; expected none|spectral|conv|attn|spatial")
+        f"unknown temporal_mixer '{kind}'; "
+        "expected none|spectral|conv|attn|spatial|spatial_diag")
 
 
 def _group_norm(channels: int) -> torch.nn.GroupNorm:
