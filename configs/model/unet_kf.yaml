@@ -16,3 +16,6 @@ temporal_mixer_modes: 16   # spectral: lowest temporal Fourier modes kept (≤ T
 temporal_mixer_kernel: 31  # conv: depthwise temporal kernel size (odd)
 temporal_mixer_heads: 4    # attn: number of attention heads
 spatial_mixer_hidden: 64   # spatial: 1x1 channel-bottleneck width for the FNO block
+spatial_mixer_levels: []   # extra spatial FNO blocks at non-bottleneck encoder levels
+                           # (down-block indices 0..depth-2); [] = none (default). e.g.
+                           # [1] adds a second block at the S/4 level (depth=3).

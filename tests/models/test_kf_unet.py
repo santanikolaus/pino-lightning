@@ -291,6 +291,64 @@ def test_unet_spatial_mixer_hidden_passthrough():
     assert model.temporal_mixer.down.out_channels == min(16, 8 * 2 ** 2)
 
 
+# ---------------------------------------------------------------------------
+# Extra spatial spectral blocks at non-bottleneck encoder levels
+# ---------------------------------------------------------------------------
+
+def test_unet_extra_spectral_off_by_default():
+    """Default (spatial_mixer_levels=()) adds no extra blocks: existing runs are
+    provably unchanged by the new flag."""
+    model = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=3)
+    assert len(model.extra_mixers) == 0
+
+
+@pytest.mark.parametrize("levels", [[1], [0, 1]], ids=["lvl1", "lvl01"])
+def test_unet_extra_spectral_level_identity_at_init_matches_baseline(levels):
+    """Enabling extra level(s) must not perturb the baseline at init: each block is a
+    zero-init residual AND built last (no RNG shift), so same seed -> bit-identical
+    output. Covers single and multi-level."""
+    torch.manual_seed(0)
+    a = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=3)
+    torch.manual_seed(0)
+    b = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=3,
+               spatial_mixer_levels=levels)
+    x = torch.randn(1, 4, 16, 16, 7)
+    with torch.no_grad():
+        torch.testing.assert_close(a(x), b(x), atol=0.0, rtol=0.0)
+
+
+def test_unet_extra_spectral_levels_match_level_widths():
+    """With BOTH levels enabled, each block is sized to its own encoder level width
+    (ch[i+1]) and keyed by str(i) — pins per-level channel sizing, no key collision."""
+    model = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=3,
+                   spatial_mixer_levels=[0, 1])
+    assert set(model.extra_mixers) == {"0", "1"}
+    assert model.extra_mixers["0"].down.in_channels == 8 * 2 ** 1   # ch[1] = 16
+    assert model.extra_mixers["1"].down.in_channels == 8 * 2 ** 2   # ch[2] = 32
+
+
+@pytest.mark.parametrize("levels", [[1], [0, 1]], ids=["lvl1", "lvl01"])
+def test_unet_extra_spectral_level_forward_and_backward(levels):
+    """With extra level(s) the I/O contract holds and every parameter stays trainable
+    (finite grads). The [0,1] case exercises the multi-level forward routing."""
+    model = UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=3,
+                   spatial_mixer_levels=levels)
+    out = model(torch.randn(1, 4, 16, 16, 7))
+    assert out.shape == (1, 1, 16, 16, 7) and torch.isfinite(out).all()
+    out.pow(2).mean().backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all()
+               for p in model.parameters())
+
+
+@pytest.mark.parametrize("bad", [[2], [3], [-1]], ids=["bottleneck", "oob", "negative"])
+def test_unet_extra_spectral_level_rejects_invalid(bad):
+    """Reject the bottleneck index (depth-1, owned by temporal_mixer) and any
+    out-of-range level at construction, not after GPU allocation."""
+    with pytest.raises(ValueError, match="spatial_mixer_level"):
+        UNet3D(in_channels=4, out_channels=1, base_channels=8, depth=3,
+               spatial_mixer_levels=bad)
+
+
 @pytest.mark.parametrize("kind", _MIXERS + ["none"])
 def test_unet_with_temporal_mixer_forward_and_backward(kind):
     """UNet3D with each mixer keeps the I/O contract and stays trainable."""
