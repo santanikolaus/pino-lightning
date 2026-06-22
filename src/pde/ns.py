@@ -40,6 +40,35 @@ def spectral_alignment_loss(pred: Tensor, target_spec: Tensor, kinf: Tensor,
     return mismatch / (target_spec.sum() + eps)
 
 
+def band_energy_loss(pred: Tensor, target: Tensor, k_lo: int = 2, k_hi: int = 7,
+                     eps: float = 1e-8) -> Tensor:
+    """ABSOLUTE per-shell energy match over Chebyshev shells [k_lo,k_hi], per frame.
+
+    E(k,t) = Σ_shell |F|^2 (shell power per frame). Loss = Σ_{k,t}(E_pred−E_gt)^2 /
+    Σ_{k,t} E_gt^2 — scale-invariant and ENERGY-weighted: the energetic mid shells
+    (k2–4) dominate, so the term does NOT over-weight the collapsed, position-
+    decorrelated high-k (the failure mode of a relative `E_pred/E_gt` spectrum loss,
+    which would dump energy into the wrong places). Counters the measured energy
+    collapse (R_k<1) without forcing per-pixel commitment. FFT in fp32. Per-frame
+    deficits self-weight late frames (largest collapse). pred,target (B,S,S,T).
+    """
+    pred, target = pred.float(), target.float()
+    S = pred.shape[1]
+    k = torch.fft.fftfreq(S, d=1.0 / S).abs().to(pred.device)
+    kinf = torch.maximum(k[:, None], k[None, :]).round()           # (S,S) L∞ wavenumber
+    Pp = torch.fft.fft2(pred, dim=(1, 2)).abs() ** 2               # (B,S,S,T)
+    Pg = torch.fft.fft2(target, dim=(1, 2)).abs() ** 2
+    num = pred.new_zeros(())
+    den = pred.new_zeros(())
+    for ki in range(k_lo, k_hi + 1):
+        sel = kinf == ki
+        Ep = Pp[:, sel].sum(1)                                     # (B,T) shell energy/frame
+        Eg = Pg[:, sel].sum(1)
+        num = num + ((Ep - Eg) ** 2).sum()
+        den = den + (Eg ** 2).sum()
+    return num / (den + eps)
+
+
 class NSVorticity:
     """NS vorticity equation: ∂ω/∂t + u·∇ω − ν∇²ω = f(x,y).
     residual() returns the LHS; for a true solution LHS == f."""
@@ -193,7 +222,8 @@ class KFLoss:
                  ic_weight: float = 0.0, pde_band_kmax: int | None = None,
                  time_weight_p: float = 2.0, time_weight_alpha: float = 0.0,
                  band_mode: str | None = None, band_beta: float = 1.0,
-                 band_k_lo: int = 2, band_k_hi: int = 7):
+                 band_k_lo: int = 2, band_k_hi: int = 7,
+                 energy_weight: float = 0.0, energy_k_lo: int = 2, energy_k_hi: int = 7):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
         self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
@@ -221,6 +251,12 @@ class KFLoss:
         assert pde_band_kmax is None or pde_band_kmax >= 4, \
             f"pde_band_kmax={pde_band_kmax} drops the k=4 forcing -> degenerate residual loss"
         self.pde_band_kmax = pde_band_kmax
+        # Spectral-energy term (added, not part of the data term): absolute per-shell
+        # energy match over [energy_k_lo, energy_k_hi]; energy_weight==0 -> off (baseline
+        # byte-identical). Counters the measured late energy collapse (R_k<1).
+        self.energy_weight = energy_weight
+        self.energy_k_lo = energy_k_lo
+        self.energy_k_hi = energy_k_hi
 
     def __call__(self, pred: Tensor, target: Tensor) -> dict[str, Tensor]:
         """
@@ -251,5 +287,9 @@ class KFLoss:
         u0 = target[:, :, :, 0]   # true IC, shape (B, S, S)
         ic = self.lp.rel(u_in, u0)
 
-        loss = self.data_weight * data + self.pde_weight * pde + self.ic_weight * ic
-        return {"loss": loss, "data": data, "pde": pde, "ic": ic}
+        energy = (band_energy_loss(w, y, self.energy_k_lo, self.energy_k_hi)
+                  if self.energy_weight > 0.0 else w.new_zeros(()))
+
+        loss = (self.data_weight * data + self.pde_weight * pde + self.ic_weight * ic
+                + self.energy_weight * energy)
+        return {"loss": loss, "data": data, "pde": pde, "ic": ic, "energy": energy}

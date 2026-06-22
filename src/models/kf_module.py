@@ -34,12 +34,17 @@ class KFLitModule(L.LightningModule):
         band_beta = _get(loss_cfg, "band_beta", 1.0)
         band_k_lo = _get(loss_cfg, "band_k_lo", 2)
         band_k_hi = _get(loss_cfg, "band_k_hi", 7)
+        energy_weight = _get(loss_cfg, "energy_weight", 0.0)
+        energy_k_lo = _get(loss_cfg, "energy_k_lo", 2)
+        energy_k_hi = _get(loss_cfg, "energy_k_hi", 7)
         self.loss_fn = KFLoss(re=re, t_interval=t_interval,
                               data_weight=data_weight, pde_weight=pde_weight,
                               ic_weight=ic_weight, time_weight_p=time_weight_p,
                               time_weight_alpha=time_weight_alpha,
                               band_mode=band_mode, band_beta=band_beta,
-                              band_k_lo=band_k_lo, band_k_hi=band_k_hi)
+                              band_k_lo=band_k_lo, band_k_hi=band_k_hi,
+                              energy_weight=energy_weight,
+                              energy_k_lo=energy_k_lo, energy_k_hi=energy_k_hi)
 
         opt_cfg = _get(config, "opt")
         self._lr = _get(opt_cfg, "learning_rate", 1e-3)

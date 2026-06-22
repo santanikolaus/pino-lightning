@@ -190,6 +190,61 @@ def amp_phase_decomp(model: torch.nn.Module, dataset, device) -> dict:
     }
 
 
+def energy_phase_band(uhat: torch.Tensor, gt: torch.Tensor, kinf: torch.Tensor,
+                      n_bands: int):
+    """Collapse-INDEPENDENT magnitude/position measures, shell × frame.
+
+    uhat, gt: (B,S,S,T). Returns (e_u, e_gt, e_cos), each (n_bands, T) float64:
+      e_u   = Σ |Fu|^2            predicted power
+      e_gt  = Σ |Fg|^2            GT power
+      e_cos = Σ |Fg|^2 · cosΔφ    GT-energy-weighted phase cosine (cosΔφ from unit
+                                  vectors, independent of |Fu| magnitude)
+    Downstream: R_k = e_u/e_gt (energy ratio; 1 = preserved, <1 = collapse — uses NO
+    phase) and A_k = e_cos/e_gt (phase alignment; 1 = positions perfect, 0 =
+    decorrelated — independent of the amplitude collapse). Disentangles "wrong how
+    much" (R_k) from "wrong where" (A_k) without the |Fu|-weighting confound of the
+    squared-error split.
+    """
+    Fg = torch.fft.fft2(gt, dim=(1, 2))
+    Fu = torch.fft.fft2(uhat, dim=(1, 2))
+    ag, au = Fg.abs(), Fu.abs()
+    cos = (Fu * Fg.conj()).real / (au * ag + 1e-12)               # per-mode cosΔφ
+    eu = (au ** 2).sum(0)
+    eg = (ag ** 2).sum(0)
+    ec = ((ag ** 2) * cos).sum(0)
+    out = [np.zeros((n_bands, eu.shape[-1])) for _ in range(3)]
+    for ki in range(n_bands):
+        sel = kinf == ki
+        out[0][ki] = eu[sel].sum(0).cpu().numpy()
+        out[1][ki] = eg[sel].sum(0).cpu().numpy()
+        out[2][ki] = ec[sel].sum(0).cpu().numpy()
+    return out[0], out[1], out[2]
+
+
+def phase_align_decomp(model: torch.nn.Module, dataset, device) -> dict:
+    """Forward `model` over `dataset`; accumulate per-shell × frame predicted power,
+    GT power, and GT-energy-weighted phase cosine (energy_phase_band). Returns the
+    (n_bands, T) arrays + nE for arbitrary R_k/A_k aggregation. Forward identical to
+    band_eval (setup TIME_SCALE/PAD, ["x"] IC); float64 accumulation."""
+    S = dataset[0]["y"].shape[0]
+    T_eff = dataset[0]["y"].shape[-1]
+    n_bands = S // 2 + 1
+    kinf = cheb_bins(S, device)
+    e_u = np.zeros((n_bands, T_eff))
+    e_gt = np.zeros((n_bands, T_eff))
+    e_cos = np.zeros((n_bands, T_eff))
+    for i in range(len(dataset)):
+        ic = dataset[i]["x"].unsqueeze(0).to(device)
+        gt = dataset[i]["y"].unsqueeze(0).to(device)
+        with torch.no_grad():
+            uhat = kf_forward(model, ic, gt.shape[-1], time_scale=setup.TIME_SCALE,
+                              temporal_pad=setup.TEMPORAL_PAD).squeeze(1)
+        u, g, c = energy_phase_band(uhat, gt, kinf, n_bands)
+        e_u += u; e_gt += g; e_cos += c
+    return {"e_u_pt": e_u, "e_gt_pt": e_gt, "e_cos_pt": e_cos,
+            "nE": max(1, T_eff // 8), "T": T_eff}
+
+
 @torch.no_grad()
 def probe(model: torch.nn.Module, dataset, device, nu: int) -> dict:
     """Per-sample adapt telemetry — one forward / sample, write-only (GT downstream
