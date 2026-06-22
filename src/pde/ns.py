@@ -69,6 +69,41 @@ def band_energy_loss(pred: Tensor, target: Tensor, k_lo: int = 2, k_hi: int = 7,
     return num / (den + eps)
 
 
+def band_phase_loss(pred: Tensor, target: Tensor, k_lo: int = 2, k_hi: int = 4,
+                    eps: float = 1e-8) -> Tensor:
+    """GT-energy-weighted PHASE misalignment over Chebyshev shells [k_lo,k_hi].
+
+    Per mode cosΔφ = Re(Fu·Fg*)/(|Fu||Fg|); loss = Σ|Fg|²(1−cosΔφ) / Σ|Fg|² = 1 − A_band,
+    the per-shell phase-alignment deficit `amp_phase_probe --align` measures. Default
+    band k2–4: the MID scales where phase is wrong-but-recoverable (A≈0.72–0.85) and
+    energy-bearing. Deliberately EXCLUDES k1 (already aligned, A≈0.99 — no headroom,
+    would dominate the GT-energy weighting while contributing ~0) and k6–7 (phase near-
+    random A≈0.13–0.40 + collapsed energy, where the cosΔφ gradient ∝1/|Fu| is noisy).
+    Position-sensitive, magnitude-blind (complement of band_energy_loss). FFT fp32.
+    pred,target (B,S,S,T).
+    """
+    pred, target = pred.float(), target.float()
+    S = pred.shape[1]
+    k = torch.fft.fftfreq(S, d=1.0 / S).abs().to(pred.device)
+    kinf = torch.maximum(k[:, None], k[None, :]).round()
+    Fu = torch.fft.fft2(pred, dim=(1, 2))
+    Fg = torch.fft.fft2(target, dim=(1, 2))
+    # eps^2 floor INSIDE the magnitude sqrt (cosine_similarity convention): keeps the
+    # cosΔφ gradient finite at |Fu|→0 (a bare `|Fu|*|Fg|+eps` denominator leaves a 0/0
+    # in d|Fu|/dFu). Negligible on healthy k2-4 modes (|F|≫eps).
+    fu_mag = (Fu.real ** 2 + Fu.imag ** 2 + eps ** 2).sqrt()
+    fg_mag = (Fg.real ** 2 + Fg.imag ** 2 + eps ** 2).sqrt()
+    cos = (Fu * Fg.conj()).real / (fu_mag * fg_mag)               # (B,S,S,T) per-mode cosΔφ
+    eg = Fg.real ** 2 + Fg.imag ** 2
+    num = pred.new_zeros(())
+    den = pred.new_zeros(())
+    for ki in range(k_lo, k_hi + 1):
+        sel = kinf == ki
+        num = num + (eg[:, sel] * (1.0 - cos[:, sel])).sum()
+        den = den + eg[:, sel].sum()
+    return num / (den + eps)
+
+
 class NSVorticity:
     """NS vorticity equation: ∂ω/∂t + u·∇ω − ν∇²ω = f(x,y).
     residual() returns the LHS; for a true solution LHS == f."""
@@ -223,7 +258,8 @@ class KFLoss:
                  time_weight_p: float = 2.0, time_weight_alpha: float = 0.0,
                  band_mode: str | None = None, band_beta: float = 1.0,
                  band_k_lo: int = 2, band_k_hi: int = 7,
-                 energy_weight: float = 0.0, energy_k_lo: int = 2, energy_k_hi: int = 7):
+                 energy_weight: float = 0.0, energy_k_lo: int = 2, energy_k_hi: int = 7,
+                 angle_weight: float = 0.0, angle_k_lo: int = 2, angle_k_hi: int = 4):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
         self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
@@ -257,6 +293,12 @@ class KFLoss:
         self.energy_weight = energy_weight
         self.energy_k_lo = energy_k_lo
         self.energy_k_hi = energy_k_hi
+        # Phase term (added): GT-energy-weighted (1-cosΔφ) over [angle_k_lo, angle_k_hi];
+        # angle_weight==0 -> off (baseline byte-identical). Targets the recoverable mid-
+        # band phase (k2-4 default), the complement of the energy term.
+        self.angle_weight = angle_weight
+        self.angle_k_lo = angle_k_lo
+        self.angle_k_hi = angle_k_hi
 
     def __call__(self, pred: Tensor, target: Tensor) -> dict[str, Tensor]:
         """
@@ -289,7 +331,10 @@ class KFLoss:
 
         energy = (band_energy_loss(w, y, self.energy_k_lo, self.energy_k_hi)
                   if self.energy_weight > 0.0 else w.new_zeros(()))
+        angle = (band_phase_loss(w, y, self.angle_k_lo, self.angle_k_hi)
+                 if self.angle_weight > 0.0 else w.new_zeros(()))
 
         loss = (self.data_weight * data + self.pde_weight * pde + self.ic_weight * ic
-                + self.energy_weight * energy)
-        return {"loss": loss, "data": data, "pde": pde, "ic": ic, "energy": energy}
+                + self.energy_weight * energy + self.angle_weight * angle)
+        return {"loss": loss, "data": data, "pde": pde, "ic": ic,
+                "energy": energy, "angle": angle}

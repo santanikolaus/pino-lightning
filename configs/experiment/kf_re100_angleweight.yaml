@@ -1,0 +1,47 @@
+# @package _global_
+# Phase (angle) conservation mechanism test — op100 @128², FNO n_modes=[8,8,8], h128.
+# Identical to kf_re100_energyweight (same data/opt/model) EXCEPT the ADDED term is the
+# GT-energy-weighted phase misalignment Σ|Fg|²(1-cosΔφ)/Σ|Fg|² = 1-A_band over k=[2,4]
+# (ns.band_phase_loss). angle_weight=0 -> uniform baseline (byte-identical). Band k2-4 is
+# the recoverable mid scales (A≈0.72-0.85, energy-bearing); k1 already aligned, k6-7 near-
+# random (excluded). Position-sensitive complement of the energy term. Headline read is
+# pointwise late k≤7 vs the 0.543 baseline; A_k rising (--align) is the manipulation check.
+#
+# 4-arm weight sweep (launch each as its own run):
+#   python -m src.train_kf -m experiment=kf_re100_angleweight loss.angle_weight=1,5,10,20 trainer.devices='[0]'
+# Band-sweep arm (optional): loss.angle_k_hi=5  (include the borderline k5 shell).
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: angleweight-kol
+    name: re100-angle-w${loss.angle_weight}-k${loss.angle_k_lo}_${loss.angle_k_hi}
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+  angle_weight: 5.0
+  angle_k_lo: 2
+  angle_k_hi: 4
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
