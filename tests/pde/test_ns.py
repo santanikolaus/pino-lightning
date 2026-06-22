@@ -136,7 +136,7 @@ class TestKFLossInterface:
         loss_fn = KFLoss(re=40)
         pred, target = self._make_pred_target()
         out = loss_fn(pred, target)
-        assert set(out.keys()) == {"loss", "data", "pde", "ic"}
+        assert set(out.keys()) == {"loss", "data", "pde", "ic", "energy", "angle"}
 
     def test_all_values_are_scalars(self):
         loss_fn = KFLoss(re=40)
@@ -671,6 +671,29 @@ class TestKFLossICLoss:
         out = loss_fn(pred, target)
         expected = dw * out["data"] + pw * out["pde"] + iw * out["ic"]
         torch.testing.assert_close(out["loss"], expected, atol=1e-5, rtol=1e-5)
+
+    def test_angle_term_matches_band_phase_loss_and_arithmetic(self):
+        """With angle_weight>0: out['angle'] == band_phase_loss(w,y,band) and the total
+        adds exactly angle_weight*angle (the term is wired, not dropped)."""
+        from src.pde.ns import band_phase_loss
+        torch.manual_seed(13)
+        pred, target = self._make()
+        loss_fn = KFLoss(re=40, data_weight=5.0, pde_weight=1.0, ic_weight=1.0,
+                         angle_weight=5.0, angle_k_lo=2, angle_k_hi=4)
+        out = loss_fn(pred, target)
+        ref = band_phase_loss(pred.squeeze(1), target, 2, 4)
+        torch.testing.assert_close(out["angle"], ref, atol=1e-6, rtol=1e-5)
+        expected = 5.0 * out["data"] + out["pde"] + out["ic"] + 5.0 * out["angle"]
+        torch.testing.assert_close(out["loss"], expected, atol=1e-5, rtol=1e-5)
+
+    def test_angle_band_passthrough(self):
+        """angle_k_hi must reach band_phase_loss: a wider band changes out['angle']."""
+        torch.manual_seed(13)
+        pred, target = self._make()
+        kw = dict(re=40, data_weight=5.0, pde_weight=1.0, ic_weight=1.0, angle_weight=5.0)
+        a4 = KFLoss(angle_k_lo=2, angle_k_hi=4, **kw)(pred, target)["angle"]
+        a6 = KFLoss(angle_k_lo=2, angle_k_hi=6, **kw)(pred, target)["angle"]
+        assert abs(float(a4) - float(a6)) > 1e-4
 
     def test_gradients_flow_through_ic_only_path(self):
         """data_weight=0, pde_weight=0, ic_weight=1 → gradients still flow through IC branch."""

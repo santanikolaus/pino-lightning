@@ -37,6 +37,9 @@ class KFLitModule(L.LightningModule):
         energy_weight = _get(loss_cfg, "energy_weight", 0.0)
         energy_k_lo = _get(loss_cfg, "energy_k_lo", 2)
         energy_k_hi = _get(loss_cfg, "energy_k_hi", 7)
+        angle_weight = _get(loss_cfg, "angle_weight", 0.0)
+        angle_k_lo = _get(loss_cfg, "angle_k_lo", 2)
+        angle_k_hi = _get(loss_cfg, "angle_k_hi", 4)
         self.loss_fn = KFLoss(re=re, t_interval=t_interval,
                               data_weight=data_weight, pde_weight=pde_weight,
                               ic_weight=ic_weight, time_weight_p=time_weight_p,
@@ -44,7 +47,9 @@ class KFLitModule(L.LightningModule):
                               band_mode=band_mode, band_beta=band_beta,
                               band_k_lo=band_k_lo, band_k_hi=band_k_hi,
                               energy_weight=energy_weight,
-                              energy_k_lo=energy_k_lo, energy_k_hi=energy_k_hi)
+                              energy_k_lo=energy_k_lo, energy_k_hi=energy_k_hi,
+                              angle_weight=angle_weight,
+                              angle_k_lo=angle_k_lo, angle_k_hi=angle_k_hi)
 
         opt_cfg = _get(config, "opt")
         self._lr = _get(opt_cfg, "learning_rate", 1e-3)
@@ -74,6 +79,8 @@ class KFLitModule(L.LightningModule):
         self.log("train_data_loss", losses["data"], on_step=True, on_epoch=True)
         self.log("train_pde_loss", losses["pde"], on_step=True, on_epoch=True)
         self.log("train_ic_loss", losses["ic"], on_step=True, on_epoch=True)
+        self.log("train_energy_loss", losses["energy"], on_step=True, on_epoch=True)
+        self.log("train_angle_loss", losses["angle"], on_step=True, on_epoch=True)
         return losses["loss"]
 
     def validation_step(self, batch, batch_idx):
