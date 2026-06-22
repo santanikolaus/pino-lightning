@@ -120,6 +120,76 @@ def band_eval(model: torch.nn.Module, dataset, device,
     }
 
 
+def amp_phase_band(uhat: torch.Tensor, gt: torch.Tensor, kinf: torch.Tensor,
+                   n_bands: int):
+    """Exact amplitude/phase partition of the per-mode error, Chebyshev-shell × frame.
+
+    uhat, gt: (B,S,S,T) real. For each spatial Fourier mode F = a·e^{iφ}:
+        |Fp - Fg|^2 = (ap - ag)^2 + 2·ap·ag·(1 - cos Δφ)   [amplitude + phase]
+    (1-cosΔφ is phase-wrap-safe.) Returns (e_amp, e_phase, e_gt), each (n_bands, T)
+    float64, batch-summed. By construction e_amp+e_phase == band_power_t(uhat-gt) and
+    e_gt == band_power_t(gt) — an exact split of the SAME error band_eval measures.
+    """
+    Fg = torch.fft.fft2(gt, dim=(1, 2))
+    Fp = torch.fft.fft2(uhat, dim=(1, 2))
+    ag, ap = Fg.abs(), Fp.abs()
+    dphi = torch.angle(Fp) - torch.angle(Fg)
+    ea = ((ap - ag) ** 2).sum(0)                                  # (S,S,T)
+    ep = (2.0 * ag * ap * (1.0 - torch.cos(dphi))).sum(0)
+    eg = (ag ** 2).sum(0)
+    out = [np.zeros((n_bands, ea.shape[-1])) for _ in range(3)]
+    for ki in range(n_bands):
+        sel = kinf == ki
+        out[0][ki] = ea[sel].sum(0).cpu().numpy()
+        out[1][ki] = ep[sel].sum(0).cpu().numpy()
+        out[2][ki] = eg[sel].sum(0).cpu().numpy()
+    return out[0], out[1], out[2]
+
+
+def amp_phase_decomp(model: torch.nn.Module, dataset, device) -> dict:
+    """Forward `model` over `dataset`; split the k-band×time error into amplitude vs
+    phase via amp_phase_band. Returns the joint (n_bands, T) energies for arbitrary
+    band/time aggregation, plus k<=7 early/late/aggr phase fractions and the relL2
+    contributions. relL2_tot_k7 == band_eval err_k7 (load guard). Forward identical to
+    band_eval (setup TIME_SCALE/TEMPORAL_PAD, ["x"] IC); accumulation in float64.
+    """
+    S = dataset[0]["y"].shape[0]
+    T_eff = dataset[0]["y"].shape[-1]
+    n_bands = S // 2 + 1
+    kinf = cheb_bins(S, device)
+
+    e_amp = np.zeros((n_bands, T_eff))
+    e_phase = np.zeros((n_bands, T_eff))
+    e_gt = np.zeros((n_bands, T_eff))
+    for i in range(len(dataset)):
+        ic = dataset[i]["x"].unsqueeze(0).to(device)
+        gt = dataset[i]["y"].unsqueeze(0).to(device)
+        with torch.no_grad():
+            uhat = kf_forward(model, ic, gt.shape[-1], time_scale=setup.TIME_SCALE,
+                              temporal_pad=setup.TEMPORAL_PAD).squeeze(1)
+        a, p, g = amp_phase_band(uhat, gt, kinf, n_bands)
+        e_amp += a; e_phase += p; e_gt += g
+
+    lo = slice(0, K_REP + 1)
+    nE = max(1, T_eff // 8)
+    eps = 1e-30
+
+    def pfrac(t_sl):
+        a, p = e_amp[lo][:, t_sl].sum(), e_phase[lo][:, t_sl].sum()
+        return float(p / (a + p + eps))
+
+    return {
+        "e_amp_pt": e_amp, "e_phase_pt": e_phase, "e_gt_pt": e_gt,   # (n_bands, T)
+        "phase_frac_k7_early": pfrac(slice(1, 1 + nE)),
+        "phase_frac_k7_late": pfrac(slice(T_eff - nE, T_eff)),
+        "phase_frac_k7_aggr": pfrac(slice(0, T_eff)),
+        "relL2_amp_k7": float(np.sqrt(e_amp[lo].sum() / (e_gt[lo].sum() + eps))),
+        "relL2_phase_k7": float(np.sqrt(e_phase[lo].sum() / (e_gt[lo].sum() + eps))),
+        "relL2_tot_k7": float(np.sqrt((e_amp[lo] + e_phase[lo]).sum() / (e_gt[lo].sum() + eps))),
+        "nE": nE,
+    }
+
+
 @torch.no_grad()
 def probe(model: torch.nn.Module, dataset, device, nu: int) -> dict:
     """Per-sample adapt telemetry — one forward / sample, write-only (GT downstream
