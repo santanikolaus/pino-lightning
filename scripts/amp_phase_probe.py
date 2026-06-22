@@ -45,6 +45,8 @@ def main():
     p.add_argument("--sub-t", type=int, default=2)
     p.add_argument("--per-band", action="store_true")
     p.add_argument("--window", type=int, default=0, help="time-window width for band x window matrix")
+    p.add_argument("--align", action="store_true",
+                   help="per-shell collapse-independent R_k (energy ratio) and A_k (phase alignment)")
     p.add_argument("--device", default="cuda")
     args = p.parse_args()
 
@@ -77,6 +79,21 @@ def main():
             cells = [f"{ep[k, slice(e, min(e + W, T))].sum() / (ea[k, slice(e, min(e + W, T))].sum() + ep[k, slice(e, min(e + W, T))].sum() + eps):.2f}"
                      for e in edges]
             print(f"  k={k}:   " + "   ".join(cells))
+
+    if args.align:
+        a = tta_eval.phase_align_decomp(model, ds, device)
+        eu, eg, ec = a["e_u_pt"], a["e_gt_pt"], a["e_cos_pt"]
+        nE, Ta = a["nE"], a["T"]
+        e_sl, l_sl = slice(1, 1 + nE), slice(Ta - nE, Ta)
+        print("per-shell  R_k=energy ratio (1=preserved)  |  A_k=phase align (1=perfect):")
+        print("  k:   R_early  R_late  |  A_early  A_late")
+        for k in range(K_REP + 1):
+            Re_, Rl = eu[k, e_sl].sum() / (eg[k, e_sl].sum() + eps), eu[k, l_sl].sum() / (eg[k, l_sl].sum() + eps)
+            Ae, Al = ec[k, e_sl].sum() / (eg[k, e_sl].sum() + eps), ec[k, l_sl].sum() / (eg[k, l_sl].sum() + eps)
+            print(f"  k={k}:  {Re_:6.3f}  {Rl:6.3f}  |  {Ae:7.3f}  {Al:7.3f}")
+        lo = slice(0, K_REP + 1)
+        print(f"  [k<=7 late]  R={eu[lo, l_sl].sum() / (eg[lo, l_sl].sum() + eps):.3f}  "
+              f"A={ec[lo, l_sl].sum() / (eg[lo, l_sl].sum() + eps):.3f}")
 
 
 if __name__ == "__main__":

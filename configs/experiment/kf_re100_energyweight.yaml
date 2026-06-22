@@ -1,0 +1,49 @@
+# @package _global_
+# Energy-conservation mechanism test — op100 @128², FNO n_modes=[8,8,8], hidden=128.
+# Identical to kf_re100_bandweight (same data/opt/model) EXCEPT an ADDED spectral-energy
+# term: absolute per-shell energy match |E_pred(k)-E_gt(k)|^2 over k=[2,7], normalized by
+# GT band energy (ns.band_energy_loss). energy_weight=0 -> uniform baseline (byte-identical).
+# Counters the measured late energy collapse (R_k<1, worst high-k) WITHOUT forcing per-pixel
+# position (per-shell, position-agnostic). The headline read is pointwise late k<=7 vs the
+# 0.543 baseline; R_k rising is only the manipulation check.
+#
+# 3-arm weight sweep (launch each as its own run):
+#   python -m src.train_kf -m experiment=kf_re100_energyweight loss.energy_weight=1   trainer.devices='[0]'
+#   python -m src.train_kf -m experiment=kf_re100_energyweight loss.energy_weight=5   trainer.devices='[1]'
+#   python -m src.train_kf -m experiment=kf_re100_energyweight loss.energy_weight=20  trainer.devices='[2]'
+# Precondition: every shell in [energy_k_lo, energy_k_hi] carries GT energy (holds k=2-7).
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: energyweight-kol
+    name: re100-energy-w${loss.energy_weight}
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+  energy_weight: 5.0
+  energy_k_lo: 2
+  energy_k_hi: 7
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
