@@ -146,6 +146,8 @@ def _cli():
     p.add_argument("--offset", type=int, default=260, help="held-out split start")
     p.add_argument("--traj", type=int, default=0, help="trajectory index within the split")
     p.add_argument("--sub-t", type=int, default=2)
+    p.add_argument("--time-scale", type=float, default=1.0, help="kf_forward time_scale (match training)")
+    p.add_argument("--temporal-pad", type=int, default=5, help="kf_forward temporal_pad (match training; setup uses 5)")
     p.add_argument("--kmax", type=int, default=7)
     p.add_argument("--stride", type=int, default=1)
     p.add_argument("--fps", type=int, default=10)
@@ -178,7 +180,8 @@ def _cli():
     gt = _to_numpy(ds[args.traj]["y"])               # (S, S, T)
     ic = torch.as_tensor(gt[..., 0], dtype=torch.float32, device=device)[None]
     with torch.no_grad():
-        pred = kf_forward(model, ic, gt.shape[-1])[0, 0]  # (S, S, T)
+        pred = kf_forward(model, ic, gt.shape[-1],
+                          time_scale=args.time_scale, temporal_pad=args.temporal_pad)[0, 0]  # (S, S, T)
 
     tag = args.tag or f"{args.arch}_{args.mixer}_traj{args.traj}"
     paths = FieldDiagAnimator(gt, pred, kmax=args.kmax).render_all(
