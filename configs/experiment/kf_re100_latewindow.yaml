@@ -1,0 +1,55 @@
+# @package _global_
+# Version B: direct IC → 5-frame window, data-only, Re100 128².
+# Model predicts only the target window (T=5); no intermediate frames produced.
+# temporal_pad=0: rfft(5)=3 bins = complete temporal basis for 5 frames (no info loss).
+# Mirror padding ruled out: corrupts monotonic gridt positional encoding.
+#
+# Windows (frame indices in 65-frame sub_t=2 trajectory, t/T relative to 64-frame span):
+#   W1=[6,11)   t/T≈0.09-0.16   baseline e(t)≈0.17-0.20
+#   W2=[14,19)  t/T≈0.22-0.30   baseline e(t)≈0.23-0.29
+#   W3=[30,35)  t/T≈0.47-0.55   baseline e(t)≈0.40-0.45
+#   W4=[46,51)  t/T≈0.72-0.80   baseline e(t)≈0.52-0.55
+#   W5=[60,65)  t/T≈0.94-1.00   compare against banked late k≤7=0.543
+#
+# Launch (one per GPU):
+#   python -m src.train_kf experiment=kf_re100_latewindow data.data_t_lo=6  data.data_t_hi=11 trainer.devices=[0]
+#   python -m src.train_kf experiment=kf_re100_latewindow data.data_t_lo=14 data.data_t_hi=19 trainer.devices=[1]
+#   python -m src.train_kf experiment=kf_re100_latewindow data.data_t_lo=30 data.data_t_hi=35 trainer.devices=[2]
+#   python -m src.train_kf experiment=kf_re100_latewindow data.data_t_lo=46 data.data_t_hi=51 trainer.devices=[3]
+#   python -m src.train_kf experiment=kf_re100_latewindow data.data_t_lo=60 data.data_t_hi=65 trainer.devices=[4]
+#
+# val_l2: full-field relL2 over the 5-frame window — comparable scale to baseline e(t) at same frames.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: late-window-kol
+    name: re100-latewin-t${data.data_t_lo}_${data.data_t_hi}
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+  data_t_lo: 60
+  data_t_hi: 65
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 1.0
+  pde_weight: 0.0
+  ic_weight: 0.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
