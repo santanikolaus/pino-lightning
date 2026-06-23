@@ -569,3 +569,88 @@ class TestKFLitModuleUNet:
             "Some UNet parameter received no gradient through the KFLoss path — "
             "the data/pde/ic loss may not be differentiable end-to-end on the UNet output."
         )
+
+
+# ---------------------------------------------------------------------------
+# TestDataWindowWiring — data_t_lo / data_t_hi window slicing
+# ---------------------------------------------------------------------------
+
+class TestDataWindowWiring:
+    """Verify data_t_lo/data_t_hi window slicing threads through training and val steps."""
+
+    def test_defaults_none_when_keys_absent(self):
+        cfg = _make_cfg()
+        module = KFLitModule(cfg)
+        assert module.data_t_lo is None
+        assert module.data_t_hi is None
+
+    def test_both_stored_from_config(self):
+        cfg = _make_cfg()
+        cfg["data"] = _Bunch(T=20, time_scale=1.0, data_t_lo=3, data_t_hi=8)
+        module = KFLitModule(cfg)
+        assert module.data_t_lo == 3
+        assert module.data_t_hi == 8
+
+    def test_training_step_T_equals_window_width(self):
+        """With window active, model must receive T = hi - lo (not full trajectory T)."""
+        cfg = _make_cfg()
+        cfg["data"] = _Bunch(T=20, time_scale=1.0, data_t_lo=3, data_t_hi=8)
+        module = KFLitModule(cfg)
+
+        seen_T = []
+
+        class _CapturingStub(torch.nn.Module):
+            def forward(self, x):
+                seen_T.append(x.shape[-1])
+                return x[:, :1, ...]
+
+        module.model = _CapturingStub()
+        batch = _make_batch(B=2, S=8, T=20)
+        module.training_step(batch, 0)
+        assert seen_T[0] == 5, (
+            f"Expected T=5 (hi-lo=8-3), model received T={seen_T[0]}. "
+            "Window slice may not be applied before the forward call."
+        )
+
+    def test_validation_step_T_equals_window_width(self):
+        """val step must also narrow T to hi - lo."""
+        cfg = _make_cfg()
+        cfg["data"] = _Bunch(T=20, time_scale=1.0, data_t_lo=3, data_t_hi=8)
+        module = KFLitModule(cfg)
+
+        seen_T = []
+
+        class _CapturingStub(torch.nn.Module):
+            def forward(self, x):
+                seen_T.append(x.shape[-1])
+                return x[:, :1, ...]
+
+        module.model = _CapturingStub()
+        batch = _make_batch(B=2, S=8, T=20)
+        with torch.no_grad():
+            module.validation_step(batch, 0)
+        assert seen_T[0] == 5, (
+            f"Expected T=5 (hi-lo=8-3), model received T={seen_T[0]}. "
+            "Window slice missing in validation_step."
+        )
+
+    def test_asymmetric_guard_only_lo_does_not_slice(self):
+        """Only data_t_lo set (data_t_hi absent) → guard fires False → no slice."""
+        cfg = _make_cfg()
+        cfg["data"] = _Bunch(T=10, time_scale=1.0, data_t_lo=3)
+        module = KFLitModule(cfg)
+
+        seen_T = []
+
+        class _CapturingStub(torch.nn.Module):
+            def forward(self, x):
+                seen_T.append(x.shape[-1])
+                return x[:, :1, ...]
+
+        module.model = _CapturingStub()
+        batch = _make_batch(B=2, S=8, T=10)
+        module.training_step(batch, 0)
+        assert seen_T[0] == 11, (
+            f"Expected T=11 (full batch, no slice), got T={seen_T[0]}. "
+            "Asymmetric guard (only lo set) should not slice."
+        )
