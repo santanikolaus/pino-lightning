@@ -1,0 +1,54 @@
+# @package _global_
+# UNet arm @ 16² (strided downsample) — A/B partner of kf_pino_re100_res16_strided.
+# Identical data / loss / optimizer to the FNO arm; ONLY the model is swapped.
+#
+# Model = the UNet variant that reached FNO/PINO parity: SpatialSpectralMixer at the
+# bottleneck (temporal_mixer=spatial), a channel-mixing spectral conv over (x,y),
+# modes=8, hidden=64, zero-init residual. The temporal mixers (spectral/conv/attn)
+# did NOT close the in-band k≤7 gap; the spatial spectral bottleneck did.
+#
+# Resolution note: depth=1 → bottleneck 8² (depth=3 would give 2² at 16², degenerate).
+# "strided" here = the DATASET downsample method, NOT the mixer (mixer is always spatial-spectral).
+# Data: NS_fine_Re100_T128_res16_strided_part0.npy (300,129,16,16) f32, ::16 subsample of 256² GT (aliased).
+
+defaults:
+  - override /model: unet_kf
+  - override /callbacks: kf
+
+grad_checkpoint: false   # 16² is tiny; no activation recompute needed
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: 1_unet-re100-res16-strided
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res16_strided_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2          # raw 129 frames → 65 effective frames (matches FNO arm)
+  num_workers: 0
+
+model:
+  base_channels: 64
+  depth: 1                     # 16² → bottleneck 8²; S divisible by 2**depth
+  temporal_mixer: spatial      # SpatialSpectralMixer (x,y spectral conv) — the parity arch
+  temporal_mixer_modes: 8      # lowest spatial modes kept per axis (≤ Nyquist 8)
+  spatial_mixer_hidden: 64     # 1×1 channel-bottleneck width for the FNO block
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5

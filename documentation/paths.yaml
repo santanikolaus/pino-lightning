@@ -63,6 +63,13 @@ data:
   # native 256² generation via scripts/generate_pilot.py --re 100 --x_res 256, stacked by scripts/stack_parts.py
   # per-chain parts deleted after stacking (byte-identical, redundant)
 
+  # 16² downsamples of the 256² GT via scripts/materialize_res256.py (256→16), each (300, 129, 16, 16) f32, ~38 MB
+  # spectral = FFT-crop low-pass (anti-aliased, physical); strided = ::16 subsample (aliases high-k, no filter)
+  ns_re100_res16_spectral: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res16_part0.npy
+  ns_re100_res16_strided:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res16_strided_part0.npy
+  ns_re500_res16_spectral: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res16_part0.npy
+  ns_re500_res16_strided:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res16_strided_part0.npy
+
 outputs:
   hydra_outputs: /system/user/studentwork/wehofer/pino-lightning/outputs
   # Hydra multirun / single-run output logs, organised by date (YYYY-MM-DD/)
