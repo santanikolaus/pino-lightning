@@ -1,0 +1,44 @@
+# @package _global_
+# op100 @ 16² (strided downsample) — extreme under-resolution arm, aliased GT.
+# IDENTICAL operator to kf_pino_re100_pretrain.yaml (the vanilla op100 baseline,
+# ckpt pvqq97sq); ONLY data.data_path changes 128² → 16² strided GT.
+# Same params / n_modes / loss / optimizer ⇒ same function-space mapping, lower res.
+# strided = ::16 subsample of 256² GT: high-k folds into the 16² band (no anti-alias),
+# the physically-honest coarse-sim stress test vs the spectral (clean restriction) arm.
+# Data: NS_fine_Re100_T128_res16_strided_part0.npy (300,129,16,16) f32.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: 1_pino-re100-res16-strided
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res16_strided_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2          # raw 129 frames → 65 effective frames (matches paper sub_t=2)
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0  # paper xy_loss=5.0
+  pde_weight: 1.0   # paper f_loss=1.0
+  ic_weight: 1.0    # paper ic_loss=1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0   # single linear lift (paper fc0); matches op100 baseline
+  hidden_channels: 128       # matches op100 baseline architecture
