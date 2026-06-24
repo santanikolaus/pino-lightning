@@ -19,37 +19,45 @@ import numpy as np
 import torch
 import yaml
 
-from scripts.res512_gate import spectral_resample
+from scripts.res512_gate import spectral_resample, spatial_resample_strided
+
+_METHODS = {
+    "spectral": spectral_resample,
+    "strided":  spatial_resample_strided,
+}
 
 _ROOT = Path(__file__).parent.parent
 DATA_ROOT = Path(yaml.safe_load((_ROOT / "documentation" / "paths.yaml").read_text())["data"]["ns"])
 RE = 500
 
 
-def resample_part(arr: np.ndarray, s_out: int, device) -> np.ndarray:
-    """(T+1,S,S) float32 -> (T+1,s_out,s_out) float32 spectral downsample."""
+def resample_part(arr: np.ndarray, s_out: int, device, method: str = "spectral") -> np.ndarray:
+    """(T+1,S,S) float32 -> (T+1,s_out,s_out) float32 downsample via method."""
+    fn = _METHODS[method]
     f = torch.from_numpy(np.ascontiguousarray(arr.transpose(1, 2, 0)))[None].to(device)
-    ds = spectral_resample(f, s_out)[0]                       # (s_out,s_out,T+1)
+    ds = fn(f, s_out)[0]                                      # (s_out,s_out,T+1)
     return ds.permute(2, 0, 1).contiguous().cpu().numpy().astype(np.float32)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Materialize 256^2 Re500 GT from 512^2 parts")
+    ap = argparse.ArgumentParser(description="Materialize downsampled Re500 GT from 512^2 parts")
     ap.add_argument("--s-out", type=int, default=256)
     ap.add_argument("--n", type=int, default=300)
+    ap.add_argument("--method", choices=list(_METHODS), default="spectral")
     ap.add_argument("--parts-dir", default=str(DATA_ROOT / "re500_res512"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--device", default=None)
     args = ap.parse_args()
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     parts = Path(args.parts_dir)
-    out = Path(args.out or DATA_ROOT / f"NS_fine_Re{RE}_T128_res{args.s_out}_part0.npy")
+    suffix = "" if args.method == "spectral" else f"_{args.method}"
+    out = Path(args.out or DATA_ROOT / f"NS_fine_Re{RE}_T128_res{args.s_out}{suffix}_part0.npy")
 
     sample = np.load(parts / f"NS_fine_Re{RE}_T128_res512_part0.npy", mmap_mode="r")
     Tp1 = sample.shape[0]
     mm = np.lib.format.open_memmap(
         out, mode="w+", dtype=np.float32, shape=(args.n, Tp1, args.s_out, args.s_out))
-    print(f"out {out}\nshape {(args.n, Tp1, args.s_out, args.s_out)} device {device}")
+    print(f"method {args.method} | out {out}\nshape {(args.n, Tp1, args.s_out, args.s_out)} device {device}")
 
     written = 0
     for j in range(args.n):
@@ -57,7 +65,7 @@ def main():
         if not p.exists():
             print(f"  skip missing part{j}")
             continue
-        mm[j] = resample_part(np.load(p), args.s_out, device)
+        mm[j] = resample_part(np.load(p), args.s_out, device, args.method)
         written += 1
         if written % 50 == 0:
             print(f"  {written}/{args.n}")
