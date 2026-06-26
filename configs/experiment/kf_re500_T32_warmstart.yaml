@@ -1,0 +1,46 @@
+# @package _global_
+# T/2 horizon specialist — trains on first 32 frames only (T=65 → T/2=32).
+# Warmstart from Re500 pretrain (38o0kj3y) for fast convergence.
+# Purpose: gate whether shorter training horizon alone improves k≤7 midpoint quality.
+# Measure: k≤7 rel-L2 at final frame (frame 31) vs full-T operator's frame 32.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: chain-wall-pilot
+    name: re500_T32_warmstart
+
+trainer:
+  max_epochs: 100
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+  data_t_lo: 0
+  data_t_hi: 32
+
+loss:
+  re: 500
+  t_interval: 0.484375  # dt=1/64 × (32-1); preserves physical dt across truncated horizon
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0
+  hidden_channels: 128
+
+warm_start_ckpt: /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/38o0kj3y/checkpoints/best.ckpt
