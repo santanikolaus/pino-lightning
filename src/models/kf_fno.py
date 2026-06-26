@@ -133,7 +133,70 @@ def build_fno_kf(config) -> torch.nn.Module:
         return _build_uno(model_cfg)
     if arch == 'unet':
         return _build_unet(model_cfg)
+    if arch == 'fno2d':
+        return _build_fno2d(model_cfg)
     return get_model(wrapped)
+
+
+def prepare_input_2d(ic: Tensor) -> Tensor:
+    """Prepare FNO2d input from initial condition vorticity (time-as-channel path).
+
+    Args:
+        ic: initial condition vorticity, shape (B, S, S)
+
+    Returns:
+        Tensor of shape (B, 3, S, S) with channels [ic, gridx, gridy].
+        gridt omitted — constant across samples and pixels; time is encoded by output channel index.
+    """
+    B, S, _ = ic.shape
+    gridx = torch.tensor(np.linspace(0, 1, S + 1)[:-1], dtype=torch.float, device=ic.device)
+    gridx = gridx.reshape(1, 1, S, 1).expand(B, 1, S, S)
+    gridy = torch.tensor(np.linspace(0, 1, S + 1)[:-1], dtype=torch.float, device=ic.device)
+    gridy = gridy.reshape(1, 1, 1, S).expand(B, 1, S, S)
+    ic_ch = ic.unsqueeze(1)                          # (B, 1, S, S)
+    return torch.cat([ic_ch, gridx, gridy], dim=1)   # (B, 3, S, S)
+
+
+def _build_fno2d(model_cfg) -> torch.nn.Module:
+    """Construct a 2D FNO (time-as-channel) from a flat KF model config (model_arch=fno2d).
+
+    out_channels must equal data.T // data.sub_t for the experiment — baked in at construction.
+    """
+    from neuralop.models import FNO
+    cfg = {
+        k: OmegaConf.to_container(v, resolve=True) if OmegaConf.is_config(v) else v
+        for k, v in dict(model_cfg).items()
+    }
+    cfg.pop("model_arch", None)
+    cfg["in_channels"] = cfg.pop("data_channels")
+    if len(cfg.get("n_modes", [])) != 2:
+        raise ValueError("fno2d requires n_modes with exactly 2 elements (x, y)")
+    if cfg.get("positional_embedding", "grid") is not None:
+        raise ValueError(
+            "KF FNO2d requires positional_embedding=None: prepare_input_2d already injects "
+            "[ic, gridx, gridy] as 3 input channels."
+        )
+    return FNO(**cfg)
+
+
+def kf_forward_2d(model: torch.nn.Module, ic: Tensor, T: int) -> Tensor:
+    """Run the FNO2d time-as-channel pipeline: IC → prepare_input_2d → FNO2d → output.
+
+    Args:
+        model: FNO2d from _build_fno2d, expects (B, 3, S, S) input
+        ic: initial condition vorticity, shape (B, S, S)
+        T: expected number of output time steps — must match model.out_channels
+
+    Returns:
+        Tensor shape (B, 1, S, S, T) — same layout as kf_forward for downstream compat
+    """
+    x = prepare_input_2d(ic)                                   # (B, 3, S, S)
+    out = model(x)                                              # (B, T_model, S, S)
+    assert out.shape[1] == T, (
+        f"kf_forward_2d: model out_channels={out.shape[1]} != requested T={T}. "
+        "Set model.out_channels = data.T // data.sub_t in your config."
+    )
+    return out.unsqueeze(1).permute(0, 1, 3, 4, 2)            # (B, 1, S, S, T)
 
 
 def kf_forward(

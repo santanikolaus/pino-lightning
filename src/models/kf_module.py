@@ -4,7 +4,7 @@ import torch
 from typing import Any, Mapping
 from neuralop import LpLoss
 
-from src.models.kf_fno import build_fno_kf, kf_forward
+from src.models.kf_fno import build_fno_kf, kf_forward, kf_forward_2d
 from src.pde.ns import KFLoss
 
 
@@ -48,6 +48,9 @@ class KFLitModule(L.LightningModule):
         self._step_size = _get(opt_cfg, "step_size", 100)
         self._gamma = _get(opt_cfg, "gamma", 0.5)
 
+        model_cfg = _get(config, "model")
+        self._use_fno2d = str(_get(model_cfg, "model_arch", "fno")).lower() == "fno2d"
+
         data_cfg = _get(config, "data")
         self.T = _get(data_cfg, "T", 128)
         self.time_scale = _get(data_cfg, "time_scale", 1.0)
@@ -57,6 +60,8 @@ class KFLitModule(L.LightningModule):
         self.data_t_hi = _get(data_cfg, "data_t_hi", None)
 
     def forward(self, ic, T=None, time_scale=None):
+        if self._use_fno2d:
+            return kf_forward_2d(self.model, ic, T or self.T)
         return kf_forward(
             self.model, ic, T or self.T, time_scale or self.time_scale,
             temporal_pad=self.temporal_pad, pad_mode=self.pad_mode,

@@ -4,7 +4,7 @@ import pytest  # type: ignore[import]
 import torch
 import yaml
 
-from src.models.kf_fno import get_grid3d, prepare_input, build_fno_kf, kf_forward
+from src.models.kf_fno import get_grid3d, prepare_input, build_fno_kf, kf_forward, prepare_input_2d, kf_forward_2d
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
 _KF_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "fno_kf.yaml"
@@ -690,3 +690,195 @@ def test_kf_forward_invalid_pad_mode_raises():
     ic = torch.zeros(B, S, S)
     with pytest.raises(ValueError, match="pad_mode"):
         kf_forward(model, ic, T, temporal_pad=2, pad_mode="circular")
+
+
+# ---------------------------------------------------------------------------
+# Block 3g: FNO2d time-as-channel tests
+# ---------------------------------------------------------------------------
+
+def _build_fno2d_direct(out_channels: int, S_modes: int = 2) -> torch.nn.Module:
+    """Build a minimal FNO2d directly from neuralop (bypasses build_fno_kf)."""
+    from neuralop.models import FNO
+    model = FNO(
+        n_modes=(S_modes, S_modes),
+        hidden_channels=8,
+        in_channels=3,
+        out_channels=out_channels,
+        positional_embedding=None,
+    )
+    model.eval()
+    return model
+
+
+def test_fno2d_prepare_input_channel_identity():
+    """prepare_input_2d channel layout: ic is channel 0, gridx varies down rows
+    (constant across cols), gridy varies across cols (constant down rows).
+    Catches any x/y transposition.
+    """
+    ic = torch.arange(9).reshape(1, 3, 3).float()
+    out = prepare_input_2d(ic)
+
+    assert out.shape == (1, 3, 3, 3), f"Expected (1,3,3,3), got {tuple(out.shape)}"
+    assert out.shape[1] == 3, "gridt must be absent — only 3 channels expected"
+
+    assert torch.allclose(out[0, 0], ic[0], atol=1e-6), "channel 0 must equal ic"
+
+    gridx = out[0, 1]
+    assert torch.allclose(gridx[0, 0], gridx[0, 1], atol=1e-6), \
+        "gridx row 0: values must be constant across cols"
+    assert torch.allclose(gridx[1, 0], gridx[1, 1], atol=1e-6), \
+        "gridx row 1: values must be constant across cols"
+    assert not torch.allclose(gridx[0, 0], gridx[1, 0], atol=1e-6), \
+        "gridx must vary across rows"
+
+    gridy = out[0, 2]
+    assert torch.allclose(gridy[0, 0], gridy[1, 0], atol=1e-6), \
+        "gridy col 0: values must be constant across rows"
+    assert torch.allclose(gridy[0, 1], gridy[1, 1], atol=1e-6), \
+        "gridy col 1: values must be constant across rows"
+    assert not torch.allclose(gridy[0, 0], gridy[0, 1], atol=1e-6), \
+        "gridy must vary across cols"
+
+
+@pytest.mark.parametrize("B,S", [
+    pytest.param(1, 4, id="B1_S4"),
+    pytest.param(2, 8, id="B2_S8"),
+])
+def test_fno2d_prepare_input_output_shape(B, S):
+    """prepare_input_2d must return (B, 3, S, S) for any valid B and S."""
+    ic = torch.randn(B, S, S)
+    out = prepare_input_2d(ic)
+    assert out.shape == (B, 3, S, S), f"Expected ({B},3,{S},{S}), got {tuple(out.shape)}"
+
+
+@pytest.mark.parametrize("B,S,T_out", [
+    pytest.param(1, 4, 8, id="B1_S4_T8"),
+    pytest.param(2, 4, 6, id="B2_S4_T6"),
+])
+def test_fno2d_kf_forward_2d_output_shape(B, S, T_out):
+    """kf_forward_2d must return (B, 1, S, S, T_out) for matched T."""
+    model = _build_fno2d_direct(out_channels=T_out)
+    ic = torch.zeros(B, S, S)
+    with torch.no_grad():
+        out = kf_forward_2d(model, ic, T=T_out)
+    assert out.shape == (B, 1, S, S, T_out), \
+        f"Expected ({B},1,{S},{S},{T_out}), got {tuple(out.shape)}"
+
+
+def test_fno2d_kf_forward_2d_t_mismatch_raises():
+    """kf_forward_2d must raise AssertionError when T != model.out_channels."""
+    model = _build_fno2d_direct(out_channels=8)
+    ic = torch.zeros(1, 4, 4)
+    with pytest.raises(AssertionError):
+        kf_forward_2d(model, ic, T=6)
+
+
+def test_fno2d_kf_forward_2d_t_match_does_not_raise():
+    """kf_forward_2d must NOT raise when T == model.out_channels."""
+    model = _build_fno2d_direct(out_channels=8)
+    ic = torch.zeros(1, 4, 4)
+    with torch.no_grad():
+        out = kf_forward_2d(model, ic, T=8)
+    assert out.shape == (1, 1, 4, 4, 8)
+
+
+def test_fno2d_kf_forward_2d_kfloss_finite():
+    """kf_forward_2d output fed into KFLoss must produce a finite loss scalar.
+    Validates that the (B, 1, S, S, T) layout is correct for KFLoss.__call__.
+    """
+    from src.pde.ns import KFLoss
+    S, T = 8, 8
+    model = _build_fno2d_direct(out_channels=T, S_modes=2)
+    ic = torch.randn(1, S, S)
+    with torch.no_grad():
+        pred = kf_forward_2d(model, ic, T=T)
+    target = torch.randn(1, S, S, T)
+    loss_fn = KFLoss(re=100, t_interval=1.0, data_weight=1.0, pde_weight=1.0, ic_weight=0.0)
+    losses = loss_fn(pred, target)
+    assert losses["loss"].isfinite(), \
+        f"KFLoss returned non-finite loss: {losses['loss'].item()}"
+
+
+def _minimal_fno2d_cfg():
+    """Minimal valid config for _build_fno2d via build_fno_kf."""
+    return {
+        "model_arch": "fno2d",
+        "data_channels": 3,
+        "out_channels": 8,
+        "hidden_channels": 8,
+        "n_modes": [2, 2],
+        "positional_embedding": None,
+    }
+
+
+def test_fno2d_build_rejects_wrong_n_modes_length():
+    """_build_fno2d must raise ValueError when n_modes has != 2 elements."""
+    cfg = _minimal_fno2d_cfg()
+    cfg["n_modes"] = [2, 2, 2]
+    with pytest.raises(ValueError, match="n_modes"):
+        build_fno_kf(cfg)
+
+
+@pytest.mark.parametrize("bad_embed", [
+    pytest.param("__omit__", id="key_omitted"),
+    pytest.param("grid",     id="explicit_grid"),
+])
+def test_fno2d_build_rejects_positional_embedding(bad_embed):
+    """_build_fno2d must reject non-None positional_embedding to protect channel contract."""
+    cfg = _minimal_fno2d_cfg()
+    if bad_embed == "__omit__":
+        cfg.pop("positional_embedding")
+    else:
+        cfg["positional_embedding"] = bad_embed
+    with pytest.raises(ValueError, match="positional_embedding"):
+        build_fno_kf(cfg)
+
+
+def test_fno2d_build_fno_kf_constructs_and_forwards():
+    """build_fno_kf(fno2d cfg) must construct a usable FNO and forward through kf_forward_2d.
+    Exercises: arch dispatch, _build_fno2d happy path, data_channels->in_channels remap.
+    """
+    from neuralop.models import FNO
+    model = build_fno_kf(_minimal_fno2d_cfg())
+    assert isinstance(model, FNO)
+    model.eval()
+    ic = torch.randn(1, 8, 8)
+    with torch.no_grad():
+        out = kf_forward_2d(model, ic, T=8)
+    assert out.shape == (1, 1, 8, 8, 8)
+    assert torch.isfinite(out).all()
+
+
+_FNO2D_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "fno2d_kf.yaml"
+
+
+def test_fno2d_yaml_builds_and_forwards():
+    """The committed configs/model/fno2d_kf.yaml must build and accept a forward pass.
+    Pins that key names, n_modes length, and positional_embedding=null are intact.
+    Uses small S to stay fast; out_channels from the yaml determines T.
+    """
+    from neuralop.models import FNO
+    with open(_FNO2D_CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+    model = build_fno_kf(cfg)
+    assert isinstance(model, FNO)
+    model.eval()
+    T = cfg["out_channels"]
+    S = 16
+    ic = torch.randn(1, S, S)
+    with torch.no_grad():
+        out = kf_forward_2d(model, ic, T=T)
+    assert out.shape == (1, 1, S, S, T)
+    assert torch.isfinite(out).all()
+
+
+def test_fno2d_fno3d_path_unaffected():
+    """The default FNO3d path via build_fno_kf + kf_forward must be unaffected by the 2d addition."""
+    cfg = _load_kf_config()
+    model = build_fno_kf(cfg)
+    model.eval()
+    ic = torch.randn(1, 8, 8)
+    with torch.no_grad():
+        out = kf_forward(model, ic, T=5)
+    assert out.shape == (1, 1, 8, 8, 5)
+    assert torch.isfinite(out).all()
