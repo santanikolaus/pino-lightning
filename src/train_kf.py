@@ -37,7 +37,7 @@ def main(cfg: DictConfig) -> None:
     warm_start_ckpt = cfg.get("warm_start_ckpt", None)
     if warm_start_ckpt:
         import torch
-        ckpt = torch.load(warm_start_ckpt, weights_only=False)
+        ckpt = torch.load(warm_start_ckpt, map_location="cpu", weights_only=False)
         model_state = {k[len("model."):]: v for k, v in ckpt["state_dict"].items() if k.startswith("model.")}
         module.model.load_state_dict(model_state)
         print(f"[warm-start] Loaded model weights from {warm_start_ckpt}")
