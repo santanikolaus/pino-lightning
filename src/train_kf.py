@@ -23,7 +23,11 @@ def main(cfg: DictConfig) -> None:
     )
     datamodule.setup(stage="fit")
 
-    module = KFLitModule(cfg)
+    if cfg.get("module_class", "KFLitModule") == "KFLitModuleChain":
+        from src.models.kf_module_chain import KFLitModuleChain
+        module = KFLitModuleChain(cfg)
+    else:
+        module = KFLitModule(cfg)
 
     if cfg.get("grad_checkpoint", False):
         from msc.tta.setup import enable_gradient_checkpointing

@@ -8,7 +8,7 @@ def cheb_band_mask(S: int, kmax: int, device) -> Tensor:
     """(S, S) float mask: 1 where max(|kx|, |ky|) <= kmax, else 0.
     Chebyshev/L∞ band matching the k<=7 eval convention in msc/tta/eval.py
     (n_modes=8 -> modes 0..7). fft ordering, integer wavenumbers."""
-    k = torch.fft.fftfreq(S, d=1.0 / S).to(device)        # integer-valued
+    k = torch.fft.fftfreq(S, d=1.0 / S).to(device)  # integer-valued
     keep = k.abs() <= kmax
     return (keep[:, None] & keep[None, :]).to(torch.float32)
 
@@ -26,82 +26,22 @@ def radial_energy_spectrum(field: Tensor, kinf: Tensor, kmax: int) -> Tensor:
     """(B,S,S,T) real -> (kmax+1,) mean radial energy per L∞ shell (over batch+time).
     Differentiable; kinf is the integer L∞-wavenumber map (cheb_bins convention)."""
     fh = torch.fft.fft2(field, dim=(1, 2))
-    power = (fh.real ** 2 + fh.imag ** 2).mean(dim=(0, 3))
+    power = (fh.real**2 + fh.imag**2).mean(dim=(0, 3))
     return torch.stack([power[kinf == ki].sum() for ki in range(kmax + 1)])
 
 
-def spectral_alignment_loss(pred: Tensor, target_spec: Tensor, kinf: Tensor,
-                            kmax: int, eps: float = 1e-8) -> Tensor:
+def spectral_alignment_loss(pred: Tensor,
+                            target_spec: Tensor,
+                            kinf: Tensor,
+                            kmax: int,
+                            eps: float = 1e-8) -> Tensor:
     """Relative L2 between √E(k) of pred and a precomputed target spectrum, over k≤kmax.
     pred (B,S,S,T); target_spec (kmax+1,). Pulls predicted energy-per-scale onto the
     target's — the steerable lever measured by amp_phase_split. Zero when matched."""
     pred_spec = radial_energy_spectrum(pred, kinf, kmax)
-    mismatch = ((pred_spec + eps).sqrt() - (target_spec + eps).sqrt()).pow(2).sum()
+    mismatch = ((pred_spec + eps).sqrt() -
+                (target_spec + eps).sqrt()).pow(2).sum()
     return mismatch / (target_spec.sum() + eps)
-
-
-def band_energy_loss(pred: Tensor, target: Tensor, k_lo: int = 2, k_hi: int = 7,
-                     eps: float = 1e-8) -> Tensor:
-    """ABSOLUTE per-shell energy match over Chebyshev shells [k_lo,k_hi], per frame.
-
-    E(k,t) = Σ_shell |F|^2 (shell power per frame). Loss = Σ_{k,t}(E_pred−E_gt)^2 /
-    Σ_{k,t} E_gt^2 — scale-invariant and ENERGY-weighted: the energetic mid shells
-    (k2–4) dominate, so the term does NOT over-weight the collapsed, position-
-    decorrelated high-k (the failure mode of a relative `E_pred/E_gt` spectrum loss,
-    which would dump energy into the wrong places). Counters the measured energy
-    collapse (R_k<1) without forcing per-pixel commitment. FFT in fp32. Per-frame
-    deficits self-weight late frames (largest collapse). pred,target (B,S,S,T).
-    """
-    pred, target = pred.float(), target.float()
-    S = pred.shape[1]
-    k = torch.fft.fftfreq(S, d=1.0 / S).abs().to(pred.device)
-    kinf = torch.maximum(k[:, None], k[None, :]).round()           # (S,S) L∞ wavenumber
-    Pp = torch.fft.fft2(pred, dim=(1, 2)).abs() ** 2               # (B,S,S,T)
-    Pg = torch.fft.fft2(target, dim=(1, 2)).abs() ** 2
-    num = pred.new_zeros(())
-    den = pred.new_zeros(())
-    for ki in range(k_lo, k_hi + 1):
-        sel = kinf == ki
-        Ep = Pp[:, sel].sum(1)                                     # (B,T) shell energy/frame
-        Eg = Pg[:, sel].sum(1)
-        num = num + ((Ep - Eg) ** 2).sum()
-        den = den + (Eg ** 2).sum()
-    return num / (den + eps)
-
-
-def band_phase_loss(pred: Tensor, target: Tensor, k_lo: int = 2, k_hi: int = 4,
-                    eps: float = 1e-8) -> Tensor:
-    """GT-energy-weighted PHASE misalignment over Chebyshev shells [k_lo,k_hi].
-
-    Per mode cosΔφ = Re(Fu·Fg*)/(|Fu||Fg|); loss = Σ|Fg|²(1−cosΔφ) / Σ|Fg|² = 1 − A_band,
-    the per-shell phase-alignment deficit `amp_phase_probe --align` measures. Default
-    band k2–4: the MID scales where phase is wrong-but-recoverable (A≈0.72–0.85) and
-    energy-bearing. Deliberately EXCLUDES k1 (already aligned, A≈0.99 — no headroom,
-    would dominate the GT-energy weighting while contributing ~0) and k6–7 (phase near-
-    random A≈0.13–0.40 + collapsed energy, where the cosΔφ gradient ∝1/|Fu| is noisy).
-    Position-sensitive, magnitude-blind (complement of band_energy_loss). FFT fp32.
-    pred,target (B,S,S,T).
-    """
-    pred, target = pred.float(), target.float()
-    S = pred.shape[1]
-    k = torch.fft.fftfreq(S, d=1.0 / S).abs().to(pred.device)
-    kinf = torch.maximum(k[:, None], k[None, :]).round()
-    Fu = torch.fft.fft2(pred, dim=(1, 2))
-    Fg = torch.fft.fft2(target, dim=(1, 2))
-    # eps^2 floor INSIDE the magnitude sqrt (cosine_similarity convention): keeps the
-    # cosΔφ gradient finite at |Fu|→0 (a bare `|Fu|*|Fg|+eps` denominator leaves a 0/0
-    # in d|Fu|/dFu). Negligible on healthy k2-4 modes (|F|≫eps).
-    fu_mag = (Fu.real ** 2 + Fu.imag ** 2 + eps ** 2).sqrt()
-    fg_mag = (Fg.real ** 2 + Fg.imag ** 2 + eps ** 2).sqrt()
-    cos = (Fu * Fg.conj()).real / (fu_mag * fg_mag)               # (B,S,S,T) per-mode cosΔφ
-    eg = Fg.real ** 2 + Fg.imag ** 2
-    num = pred.new_zeros(())
-    den = pred.new_zeros(())
-    for ki in range(k_lo, k_hi + 1):
-        sel = kinf == ki
-        num = num + (eg[:, sel] * (1.0 - cos[:, sel])).sum()
-        den = den + eg[:, sel].sum()
-    return num / (den + eps)
 
 
 class NSVorticity:
@@ -114,10 +54,12 @@ class NSVorticity:
 
     def get_forcing(self, S: int, device) -> Tensor:
         """Returns f(x,y) = -4cos(4y), shape (1, S, S, 1), on the given device."""
-        x2 = torch.tensor(np.linspace(0, 2 * np.pi, S, endpoint=False), dtype=torch.float).reshape(1, S).repeat(S, 1)
+        x2 = torch.tensor(np.linspace(0, 2 * np.pi, S, endpoint=False),
+                          dtype=torch.float).reshape(1, S).repeat(S, 1)
         return (-4 * torch.cos(4 * x2)).reshape(1, S, S, 1).to(device)
 
-    def residual(self, w: Tensor) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor]]:
+    def residual(self,
+                 w: Tensor) -> tuple[Tensor, tuple[Tensor, Tensor, Tensor]]:
         """
         w: (B, S, S, T) — vorticity trajectory, channels-last
         Returns: (B, S, S, T-2) — LHS of NS vorticity eq at interior time steps.
@@ -148,7 +90,7 @@ class NSVorticity:
         ), 0).reshape(1, N).repeat(N, 1).reshape(1, N, N, 1)
 
         # Negative Laplacian in Fourier space
-        lap = k_x ** 2 + k_y ** 2
+        lap = k_x**2 + k_y**2
         lap[0, 0, 0, 0] = 1.0
         f_h = w_h / lap
 
@@ -167,13 +109,17 @@ class NSVorticity:
         dt = self.t_interval / (nt - 1)
         wt = (w[:, :, :, 2:] - w[:, :, :, :-2]) / (2 * dt)
 
-        adv  = (ux * wx + uy * wy)[..., 1:-1]
+        adv = (ux * wx + uy * wy)[..., 1:-1]
         diff = (-v * wlap)[..., 1:-1]
-        Du   = wt + adv + diff
+        Du = wt + adv + diff
         return Du, (wt, adv, diff)
 
 
-def frame_weights(T: int, p: float, alpha: float, device, dtype=torch.float32) -> Tensor:
+def frame_weights(T: int,
+                  p: float,
+                  alpha: float,
+                  device,
+                  dtype=torch.float32) -> Tensor:
     """Per-frame loss weights w_t = 1 + alpha*(t/(T-1))^p for t=0..T-1, normalized to mean 1.
 
     alpha sets the late-emphasis strength (alpha=0 -> uniform, recovers the baseline loss);
@@ -184,16 +130,19 @@ def frame_weights(T: int, p: float, alpha: float, device, dtype=torch.float32) -
     return w * (T / w.sum())
 
 
-def time_weighted_rel(pred: Tensor, target: Tensor, w_t: Tensor, eps: float = 1e-8) -> Tensor:
+def time_weighted_rel(pred: Tensor,
+                      target: Tensor,
+                      w_t: Tensor,
+                      eps: float = 1e-8) -> Tensor:
     """Time-weighted relative L2 over (B,S,S,T), per-sample mean-of-ratios.
 
     Per frame t: a_t = spatial squared error, b_t = spatial GT energy. Returns
     mean_B sqrt(sum_t w_t a_t / sum_t b_t). With w_t == 1 this equals
     LpLoss(d=3,p=2,reduction='mean').rel(pred, target) exactly — the baseline data term."""
-    a = (pred - target).pow(2).sum(dim=(1, 2))   # (B, T)
-    b = target.pow(2).sum(dim=(1, 2))            # (B, T)
-    num = (w_t * a).sum(dim=1)                   # (B,)
-    den = b.sum(dim=1)                           # (B,)
+    a = (pred - target).pow(2).sum(dim=(1, 2))  # (B, T)
+    b = target.pow(2).sum(dim=(1, 2))  # (B, T)
+    num = (w_t * a).sum(dim=1)  # (B,)
+    den = b.sum(dim=1)  # (B,)
     return torch.sqrt(num / (den + eps)).mean()
 
 
@@ -204,8 +153,12 @@ def cheb_shell_index(S: int, device) -> Tensor:
     return torch.maximum(k[:, None], k[None, :])
 
 
-def shell_weights(gt_k: Tensor, k_lo: int, k_hi: int, mode: str = "equalize",
-                  beta: float = 1.0, eps: float = 1e-12) -> Tensor:
+def shell_weights(gt_k: Tensor,
+                  k_lo: int,
+                  k_hi: int,
+                  mode: str = "equalize",
+                  beta: float = 1.0,
+                  eps: float = 1e-12) -> Tensor:
     """Per-shell loss weights (B, n_bands) from per-sample GT shell energy gt_k.
 
     Shells in [k_lo,k_hi] are reweighted (normalized to mean 1 over the band so they
@@ -226,8 +179,12 @@ def shell_weights(gt_k: Tensor, k_lo: int, k_hi: int, mode: str = "equalize",
     return w
 
 
-def band_weighted_rel(pred: Tensor, target: Tensor, k_lo: int, k_hi: int,
-                      mode: str = "equalize", beta: float = 1.0,
+def band_weighted_rel(pred: Tensor,
+                      target: Tensor,
+                      k_lo: int,
+                      k_hi: int,
+                      mode: str = "equalize",
+                      beta: float = 1.0,
                       eps: float = 1e-12) -> Tensor:
     """Per-Chebyshev-shell weighted relative L2 over (B,S,S,T), per-sample mean-of-ratios.
 
@@ -237,13 +194,15 @@ def band_weighted_rel(pred: Tensor, target: Tensor, k_lo: int, k_hi: int,
     exactly. E_k is the per-sample GT shell energy aggregated over time."""
     B, S = pred.shape[0], pred.shape[1]
     nb = S // 2 + 1
-    kinf = cheb_shell_index(S, pred.device).reshape(-1)               # (S*S,)
+    kinf = cheb_shell_index(S, pred.device).reshape(-1)  # (S*S,)
     eh = torch.fft.fft2(pred - target, dim=(1, 2))
     gh = torch.fft.fft2(target, dim=(1, 2))
-    pe = (eh.real ** 2 + eh.imag ** 2).sum(dim=3).reshape(B, -1)      # (B, S*S)
-    pg = (gh.real ** 2 + gh.imag ** 2).sum(dim=3).reshape(B, -1)
-    err_k = torch.zeros(B, nb, device=pred.device, dtype=pe.dtype).index_add_(1, kinf, pe)
-    gt_k = torch.zeros(B, nb, device=pred.device, dtype=pg.dtype).index_add_(1, kinf, pg)
+    pe = (eh.real**2 + eh.imag**2).sum(dim=3).reshape(B, -1)  # (B, S*S)
+    pg = (gh.real**2 + gh.imag**2).sum(dim=3).reshape(B, -1)
+    err_k = torch.zeros(B, nb, device=pred.device,
+                        dtype=pe.dtype).index_add_(1, kinf, pe)
+    gt_k = torch.zeros(B, nb, device=pred.device,
+                       dtype=pg.dtype).index_add_(1, kinf, pg)
 
     w = shell_weights(gt_k, k_lo, k_hi, mode, beta, eps)
     num = (w * err_k).sum(dim=1)
@@ -252,14 +211,20 @@ def band_weighted_rel(pred: Tensor, target: Tensor, k_lo: int, k_hi: int,
 
 
 class KFLoss:
-    def __init__(self, re: float, t_interval: float = 1.0,
-                 data_weight: float = 1.0, pde_weight: float = 0.0,
-                 ic_weight: float = 0.0, pde_band_kmax: int | None = None,
-                 time_weight_p: float = 2.0, time_weight_alpha: float = 0.0,
-                 band_mode: str | None = None, band_beta: float = 1.0,
-                 band_k_lo: int = 2, band_k_hi: int = 7,
-                 energy_weight: float = 0.0, energy_k_lo: int = 2, energy_k_hi: int = 7,
-                 angle_weight: float = 0.0, angle_k_lo: int = 2, angle_k_hi: int = 4):
+
+    def __init__(self,
+                 re: float,
+                 t_interval: float = 1.0,
+                 data_weight: float = 1.0,
+                 pde_weight: float = 0.0,
+                 ic_weight: float = 0.0,
+                 pde_band_kmax: int | None = None,
+                 time_weight_p: float = 2.0,
+                 time_weight_alpha: float = 0.0,
+                 band_mode: str | None = None,
+                 band_beta: float = 1.0,
+                 band_k_lo: int = 2,
+                 band_k_hi: int = 7):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
         self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
@@ -277,9 +242,11 @@ class KFLoss:
         # band_mode None -> data term unchanged (baseline). 'equalize'/'ramp' -> per-
         # Chebyshev-shell reweight of the data loss over [band_k_lo, band_k_hi]. Composing
         # band + time-weight is future work; guard against silently dropping one lever.
-        assert band_mode in (None, "equalize", "ramp"), f"bad band_mode {band_mode!r}"
+        assert band_mode in (None, "equalize",
+                             "ramp"), f"bad band_mode {band_mode!r}"
         if band_mode is not None and time_weight_alpha != 0.0:
-            raise NotImplementedError("band_mode + time_weight_alpha not yet composable")
+            raise NotImplementedError(
+                "band_mode + time_weight_alpha not yet composable")
         self.band_mode = band_mode
         self.band_beta = band_beta
         self.band_k_lo = band_k_lo
@@ -287,18 +254,6 @@ class KFLoss:
         assert pde_band_kmax is None or pde_band_kmax >= 4, \
             f"pde_band_kmax={pde_band_kmax} drops the k=4 forcing -> degenerate residual loss"
         self.pde_band_kmax = pde_band_kmax
-        # Spectral-energy term (added, not part of the data term): absolute per-shell
-        # energy match over [energy_k_lo, energy_k_hi]; energy_weight==0 -> off (baseline
-        # byte-identical). Counters the measured late energy collapse (R_k<1).
-        self.energy_weight = energy_weight
-        self.energy_k_lo = energy_k_lo
-        self.energy_k_hi = energy_k_hi
-        # Phase term (added): GT-energy-weighted (1-cosΔφ) over [angle_k_lo, angle_k_hi];
-        # angle_weight==0 -> off (baseline byte-identical). Targets the recoverable mid-
-        # band phase (k2-4 default), the complement of the energy term.
-        self.angle_weight = angle_weight
-        self.angle_k_lo = angle_k_lo
-        self.angle_k_hi = angle_k_hi
 
     def __call__(self, pred: Tensor, target: Tensor) -> dict[str, Tensor]:
         """
@@ -306,8 +261,8 @@ class KFLoss:
         target: (B, S, S, T)     — ground truth from KFDataset (all T frames incl. IC)
         Returns: {'loss': scalar, 'data': scalar, 'pde': scalar, 'ic': scalar}
         """
-        w = pred.squeeze(1)        # (B, S, S, T)
-        y = target                 # (B, S, S, T) — supervise all frames incl. IC at t=0
+        w = pred.squeeze(1)  # (B, S, S, T)
+        y = target  # (B, S, S, T) — supervise all frames incl. IC at t=0
 
         if self.band_mode is not None:
             data = band_weighted_rel(w, y, self.band_k_lo, self.band_k_hi,
@@ -318,23 +273,21 @@ class KFLoss:
             w_t = frame_weights(w.shape[-1], self.time_weight_p,
                                 self.time_weight_alpha, w.device, w.dtype)
             data = time_weighted_rel(w, y, w_t)
-        forcing = self.ns.get_forcing(w.shape[1], w.device).expand(w.shape[0], w.shape[1], w.shape[2], w.shape[3] - 2)
+        forcing = self.ns.get_forcing(w.shape[1],
+                                      w.device).expand(w.shape[0], w.shape[1],
+                                                       w.shape[2],
+                                                       w.shape[3] - 2)
         Du, _ = self.ns.residual(w)
         if self.pde_band_kmax is not None:
-            Du      = cheb_lowpass(Du, self.pde_band_kmax)
-            forcing = cheb_lowpass(forcing, self.pde_band_kmax)   # forcing is k=4 -> no-op for kmax>=4
+            Du = cheb_lowpass(Du, self.pde_band_kmax)
+            forcing = cheb_lowpass(
+                forcing,
+                self.pde_band_kmax)  # forcing is k=4 -> no-op for kmax>=4
         pde = self.lp.rel(Du, forcing)
 
-        u_in = w[:, :, :, 0]      # prediction at t=0, shape (B, S, S)
-        u0 = target[:, :, :, 0]   # true IC, shape (B, S, S)
+        u_in = w[:, :, :, 0]  # prediction at t=0, shape (B, S, S)
+        u0 = target[:, :, :, 0]  # true IC, shape (B, S, S)
         ic = self.lp.rel(u_in, u0)
 
-        energy = (band_energy_loss(w, y, self.energy_k_lo, self.energy_k_hi)
-                  if self.energy_weight > 0.0 else w.new_zeros(()))
-        angle = (band_phase_loss(w, y, self.angle_k_lo, self.angle_k_hi)
-                 if self.angle_weight > 0.0 else w.new_zeros(()))
-
-        loss = (self.data_weight * data + self.pde_weight * pde + self.ic_weight * ic
-                + self.energy_weight * energy + self.angle_weight * angle)
-        return {"loss": loss, "data": data, "pde": pde, "ic": ic,
-                "energy": energy, "angle": angle}
+        loss = self.data_weight * data + self.pde_weight * pde + self.ic_weight * ic
+        return {"loss": loss, "data": data, "pde": pde, "ic": ic}
