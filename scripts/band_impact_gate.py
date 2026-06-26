@@ -45,6 +45,8 @@ DATA_RE = 500
 HELDOUT = (200, 300)
 OUT = Path("scripts/outputs")
 
+PROBE_VARIANTS = ["full_pred", "full_gt", "lo_kc7", "mix_lo3_hi8"]
+
 VARIANTS = [
     "full_pred",    # baseline: pure operator prediction fed to solver (≈ B)
     "full_gt",      # upper bound: pure GT fed to solver (≈ 0 = C_ctrl)
@@ -110,12 +112,15 @@ def k7_late_power(field: torch.Tensor, kinf: torch.Tensor, n_bands: int, nlate: 
 
 
 def run(model, dataset, solver, f, t_r: int, re: int, T: int, dt: float,
-        kinf, n_bands: int, nlate: int, device) -> dict:
+        kinf, n_bands: int, nlate: int, device) -> tuple[dict, dict, np.ndarray]:
     num = {v: 0.0 for v in VARIANTS}
+    err_pt = {v: np.zeros((n_bands, T)) for v in PROBE_VARIANTS}
+    gt_pt = np.zeros((n_bands, T))
     den = 0.0
     for i in range(len(dataset)):
         gt = dataset[i]["y"].unsqueeze(0).to(device)           # (1,S,S,T)
         den += k7_late_power(gt, kinf, n_bands, nlate)
+        gt_pt += ev.band_power_t(gt, kinf, n_bands)
         with torch.no_grad():
             pred_full = kf_forward(
                 model, gt[:, :, :, 0], T,
@@ -128,9 +133,13 @@ def run(model, dataset, solver, f, t_r: int, re: int, T: int, dt: float,
             ic = splice(pred_tr, gt_tr, v)
             sol = solve_from_tr(solver, ic.double(), f, t_r, T, dt, re, device)[None]
             num[v] += k7_late_power(sol - gt, kinf, n_bands, nlate)
+            if v in PROBE_VARIANTS:
+                err = torch.nan_to_num(sol - gt, nan=0.0)      # zero pre-t_r NaN frames
+                err_pt[v] += ev.band_power_t(err, kinf, n_bands)
         if (i + 1) % 4 == 0:
             print(f"  inst {i + 1}/{len(dataset)}", flush=True)
-    return {v: float(np.sqrt(num[v] / (den + 1e-30))) for v in VARIANTS}
+    scalars = {v: float(np.sqrt(num[v] / (den + 1e-30))) for v in VARIANTS}
+    return scalars, err_pt, gt_pt
 
 
 def report(label: str, res: dict, t_r: int) -> None:
@@ -165,13 +174,19 @@ def main():
           f"S={S} T={T} dt={dt:.5f} device={device}", flush=True)
 
     summary = {}
+    OUT.mkdir(parents=True, exist_ok=True)
     for op in args.ops:
         model = setup.load_model(CKPTS[op], device)
-        res = run(model, ds, solver, f, args.t_r, args.data_re, T, dt, kinf, n_bands, nlate, device)
+        res, err_pt, gt_pt = run(model, ds, solver, f, args.t_r, args.data_re, T, dt,
+                                 kinf, n_bands, nlate, device)
         report(f"{op} @ Re{args.data_re}", res, args.t_r)
         summary[op] = res
+        npz = OUT / f"band_impact_re{args.data_re}_tr{args.t_r}_{op}.npz"
+        np.savez(npz, op=op, data_re=args.data_re, t_r=args.t_r, n=len(ds), T=T,
+                 K_REP=ev.K_REP, n_bands=n_bands, probe_variants=PROBE_VARIANTS,
+                 gt_pt=gt_pt, **{f"err_pt_{v}": err_pt[v] for v in PROBE_VARIANTS})
+        print(f"saved npz -> {npz}", flush=True)
 
-    OUT.mkdir(parents=True, exist_ok=True)
     out = OUT / f"band_impact_re{args.data_re}_tr{args.t_r}.json"
     out.write_text(json.dumps({"data_re": args.data_re, "t_r": args.t_r, "n": len(ds),
                                "T": T, "variants": VARIANTS, "results": summary},
