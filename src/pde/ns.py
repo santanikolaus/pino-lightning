@@ -224,7 +224,8 @@ class KFLoss:
                  band_mode: str | None = None,
                  band_beta: float = 1.0,
                  band_k_lo: int = 2,
-                 band_k_hi: int = 7):
+                 band_k_hi: int = 7,
+                 band_mask_kmax: int | None = None):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
         self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
@@ -254,6 +255,13 @@ class KFLoss:
         assert pde_band_kmax is None or pde_band_kmax >= 4, \
             f"pde_band_kmax={pde_band_kmax} drops the k=4 forcing -> degenerate residual loss"
         self.pde_band_kmax = pde_band_kmax
+        assert band_mask_kmax is None or band_mask_kmax >= 1, \
+            f"band_mask_kmax={band_mask_kmax}: DC-only mask degenerates the loss"
+        assert not (band_mask_kmax is not None and band_mode is not None), \
+            "band_mask_kmax and band_mode are mutually exclusive"
+        assert not (band_mask_kmax is not None and time_weight_alpha != 0.0), \
+            "band_mask_kmax and time_weight_alpha not composable"
+        self.band_mask_kmax = band_mask_kmax
 
     def __call__(self, pred: Tensor, target: Tensor) -> dict[str, Tensor]:
         """
@@ -264,7 +272,10 @@ class KFLoss:
         w = pred.squeeze(1)  # (B, S, S, T)
         y = target  # (B, S, S, T) — supervise all frames incl. IC at t=0
 
-        if self.band_mode is not None:
+        if self.band_mask_kmax is not None:
+            data = self.lp.rel(cheb_lowpass(w, self.band_mask_kmax),
+                               cheb_lowpass(y, self.band_mask_kmax))
+        elif self.band_mode is not None:
             data = band_weighted_rel(w, y, self.band_k_lo, self.band_k_hi,
                                      self.band_mode, self.band_beta)
         elif self.time_weight_alpha == 0.0:

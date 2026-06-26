@@ -1,0 +1,50 @@
+# @package _global_
+# Band-masked data loss sweep — k<=4 arm.
+# Hard-masks the supervised data term to Chebyshev k<=4 modes only.
+# k>4 contributes exactly 0 to both numerator and denominator of the data loss.
+# Warm-started from op500 pretrain (38o0kj3y, val_l2=0.543 late).
+# Hypothesis: k>kmax high-k gradient noise in the data term drowns the learnable k<=7 signal.
+# GO criterion: band-matched late-k<=4 improves by >=0.03 vs baseline's late-k<=4 from wall.md.
+# Eval: band_gate.py --kmax 4 (band-matched, not k<=7 which is uninformative here).
+# NOTE: k>4 modes get no data gradient -> go random-phase by design; k<=7 full-field val_l2
+#       will degrade. val_l2_band (k<=4) is the checkpoint-selection and comparison metric.
+
+defaults:
+  - override /callbacks: kf_bandmask
+
+logger:
+  wandb:
+    project: bandmask-kol
+    name: re500-bandmask-k4
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 500
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+  band_mask_kmax: 4
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0
+  hidden_channels: 128
+
+warm_start_ckpt: /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/38o0kj3y/checkpoints/best.ckpt

@@ -1,0 +1,47 @@
+# @package _global_
+# Band-masked data loss sweep — k<=4, data term only (clean hypothesis test).
+# pde_weight=0, ic_weight=0: the ONLY gradient signal is the k<=4-masked data term.
+# Warm-started from op500 pretrain (38o0kj3y). Checkpoint selected on val_l2_band (k<=4).
+# Interpretation: with pde=1 arms, a null can mean "data-mask inert" but not "high-k irrelevant"
+# because the k^4-weighted PDE residual still injects high-k gradient. This arm removes
+# that ambiguity: null here = k<=4 data signal alone cannot move the wall.
+
+defaults:
+  - override /callbacks: kf_bandmask
+
+logger:
+  wandb:
+    project: bandmask-kol
+    name: re500-bandmask-k4-dataonly
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 5
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 500
+  t_interval: 1.0
+  data_weight: 1.0
+  pde_weight: 0.0
+  ic_weight: 0.0
+  band_mask_kmax: 4
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0
+  hidden_channels: 128
+
+warm_start_ckpt: /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/38o0kj3y/checkpoints/best.ckpt
