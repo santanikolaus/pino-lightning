@@ -22,6 +22,16 @@ def cheb_lowpass(field: Tensor, kmax: int) -> Tensor:
     return torch.fft.ifft2(fh, dim=(1, 2)).real
 
 
+def cheb_bandpass(field: Tensor, k_lo: int, k_hi: int) -> Tensor:
+    """Keep only k_lo <= max(|kx|,|ky|) <= k_hi in (B, S, S, T) real field.
+    Differentiable. k_lo=0 is equivalent to cheb_lowpass(field, k_hi)."""
+    S = field.shape[1]
+    hi = cheb_band_mask(S, k_hi, field.device)
+    lo = cheb_band_mask(S, k_lo - 1, field.device) if k_lo > 0 else torch.zeros_like(hi)
+    fh = torch.fft.fft2(field, dim=(1, 2)) * (hi - lo)[None, :, :, None]
+    return torch.fft.ifft2(fh, dim=(1, 2)).real
+
+
 def radial_energy_spectrum(field: Tensor, kinf: Tensor, kmax: int) -> Tensor:
     """(B,S,S,T) real -> (kmax+1,) mean radial energy per L∞ shell (over batch+time).
     Differentiable; kinf is the integer L∞-wavenumber map (cheb_bins convention)."""
@@ -225,7 +235,9 @@ class KFLoss:
                  band_beta: float = 1.0,
                  band_k_lo: int = 2,
                  band_k_hi: int = 7,
-                 band_mask_kmax: int | None = None):
+                 band_mask_kmax: int | None = None,
+                 band_iso_k_lo: int | None = None,
+                 band_iso_k_hi: int | None = None):
         self.ns = NSVorticity(re=re, t_interval=t_interval)
         self.lp = LpLoss(d=3, p=2, reduction="mean")
         self.data_weight = data_weight
@@ -262,6 +274,17 @@ class KFLoss:
         assert not (band_mask_kmax is not None and time_weight_alpha != 0.0), \
             "band_mask_kmax and time_weight_alpha not composable"
         self.band_mask_kmax = band_mask_kmax
+        assert (band_iso_k_lo is None) == (band_iso_k_hi is None), \
+            "band_iso_k_lo and band_iso_k_hi must both be set or both be None"
+        if band_iso_k_lo is not None and band_iso_k_hi is not None:
+            assert 0 <= band_iso_k_lo <= band_iso_k_hi, \
+                f"band_iso: need 0 <= k_lo <= k_hi, got [{band_iso_k_lo},{band_iso_k_hi}]"
+            assert band_mask_kmax is None and band_mode is None, \
+                "band_iso is mutually exclusive with band_mask_kmax and band_mode"
+            assert time_weight_alpha == 0.0, \
+                "band_iso and time_weight_alpha not composable"
+        self.band_iso_k_lo = band_iso_k_lo
+        self.band_iso_k_hi = band_iso_k_hi
 
     def __call__(self, pred: Tensor, target: Tensor) -> dict[str, Tensor]:
         """
@@ -272,7 +295,10 @@ class KFLoss:
         w = pred.squeeze(1)  # (B, S, S, T)
         y = target  # (B, S, S, T) — supervise all frames incl. IC at t=0
 
-        if self.band_mask_kmax is not None:
+        if self.band_iso_k_lo is not None and self.band_iso_k_hi is not None:
+            data = self.lp.rel(cheb_bandpass(w, self.band_iso_k_lo, self.band_iso_k_hi),
+                               cheb_bandpass(y, self.band_iso_k_lo, self.band_iso_k_hi))
+        elif self.band_mask_kmax is not None:
             data = self.lp.rel(cheb_lowpass(w, self.band_mask_kmax),
                                cheb_lowpass(y, self.band_mask_kmax))
         elif self.band_mode is not None:
