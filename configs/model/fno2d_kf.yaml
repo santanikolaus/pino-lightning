@@ -1,0 +1,13 @@
+model_arch: fno2d
+data_channels: 3       # ic, gridx, gridy — gridt dropped (time encoded by output channel index)
+out_channels: 65       # must equal T_eff = (T_file+1) // sub_t for the experiment
+                       # Re100/T128/sub_t=2 → 129 frames → ::2 → 65 effective frames
+n_modes: [8, 8]        # x, y only — no temporal FFT
+hidden_channels: 64
+n_layers: 4
+lifting_channel_ratio: 2
+projection_channel_ratio: 2
+positional_embedding: null   # mandatory: prepare_input_2d injects coords as channels
+norm: null
+fno_skip: linear
+use_channel_mlp: false

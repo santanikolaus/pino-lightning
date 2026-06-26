@@ -1,0 +1,42 @@
+# @package _global_
+# Ablation C — FNO2d time-as-channel vs FNO3d (Atif et al. arXiv:2409.14660 §2.1).
+# Identical loss/opt/data to baseline (pvqq97sq); only model differs.
+# Hypothesis: removing the temporal FFT eliminates non-periodic time-axis aliasing.
+# T is baked into the architecture: out_channels=65 = 129 frames // sub_t=2.
+# Compare late k<=7 relL2 against op100 baseline (pvqq97sq).
+
+defaults:
+  - override /callbacks: kf
+  - override /model: fno2d_kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: 1_pino-re100-fno2d
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  hidden_channels: 128   # match Re100 baseline (pvqq97sq) width for capacity parity
+  lifting_channel_ratio: 0  # single linear lift, matches baseline
