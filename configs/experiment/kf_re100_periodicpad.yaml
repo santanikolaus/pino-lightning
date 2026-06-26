@@ -1,0 +1,43 @@
+# @package _global_
+# Ablation B — periodic temporal padding vs zero-padding (Cao et al. arXiv:2405.17211 §2.2).
+# Identical to kf_pino_re100_pretrain.yaml except pad_mode: periodic.
+# Hypothesis: replacing zero-fill in the temporal buffer with real IC content removes
+# the step discontinuity in the ic/gridx/gridy channels at t=T; gridt sawtooth (1.0→0)
+# is identical in both modes. Partial Cao et al. §2.2 (padding half; no layernorm).
+# Compare late k<=7 relL2 directly against op100 baseline (pvqq97sq).
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: 1_pino-re100-periodicpad
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  pad_mode: periodic   # wrap first 5 frames onto end; only change vs baseline
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  lifting_channel_ratio: 0
+  hidden_channels: 128

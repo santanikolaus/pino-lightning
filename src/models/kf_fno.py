@@ -136,7 +136,14 @@ def build_fno_kf(config) -> torch.nn.Module:
     return get_model(wrapped)
 
 
-def kf_forward(model: torch.nn.Module, ic: Tensor, T: int, time_scale: float = 1.0, temporal_pad: int = 0) -> Tensor:
+def kf_forward(
+    model: torch.nn.Module,
+    ic: Tensor,
+    T: int,
+    time_scale: float = 1.0,
+    temporal_pad: int = 0,
+    pad_mode: str = "zero",
+) -> Tensor:
     """Run the full KF pipeline: IC → prepare_input → permute → FNO → output.
 
     Args:
@@ -144,17 +151,30 @@ def kf_forward(model: torch.nn.Module, ic: Tensor, T: int, time_scale: float = 1
         ic: initial condition vorticity, shape (B, S, S)
         T: number of time steps to predict
         time_scale: passed through to prepare_input
-        temporal_pad: number of zero frames to pad at the end of the time axis
-                      before the forward pass (Ablation A). Padded frames are
-                      removed from the output before returning.
+        temporal_pad: frames appended to the time axis before the forward pass;
+                      trimmed from the output before returning.
+        pad_mode: "zero" — append zero frames (default, current behaviour). The ic/gridx/gridy
+                  channels step to 0 at the buffer boundary; gridt jumps 1.0→0 at the seam.
+                  "periodic" — append the first temporal_pad frames of the input. The ic/gridx/gridy
+                  channels stay at their IC/spatial values through the buffer (no step); gridt still
+                  jumps 1.0→0 at the seam (same as zero mode). Net effect: replaces the zero-step
+                  discontinuity in the domain-padding buffer with real IC content.
+                  Partial implementation of Cao et al. arXiv:2405.17211 §2.2 (padding half only;
+                  layernorm absent — moot under norm:null).
 
     Returns:
         Tensor shape (B, 1, S, S, T) — predicted vorticity trajectory
     """
+    if pad_mode not in ("zero", "periodic"):
+        raise ValueError(f"pad_mode must be 'zero' or 'periodic', got {pad_mode!r}")
+
     x = prepare_input(ic, T, time_scale)          # (B, S, S, T, 4)
     x = x.permute(0, 4, 1, 2, 3)                 # (B, 4, S, S, T)
     if temporal_pad > 0:
-        x = F.pad(x, (0, temporal_pad))           # (B, 4, S, S, T+pad)
+        if pad_mode == "periodic":
+            x = torch.cat([x, x[..., :temporal_pad]], dim=-1)  # (B, 4, S, S, T+pad)
+        else:
+            x = F.pad(x, (0, temporal_pad))                    # (B, 4, S, S, T+pad)
     out = model(x)                                # (B, 1, S, S, T+pad) or (B,1,S,S,T)
     if temporal_pad > 0:
         out = out[..., :-temporal_pad]            # (B, 1, S, S, T)

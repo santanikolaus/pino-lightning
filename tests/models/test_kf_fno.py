@@ -554,3 +554,139 @@ def test_kf_forward_original_frames_unchanged_by_padding():
         msg="First T frames with padding differ from unpadded run. "
             "F.pad may have modified existing frames.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Block 3f: periodic temporal padding tests (§2.2 ablation B)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("temporal_pad,B,S,T", [
+    pytest.param(5,  1, 4, 8,  id="pad5_B1_S4_T8"),
+    pytest.param(3,  2, 4, 6,  id="pad3_B2_S4_T6"),
+])
+def test_kf_forward_periodic_pad_output_shape(temporal_pad, B, S, T):
+    """pad_mode='periodic' must return (B, 1, S, S, T) — same contract as zero."""
+    model = _make_passthrough_model(B, S)
+    ic = torch.zeros(B, S, S)
+    out = kf_forward(model, ic, T, temporal_pad=temporal_pad, pad_mode="periodic")
+    assert out.shape == (B, 1, S, S, T), (
+        f"periodic pad={temporal_pad}: expected ({B},1,{S},{S},{T}), got {tuple(out.shape)}."
+    )
+
+
+def test_kf_forward_periodic_pad_wraps_first_frames():
+    """pad_mode='periodic' must append the first P frames of the input, not zeros."""
+    B, S, T, pad = 1, 4, 6, 3
+
+    captured = {}
+
+    class _CapturingModel(torch.nn.Module):
+        def forward(self, x):
+            captured["input"] = x.detach().clone()
+            return x[:, :1, ...]
+
+    torch.manual_seed(7)
+    ic = torch.randn(B, S, S)
+    kf_forward(_CapturingModel(), ic, T, temporal_pad=pad, pad_mode="periodic")
+
+    x_seen = captured["input"]
+    assert x_seen.shape == (B, 4, S, S, T + pad)
+
+    # frames T..T+pad-1 must equal frames 0..pad-1 (periodic wrap)
+    torch.testing.assert_close(
+        x_seen[..., T:T + pad],
+        x_seen[..., :pad],
+        atol=1e-6, rtol=0.0,
+        msg="Periodic pad frames do not match the first P frames of the input.",
+    )
+
+
+def test_kf_forward_periodic_pad_not_zero():
+    """pad_mode='periodic' must not produce zero-valued pad frames (non-zero IC)."""
+    B, S, T, pad = 1, 4, 6, 3
+
+    captured = {}
+
+    class _CapturingModel(torch.nn.Module):
+        def forward(self, x):
+            captured["input"] = x.detach().clone()
+            return x[:, :1, ...]
+
+    ic = torch.ones(B, S, S)
+    kf_forward(_CapturingModel(), ic, T, temporal_pad=pad, pad_mode="periodic")
+
+    pad_frames = captured["input"][..., T:]
+    assert pad_frames.abs().max() > 0, (
+        "Periodic pad frames are all zero — likely falling through to zero-pad branch."
+    )
+
+
+def test_kf_forward_periodic_pad_gridt_seam():
+    """gridt at wrapped frames equals frames 0..pad-1; seam jump 1.0→0 same as zero-pad."""
+    B, S, T, pad = 1, 4, 6, 3
+    time_scale = 1.0
+    captured = {}
+
+    class _CapturingModel(torch.nn.Module):
+        def forward(self, x):
+            captured["input"] = x.detach().clone()
+            return x[:, :1, ...]
+
+    torch.manual_seed(7)
+    ic = torch.randn(B, S, S)
+    kf_forward(_CapturingModel(), ic, T, time_scale=time_scale, temporal_pad=pad, pad_mode="periodic")
+
+    x = captured["input"]  # (B, 4, S, S, T+pad)
+    gridt_ch = 2
+    # last original frame carries time_scale; first wrapped frame jumps back to 0
+    assert abs(x[0, gridt_ch, 0, 0, T - 1].item() - time_scale) < 1e-6
+    assert abs(x[0, gridt_ch, 0, 0, T].item()) < 1e-6
+    # wrapped frames match original frames 0..pad-1 in gridt
+    torch.testing.assert_close(
+        x[:, gridt_ch, ..., T:T + pad],
+        x[:, gridt_ch, ..., :pad],
+        atol=1e-6, rtol=0.0,
+    )
+
+
+def test_kf_forward_periodic_pad_original_frames_unchanged():
+    """Frames 0..T-1 must be identical across pad_mode='zero' and 'periodic'."""
+    B, S, T, pad = 1, 4, 6, 3
+    captured_zero, captured_periodic = {}, {}
+
+    def make_capturer(store):
+        class _C(torch.nn.Module):
+            def forward(self, x):
+                store["input"] = x.detach().clone()
+                return x[:, :1, ...]
+        return _C()
+
+    torch.manual_seed(7)
+    ic = torch.randn(B, S, S)
+    kf_forward(make_capturer(captured_zero), ic, T, temporal_pad=pad, pad_mode="zero")
+    kf_forward(make_capturer(captured_periodic), ic, T, temporal_pad=pad, pad_mode="periodic")
+
+    torch.testing.assert_close(
+        captured_zero["input"][..., :T],
+        captured_periodic["input"][..., :T],
+        atol=1e-6, rtol=0.0,
+        msg="Frames 0..T-1 differ between zero and periodic modes.",
+    )
+
+
+def test_kf_forward_periodic_pad_zero_temporal_noop():
+    """temporal_pad=0 with pad_mode='periodic' must not raise and returns (B,1,S,S,T)."""
+    B, S, T = 1, 4, 6
+    model = _make_passthrough_model(B, S)
+    ic = torch.zeros(B, S, S)
+    out = kf_forward(model, ic, T, temporal_pad=0, pad_mode="periodic")
+    assert out.shape == (B, 1, S, S, T)
+
+
+def test_kf_forward_invalid_pad_mode_raises():
+    """An unrecognised pad_mode must raise ValueError immediately."""
+    B, S, T = 1, 4, 6
+    model = _make_passthrough_model(B, S)
+    ic = torch.zeros(B, S, S)
+    with pytest.raises(ValueError, match="pad_mode"):
+        kf_forward(model, ic, T, temporal_pad=2, pad_mode="circular")
