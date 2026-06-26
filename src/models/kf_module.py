@@ -5,7 +5,7 @@ from typing import Any, Mapping
 from neuralop import LpLoss
 
 from src.models.kf_fno import build_fno_kf, kf_forward, kf_forward_2d
-from src.pde.ns import KFLoss
+from src.pde.ns import KFLoss, cheb_lowpass
 
 
 def _get(config: Any, key: str, default: Any = None) -> Any:
@@ -34,12 +34,14 @@ class KFLitModule(L.LightningModule):
         band_beta = _get(loss_cfg, "band_beta", 1.0)
         band_k_lo = _get(loss_cfg, "band_k_lo", 2)
         band_k_hi = _get(loss_cfg, "band_k_hi", 7)
+        band_mask_kmax = _get(loss_cfg, "band_mask_kmax", None)
         self.loss_fn = KFLoss(re=re, t_interval=t_interval,
                               data_weight=data_weight, pde_weight=pde_weight,
                               ic_weight=ic_weight, time_weight_p=time_weight_p,
                               time_weight_alpha=time_weight_alpha,
                               band_mode=band_mode, band_beta=band_beta,
-                              band_k_lo=band_k_lo, band_k_hi=band_k_hi)
+                              band_k_lo=band_k_lo, band_k_hi=band_k_hi,
+                              band_mask_kmax=band_mask_kmax)
 
         opt_cfg = _get(config, "opt")
         self._lr = _get(opt_cfg, "learning_rate", 1e-3)
@@ -99,6 +101,12 @@ class KFLitModule(L.LightningModule):
             losses = self.loss_fn(pred, y)
         self.log("val_l2", l2, prog_bar=True, on_step=False, on_epoch=True)
         self.log("val_ic_loss", losses["ic"], on_step=False, on_epoch=True)
+        if self.loss_fn.band_mask_kmax is not None:
+            kmax = self.loss_fn.band_mask_kmax
+            l2_band = self.loss_fn.lp.rel(cheb_lowpass(w, kmax),
+                                           cheb_lowpass(y, kmax))
+            self.log("val_l2_band", l2_band, prog_bar=True, on_step=False,
+                     on_epoch=True)
         # Stash one batch for KFVisualizerCallback (overwritten each step, last batch kept)
         self._val_batch = {"pred": pred.detach().cpu(), "target": target.detach().cpu()}
         return l2
