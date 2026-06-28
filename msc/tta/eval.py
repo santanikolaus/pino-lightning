@@ -61,11 +61,12 @@ def resid_minus_forcing(w: torch.Tensor, nu: float) -> torch.Tensor:
 
 
 def band_eval(model: torch.nn.Module, dataset, device,
-              op_re: int, test_re: int) -> dict:
+              op_re: int, test_re: int, zero_coarse: bool = False) -> dict:
     """Forward `model` over `dataset`; band-resolve err(û,GT) and residual fractions.
 
     op_re  -> ν for the residual band-fraction (the operator's own physics claim).
     test_re-> ν for residual(GT) self-consistency check.
+    zero_coarse -> feed zeros as the coarse channel (5-ch model, ablation).
     Returns scalars (err_k7, err_full, early, late, ratio, resu_f7, resgt_f7),
     the pre-registered gate booleans, the time curve err_t, and raw band powers.
     """
@@ -83,9 +84,16 @@ def band_eval(model: torch.nn.Module, dataset, device,
         ic = dataset[i]["x"].unsqueeze(0).to(device)
         gt = dataset[i]["y"].unsqueeze(0).to(device)
         T = gt.shape[-1]
+        if zero_coarse:
+            coarse_traj = torch.zeros(1, S, S, T, device=device)
+        elif "coarse" in dataset[i]:
+            coarse_traj = dataset[i]["coarse"].unsqueeze(0).to(device)
+        else:
+            coarse_traj = None
         with torch.no_grad():
             uhat = kf_forward(model, ic, T, time_scale=setup.TIME_SCALE,
-                              temporal_pad=setup.TEMPORAL_PAD).squeeze(1)   # (1,S,S,T)
+                              temporal_pad=setup.TEMPORAL_PAD,
+                              coarse_traj=coarse_traj).squeeze(1)   # (1,S,S,T)
         u_pt += band_power_t(uhat, kinf, n_bands)
         gt_pt += band_power_t(gt, kinf, n_bands)
         err_pt += band_power_t(uhat - gt, kinf, n_bands)
