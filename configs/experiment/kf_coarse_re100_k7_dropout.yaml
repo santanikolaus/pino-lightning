@@ -1,0 +1,45 @@
+# @package _global_
+# Coarse-k7 oracle with per-batch dropout — forces model to learn both oracle and null paths.
+# coarse_dropout_p=0.5: half of batches see zeros as the 5th channel during training.
+# val always uses real coarse (oracle upper bound) + logs val_l2_zerocoarse live.
+# Smoke-test before long run: set coarse_dropout_p=1.0 — train loss must track null model (~0.4), not oracle (~0.08).
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: coarse-k7-re100-dropout50
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 15
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  coarse_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k7_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+  coarse_dropout_p: 0.5
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  data_channels: 5
+  lifting_channel_ratio: 0
+  hidden_channels: 128
