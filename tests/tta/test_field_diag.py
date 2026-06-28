@@ -110,7 +110,43 @@ def test_shape_mismatch_raises():
 
 def test_render_all_writes_gifs(tmp_path):
     a = FieldDiagAnimator(_field(8), _field(9), kmax=KMAX)
-    e, s = a.render_all(str(tmp_path), tag="t", fps=4)
+    e, s, sp = a.render_all(str(tmp_path), tag="t", fps=4)
     import os
-    for p in (e, s):
+    for p in (e, s, sp):
         assert os.path.getsize(p) > 0
+
+
+# ---------------------------------------------------------------------------
+# 9. radial spectrum: shape, positivity, Parseval (k=0 excluded)
+# ---------------------------------------------------------------------------
+
+def test_radial_spectrum_shape_and_positive():
+    f = _field(10)[:, :, 0]   # (S, S) single frame
+    k, p = FieldDiagAnimator._radial_spectrum(f)
+    assert k.shape == p.shape
+    assert k[0] == 1           # DC excluded
+    assert (p >= 0).all()
+
+
+def test_radial_spectrum_bins_partition_modes():
+    """Each radial bin matches direct sum of FFT power for modes rounded to that k."""
+    rng = np.random.default_rng(42)
+    f = rng.standard_normal((S, S))
+    k_bins, p = FieldDiagAnimator._radial_spectrum(f)
+    power2d = (np.abs(np.fft.fft2(f)) ** 2) / (S * S)
+    kx = np.fft.fftfreq(S, d=1.0 / S).astype(int)
+    K = np.round(np.sqrt(np.add.outer(kx ** 2, kx ** 2))).astype(int)
+    for ki, pi in zip(k_bins, p):
+        np.testing.assert_allclose(pi, power2d[K == ki].sum(), rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# 10. spectrum_gif smoke test: file written and non-empty
+# ---------------------------------------------------------------------------
+
+def test_spectrum_gif_writes_file(tmp_path):
+    a = FieldDiagAnimator(_field(11), _field(12), kmax=KMAX)
+    import os
+    path = str(tmp_path / "spec.gif")
+    a.spectrum_gif(path, fps=4)
+    assert os.path.getsize(path) > 0

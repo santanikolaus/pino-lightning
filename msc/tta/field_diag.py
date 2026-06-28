@@ -1,9 +1,11 @@
 """Field-error diagnostic animations: GT vs operator PRED over a trajectory.
 
 Reusable class (fields in, GIFs out) for SEEING where/how the operator errs:
-  - error_gif: GT | PRED | (GT - PRED)                      -- raw residual
-  - swap_gif:  GT | GT-amp & PRED-phase | PRED-amp & GT-phase -- separates WHERE
-               (phase) from HOW MUCH (amplitude), low-passed to Chebyshev k<=kmax.
+  - error_gif:    GT | PRED | (GT - PRED)                      -- raw residual
+  - swap_gif:     GT | GT-amp & PRED-phase | PRED-amp & GT-phase -- separates WHERE
+                  (phase) from HOW MUCH (amplitude), low-passed to Chebyshev k<=kmax.
+  - spectrum_gif: log-log radial energy spectrum E(k) GT vs PRED animated over T
+                  (isotropic Euclidean shells; k^-3 reference + n_modes marker).
 
 The amplitude/phase swap reuses the spectral identity F = |F| * (F/|F|): replacing
 PRED's amplitude with GT's (keeping PRED's phase) isolates positional error; the
@@ -118,13 +120,82 @@ class FieldDiagAnimator:
         v = self._sym_vmax(*panels)
         return self._animate(path, panels, titles, [v, v, v], **kw)
 
+    @staticmethod
+    def _radial_spectrum(field2d: np.ndarray):
+        """(S, S) real field -> (k_bins, power) isotropic radial energy spectrum.
+
+        Euclidean shells k = round(sqrt(kx²+ky²)); k=0 excluded (DC / mean field).
+        Power normalised by N² so absolute scale is resolution-independent.
+        """
+        H, W = field2d.shape
+        power2d = (np.abs(np.fft.fft2(field2d)) ** 2) / (H * W)
+        kx = np.fft.fftfreq(W, d=1.0 / W).astype(int)
+        ky = np.fft.fftfreq(H, d=1.0 / H).astype(int)
+        K = np.round(np.sqrt(np.add.outer(ky ** 2, kx ** 2))).astype(int)
+        k_max = min(H, W) // 2
+        bins = np.arange(1, k_max + 1)
+        power = np.array([power2d[K == ki].sum() for ki in bins])
+        return bins, power
+
+    def spectrum_gif(self, path, n_modes: int = 8, fps: int = 10,
+                     stride: int = 1, dpi: int = 100):
+        """Animate log-log radial vorticity power spectrum Z(k): GT (solid) vs PRED (dashed).
+
+        Input fields are vorticity (ω), so Z(k) = Σ_{|k|=k} |ω̂|² / N².
+        Reference slope: k⁻¹ (= k²·E(k) with E(k)~k⁻³, 2D enstrophy-cascade inertial range).
+        Anchored to GT time-mean at k=4 (above the KF forcing scale k_f≈4).
+        Vertical dashed line marks the FNO representable-band cutoff n_modes.
+        Y-axis fixed over T so energy pile-up / dissipation are directly visible.
+        """
+        k, _ = self._radial_spectrum(self.gt[:, :, 0])
+        gt_specs   = np.stack([self._radial_spectrum(self.gt[:, :, t])[1]   for t in range(self.T)])
+        pred_specs = np.stack([self._radial_spectrum(self.pred[:, :, t])[1] for t in range(self.T)])
+
+        # k^-1 reference anchored to GT time-mean at k=4 (vorticity: Z(k) ~ k⁻¹)
+        gt_mean = gt_specs.mean(0)
+        anchor_idx = min(3, len(k) - 1)   # k=4 is index 3 (bins start at 1)
+        ref = gt_mean[anchor_idx] * (k / k[anchor_idx]) ** (-1)
+
+        # fixed y-limits across all frames
+        all_vals = np.concatenate([gt_specs.ravel(), pred_specs.ravel()])
+        pos = all_vals[all_vals > 0]
+        y_lo = pos.min() * 0.3
+        y_hi = pos.max() * 3.0
+
+        frames = list(range(0, self.T, stride))
+        fig, ax = plt.subplots(figsize=(6, 5))
+        line_gt,   = ax.loglog(k, gt_specs[frames[0]],   color="steelblue", lw=1.5, label="GT")
+        line_pred, = ax.loglog(k, pred_specs[frames[0]], color="tomato",    lw=1.5, ls="--", label="PRED")
+        ax.loglog(k, ref, color="black", lw=0.8, ls=":", alpha=0.5, label="k⁻¹")
+        ax.axvline(n_modes, color="gray", lw=1.0, ls="--", label=f"n_modes={n_modes}")
+        ax.set_ylim(y_lo, y_hi)
+        ax.set_xlabel("Wavenumber k")
+        ax.set_ylabel("Z(k)  [vorticity power]")
+        ax.legend(fontsize=9, loc="lower left")
+        ax.grid(True, which="both", alpha=0.3)
+        title = ax.set_title(f"t = {frames[0] + 1}/{self.T}")
+        fig.tight_layout()
+
+        def update(fi):
+            line_gt.set_ydata(gt_specs[fi])
+            line_pred.set_ydata(pred_specs[fi])
+            title.set_text(f"t = {fi + 1}/{self.T}")
+            return line_gt, line_pred, title
+
+        anim = FuncAnimation(fig, update, frames=frames, blit=False)
+        anim.save(path, writer=PillowWriter(fps=fps), dpi=dpi)
+        plt.close(fig)
+        return path
+
     def render_all(self, outdir, tag="diag", **kw):
-        """Write both GIFs into outdir; returns the two paths."""
+        """Write all three GIFs into outdir; returns (error, swap, spectrum) paths."""
         import os
         os.makedirs(outdir, exist_ok=True)
         e = self.error_gif(os.path.join(outdir, f"{tag}_error.gif"), **kw)
         s = self.swap_gif(os.path.join(outdir, f"{tag}_swap.gif"), **kw)
-        return e, s
+        sp = self.spectrum_gif(os.path.join(outdir, f"{tag}_spectrum.gif"),
+                               fps=kw.get("fps", 10), stride=kw.get("stride", 1))
+        return e, s, sp
 
 
 def _cli():
@@ -140,9 +211,8 @@ def _cli():
     p.add_argument("--mixer", default="none", help="UNet bottleneck mixer kind")
     p.add_argument("--modes", type=int, default=8)
     p.add_argument("--hidden", type=int, default=64)
+    p.add_argument("--depth", type=int, default=3, help="UNet depth (res16 arms use 1)")
     p.add_argument("--levels", default="", help="UNet extra spectral levels, e.g. 1")
-    p.add_argument("--n-modes", type=int, default=8, help="FNO spatial n_modes")
-    p.add_argument("--hidden-channels", type=int, default=64, help="FNO width")
     p.add_argument("--offset", type=int, default=260, help="held-out split start")
     p.add_argument("--traj", type=int, default=0, help="trajectory index within the split")
     p.add_argument("--sub-t", type=int, default=2)
@@ -156,25 +226,22 @@ def _cli():
     p.add_argument("--device", default="cuda")
     args = p.parse_args()
 
+    device = torch.device(args.device)
     if args.arch.lower() == "unet":
         levels = [int(x) for x in args.levels.split(",") if x.strip()]
         cfg = dict(model_arch="unet", data_channels=4, out_channels=1,
-                   base_channels=64, depth=3, temporal_mixer=args.mixer,
+                   base_channels=64, depth=args.depth, temporal_mixer=args.mixer,
                    temporal_mixer_modes=args.modes, spatial_mixer_hidden=args.hidden)
         if levels:
             cfg["spatial_mixer_levels"] = levels
+        model = build_fno_kf(cfg)
+        sd = torch.load(args.ckpt, map_location=device, weights_only=False)["state_dict"]
+        state = {k[len("model."):]: v for k, v in sd.items() if k.startswith("model.")}
+        model.load_state_dict(state, strict=True)
+        model = model.to(device).eval()
     else:
-        cfg = dict(model_arch="fno", data_channels=4, out_channels=1,
-                   n_modes=[args.n_modes, args.n_modes, 8],
-                   hidden_channels=args.hidden_channels, n_layers=4,
-                   lifting_channel_ratio=0, projection_channel_ratio=2)
-
-    device = torch.device(args.device)
-    model = build_fno_kf(cfg)
-    sd = torch.load(args.ckpt, map_location=device, weights_only=False)["state_dict"]
-    state = {k[len("model."):]: v for k, v in sd.items() if k.startswith("model.")}
-    model.load_state_dict(state, strict=True)
-    model = model.to(device).eval()
+        from msc.tta import setup  # canonical FNO arch + strict loader (matches Gate 2 / amp_phase)
+        model = setup.load_model(args.ckpt, device)
 
     ds = KFDataset(args.data, n_samples=args.traj + 1, offset=args.offset, sub_t=args.sub_t)
     gt = _to_numpy(ds[args.traj]["y"])               # (S, S, T)
