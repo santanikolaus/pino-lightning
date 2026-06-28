@@ -70,6 +70,10 @@ data:
   ns_re500_res16_spectral: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res16_part0.npy
   ns_re500_res16_strided:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res16_strided_part0.npy
 
+  # 8² spectral downsample of Re100 256² GT via scripts/materialize_res256.py (256→8), (300, 129, 8, 8) f32, ~3 MB
+  # Nyquist=4; retains only 4 lowest Fourier modes — extreme under-resolution
+  ns_re100_res8_spectral:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res8_part0.npy
+
 outputs:
   hydra_outputs: /system/user/studentwork/wehofer/pino-lightning/outputs
   # Hydra multirun / single-run output logs, organised by date (YYYY-MM-DD/)
