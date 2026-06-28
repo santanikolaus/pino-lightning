@@ -64,6 +64,7 @@ class KFLitModule(L.LightningModule):
         self.pad_mode = _get(data_cfg, "pad_mode", "zero")
         self.data_t_lo = _get(data_cfg, "data_t_lo", None)
         self.data_t_hi = _get(data_cfg, "data_t_hi", None)
+        self.coarse_dropout_p = _get(data_cfg, "coarse_dropout_p", 0.0)
 
     def forward(self, ic, T=None, time_scale=None, coarse=None):
         if self._use_fno2d:
@@ -78,6 +79,9 @@ class KFLitModule(L.LightningModule):
         ic = batch["x"].to(self.device)
         target = batch["y"].to(self.device)
         coarse = batch["coarse"].to(self.device) if "coarse" in batch else None
+        if coarse is not None and self.coarse_dropout_p > 0.0:
+            if torch.rand(1).item() < self.coarse_dropout_p:
+                coarse = torch.zeros_like(coarse)
         if self.data_t_lo is not None and self.data_t_hi is not None:
             target = target[..., self.data_t_lo:self.data_t_hi]
         T = target.shape[-1]
@@ -123,6 +127,10 @@ class KFLitModule(L.LightningModule):
                               self.loss_fn.band_iso_k_hi))
             self.log("val_l2_band", l2_band, prog_bar=True, on_step=False,
                      on_epoch=True)
+        if coarse is not None and self.coarse_dropout_p > 0.0:
+            pred_zc = self(ic, T=T, coarse=torch.zeros_like(coarse)).float()
+            l2_zc = LpLoss(d=3, p=2, reduction="mean").rel(pred_zc.squeeze(1), y)
+            self.log("val_l2_zerocoarse", l2_zc, prog_bar=True, on_step=False, on_epoch=True)
         # Stash one batch for KFVisualizerCallback (overwritten each step, last batch kept)
         self._val_batch = {"pred": pred.detach().cpu(), "target": target.detach().cpu()}
         return l2
