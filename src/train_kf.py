@@ -20,6 +20,7 @@ def main(cfg: DictConfig) -> None:
         batch_size=cfg.data.batch_size,
         num_workers=cfg.data.num_workers,
         sub_t=cfg.data.sub_t,
+        coarse_path=cfg.data.get("coarse_path", None),
     )
     datamodule.setup(stage="fit")
 
