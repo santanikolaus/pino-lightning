@@ -65,21 +65,23 @@ class KFLitModule(L.LightningModule):
         self.data_t_lo = _get(data_cfg, "data_t_lo", None)
         self.data_t_hi = _get(data_cfg, "data_t_hi", None)
 
-    def forward(self, ic, T=None, time_scale=None):
+    def forward(self, ic, T=None, time_scale=None, coarse=None):
         if self._use_fno2d:
             return kf_forward_2d(self.model, ic, T or self.T)
         return kf_forward(
             self.model, ic, T or self.T, time_scale or self.time_scale,
             temporal_pad=self.temporal_pad, pad_mode=self.pad_mode,
+            coarse_traj=coarse,
         )
 
     def training_step(self, batch, batch_idx):
         ic = batch["x"].to(self.device)
         target = batch["y"].to(self.device)
+        coarse = batch["coarse"].to(self.device) if "coarse" in batch else None
         if self.data_t_lo is not None and self.data_t_hi is not None:
             target = target[..., self.data_t_lo:self.data_t_hi]
         T = target.shape[-1]
-        pred = self(ic, T=T)
+        pred = self(ic, T=T, coarse=coarse)
         # PDE residual multiplies by wavenumbers up to k=S/2 and squares them, which
         # overflows fp16 (→ NaN); compute the physics loss in fp32 even under AMP.
         with torch.autocast(device_type=self.device.type, enabled=False):
@@ -93,10 +95,11 @@ class KFLitModule(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         ic = batch["x"].to(self.device)
         target = batch["y"].to(self.device)
+        coarse = batch["coarse"].to(self.device) if "coarse" in batch else None
         if self.data_t_lo is not None and self.data_t_hi is not None:
             target = target[..., self.data_t_lo:self.data_t_hi]
         T = target.shape[-1]
-        pred = self(ic, T=T)
+        pred = self(ic, T=T, coarse=coarse)
         with torch.autocast(device_type=self.device.type, enabled=False):
             pred = pred.float()
             w = pred.squeeze(1)

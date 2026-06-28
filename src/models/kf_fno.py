@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-from typing import Union
+from typing import Optional, Union
 
 from neuralop import get_model  # type: ignore[import]
 from neuralop.models import UNO  # type: ignore[import]
@@ -29,16 +29,19 @@ def get_grid3d(S: int, T: int, time_scale: float = 1.0, device: Union[str, torch
     return gridx, gridy, gridt
 
 
-def prepare_input(ic: Tensor, T: int, time_scale: float = 1.0) -> Tensor:
+def prepare_input(ic: Tensor, T: int, time_scale: float = 1.0,
+                  coarse_traj: Optional[Tensor] = None) -> Tensor:
     """Prepare FNO3d input from initial condition vorticity.
 
     Args:
         ic: initial condition vorticity, shape (B, S, S)
         T: number of time steps
         time_scale: scales the t-coordinate range to [0, time_scale]
+        coarse_traj: optional band-limited trajectory (B, S, S, T); when provided,
+                     appended as a 5th channel so output is (B, S, S, T, 5).
 
     Returns:
-        Tensor of shape (B, S, S, T, 4) with channels [gridx, gridy, gridt, ic]
+        Tensor of shape (B, S, S, T, 4) or (B, S, S, T, 5)
     """
     B, S, _ = ic.shape
 
@@ -50,7 +53,10 @@ def prepare_input(ic: Tensor, T: int, time_scale: float = 1.0) -> Tensor:
     gridy = gridy.expand(B, S, S, T, 1)
     gridt = gridt.expand(B, S, S, T, 1)
 
-    return torch.cat([gridx, gridy, gridt, ic_broadcast], dim=-1)
+    channels = [gridx, gridy, gridt, ic_broadcast]
+    if coarse_traj is not None:
+        channels.append(coarse_traj.unsqueeze(-1))   # (B, S, S, T, 1)
+    return torch.cat(channels, dim=-1)
 
 
 def _build_uno(model_cfg) -> torch.nn.Module:
@@ -206,11 +212,13 @@ def kf_forward(
     time_scale: float = 1.0,
     temporal_pad: int = 0,
     pad_mode: str = "zero",
+    coarse_traj: Optional[Tensor] = None,
 ) -> Tensor:
     """Run the full KF pipeline: IC → prepare_input → permute → FNO → output.
 
     Args:
-        model: FNO model from build_fno_kf, expects (B, 4, S, S, T) input
+        model: FNO model from build_fno_kf, expects (B, C, S, S, T) input where
+               C=4 without coarse or C=5 with coarse_traj.
         ic: initial condition vorticity, shape (B, S, S)
         T: number of time steps to predict
         time_scale: passed through to prepare_input
@@ -224,6 +232,8 @@ def kf_forward(
                   discontinuity in the domain-padding buffer with real IC content.
                   Partial implementation of Cao et al. arXiv:2405.17211 §2.2 (padding half only;
                   layernorm absent — moot under norm:null).
+        coarse_traj: optional band-limited trajectory (B, S, S, T); passed through to
+                     prepare_input as the 5th channel. Requires model.data_channels=5.
 
     Returns:
         Tensor shape (B, 1, S, S, T) — predicted vorticity trajectory
@@ -231,8 +241,8 @@ def kf_forward(
     if pad_mode not in ("zero", "periodic"):
         raise ValueError(f"pad_mode must be 'zero' or 'periodic', got {pad_mode!r}")
 
-    x = prepare_input(ic, T, time_scale)          # (B, S, S, T, 4)
-    x = x.permute(0, 4, 1, 2, 3)                 # (B, 4, S, S, T)
+    x = prepare_input(ic, T, time_scale, coarse_traj)  # (B, S, S, T, 4or5)
+    x = x.permute(0, 4, 1, 2, 3)                       # (B, 4or5, S, S, T)
     if temporal_pad > 0:
         if pad_mode == "periodic":
             x = torch.cat([x, x[..., :temporal_pad]], dim=-1)  # (B, 4, S, S, T+pad)

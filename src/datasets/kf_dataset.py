@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from typing import Optional
 
 
 class KFDataset(Dataset):
@@ -18,9 +19,14 @@ class KFDataset(Dataset):
         sub_t: temporal subsampling stride (default 1 = no subsampling).
                sub_t=2 matches the paper's Table 8 setup: load T=128 files and
                subsample every 2nd frame → 65 effective frames at dt=1/64.
+        coarse_path: optional path to a band-limited coarse trajectory file (same shape
+                     as path). When provided, items include a "coarse" key with the
+                     low-passed trajectory (S, S, T_eff). Must be derived from the same
+                     source as path so that index alignment holds.
     """
 
-    def __init__(self, path: str, n_samples: int, offset: int = 0, *, sub_t: int):
+    def __init__(self, path: str, n_samples: int, offset: int = 0, *,
+                 sub_t: int, coarse_path: Optional[str] = None):
         raw = np.load(path, mmap_mode='r')
         # Slice the requested window
         chunk = raw[offset: offset + n_samples]                  # (n_samples, T+1, S, S)
@@ -31,10 +37,23 @@ class KFDataset(Dataset):
         arr = np.ascontiguousarray(chunk.transpose(0, 2, 3, 1))
         self.data = torch.from_numpy(arr)                        # float32 preserved
 
+        self.coarse = None
+        if coarse_path is not None:
+            raw_c = np.load(coarse_path, mmap_mode='r')
+            chunk_c = raw_c[offset: offset + n_samples]
+            if sub_t > 1:
+                chunk_c = chunk_c[:, ::sub_t, :, :]
+            self.coarse = torch.from_numpy(
+                np.ascontiguousarray(chunk_c.transpose(0, 2, 3, 1))
+            )
+
     def __len__(self) -> int:
         return self.data.shape[0]
 
     def __getitem__(self, idx: int) -> dict:
         traj = self.data[idx]  # (S, S, T+1)
         ic = traj[..., 0]      # (S, S) — first time frame
-        return {"x": ic, "y": traj}
+        out = {"x": ic, "y": traj}
+        if self.coarse is not None:
+            out["coarse"] = self.coarse[idx]   # (S, S, T_eff)
+        return out
