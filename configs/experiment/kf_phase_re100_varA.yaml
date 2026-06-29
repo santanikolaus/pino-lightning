@@ -1,0 +1,53 @@
+# @package _global_
+# Stage-1 phase model — Variant A (raw phase only).
+#
+# Input: phase-normalized IC (k<=7 Fourier modes set to equal amplitude, scaled
+#        to spatial RMS~1).  No amplitude information given.
+#
+# Objective: data L2 on phase-normalized targets = monotone circular phase loss.
+#            PDE loss disabled (NS residual undefined on amplitude-flat fields).
+#
+# Decision arm: Variant B — A is expected to fail (phase-normalized IC does not
+# fully determine phase trajectory; advection speed ~ amplitude, which A hides).
+# A<B is the expected result; A~=B is the informative surprise.
+# Eval: per-shell A_k (GT-energy-weighted) of phase-norm-pred vs raw GT.
+# Comparable to banked baseline (op100 late: k5=0.65, k6=0.49, k7=0.40).
+#
+# Materialization: scripts/materialize_phase_k7.py --re 100 --source-file <NS_Re100>
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: phase-k7-re100-varA
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_phase_k7_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 0.0   # NS residual undefined on phase-normalized fields
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  data_channels: 4          # gridx, gridy, gridt, phase-IC
+  lifting_channel_ratio: 0
+  hidden_channels: 128

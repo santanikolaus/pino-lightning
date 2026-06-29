@@ -1,0 +1,54 @@
+# @package _global_
+# Stage-1 phase model — Variant B (phase IC + coarse-k7 IC amplitude as 5th channel).
+#
+# Input channel 4: phase-normalized IC (same as Variant A).
+# Input channel 5: coarse-k7 IC amplitude (real vorticity, k<=7 only, t=0 broadcast to T).
+#                  Gives the model the IC energy distribution without oracle future amplitudes.
+#
+# coarse_ic_only: true — passes only IC frame (t=0) of the coarse file, broadcast to T.
+#                 coarse_path points to the already-materialized coarse-k7 file.
+#
+# A vs B discriminates: is amplitude information in the IC necessary for phase tracking?
+# Expected: B >= A.  A~=B is the informative result.
+# Decision arm: this config (B).  Kill the phase direction only if B fails.
+# Eval: per-shell A_k (GT-energy-weighted) of phase-norm-pred vs raw GT.
+# Comparable to banked baseline (op100 late: k5=0.65, k6=0.49, k7=0.40).
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: phase-k7-re100-varB
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_phase_k7_part0.npy
+  coarse_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k7_part0.npy
+  coarse_ic_only: true
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 0.0   # NS residual undefined on phase-normalized fields
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  data_channels: 5          # gridx, gridy, gridt, phase-IC, coarse-k7-IC
+  lifting_channel_ratio: 0
+  hidden_channels: 128
