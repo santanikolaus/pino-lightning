@@ -181,7 +181,7 @@ def main():
     n_ics = len(ic_indices)
     n_amp = len(eps_amp)
     n_phs = len(sigma_phase)
-    n_fr  = len(PROBE)
+    n_fr  = len(PROBE_FRAMES)
 
     all_amp_ak  = np.zeros((n_ics, n_amp, n_sib, n_fr, K_EVAL), np.float32)
     all_amp_er  = np.zeros((n_ics, n_amp, n_sib, n_fr, K_EVAL), np.float32)
