@@ -4,7 +4,7 @@ accelerator: gpu
 devices: 1
 precision: 32  # override to 16-mixed for fp16 tensor-core speedup (physics loss stays fp32)
 enable_model_summary: false
-check_val_every_n_epoch: 50
+check_val_every_n_epoch: 15
 limit_train_batches: null
 limit_val_batches: null
 limit_test_batches: null
