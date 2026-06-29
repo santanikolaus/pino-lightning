@@ -12,6 +12,7 @@ def _make_dataset(n: int, p: float) -> KFDataset:
     return ds
 
 
+@pytest.mark.skip(reason="KFDataset coarse_shuffle_p removed; stale after coarse-path refactor")
 def test_p0_returns_matched_coarse():
     ds = _make_dataset(10, p=0.0)
     for idx in range(len(ds)):
@@ -19,6 +20,7 @@ def test_p0_returns_matched_coarse():
         assert item["coarse"][0, 0, 0].item() == pytest.approx(float(idx))
 
 
+@pytest.mark.skip(reason="KFDataset coarse_shuffle_p removed; stale after coarse-path refactor")
 def test_p1_always_shuffles():
     ds = _make_dataset(10, p=1.0)
     for idx in range(len(ds)):
@@ -26,6 +28,7 @@ def test_p1_always_shuffles():
         assert item["coarse"][0, 0, 0].item() != pytest.approx(float(idx))
 
 
+@pytest.mark.skip(reason="KFDataset coarse_shuffle_p removed; stale after coarse-path refactor")
 def test_shuffled_index_in_range():
     ds = _make_dataset(20, p=1.0)
     seen = set()
