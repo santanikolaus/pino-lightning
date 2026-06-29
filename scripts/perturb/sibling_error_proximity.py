@@ -73,7 +73,8 @@ def _shell_relL2(pred: torch.Tensor, truth: torch.Tensor, shells: torch.Tensor) 
 def run_ic(ic_idx: int, data: np.ndarray, eps_amps, sigma_phases, n_sib: int,
            model: torch.nn.Module, solver: NavierStokes2d,
            f: torch.Tensor, shells: torch.Tensor,
-           device: torch.device, re: int) -> dict:
+           device: torch.device, re: int,
+           model_chunk: int = 4) -> dict:
     """Run solver + PINO on original IC and all its siblings; return error-proximity arrays.
 
     Sibling ICs are regenerated from the same deterministic seed as ic_sibling_divergence.py
@@ -120,10 +121,16 @@ def run_ic(ic_idx: int, data: np.ndarray, eps_amps, sigma_phases, n_sib: int,
         gt_f = torch.tensor(data[ic_idx, frame].astype(np.float32), device=device)
         solver_check[fi] = float((w_f32[0] - gt_f).norm() / (gt_f.norm() + 1e-30))
 
-    # Run PINO on full batch (no coarse — 4-channel null mode)
+    # Run PINO in chunks to bound peak GPU memory (full batch OOMs at 32 GB for B=31)
     ic_f32 = batch.float()
+    pred_chunks = []
     with torch.no_grad():
-        pred = kf_forward(model, ic_f32, T_EFF, time_scale=TIME_SCALE, temporal_pad=TEMPORAL_PAD)
+        for start in range(0, B, model_chunk):
+            pred_chunks.append(
+                kf_forward(model, ic_f32[start:start + model_chunk],
+                           T_EFF, time_scale=TIME_SCALE, temporal_pad=TEMPORAL_PAD)
+            )
+    pred = torch.cat(pred_chunks, dim=0)
     # pred: (B, 1, S, S, T_EFF)
 
     # Per-shell model error at each probe frame
