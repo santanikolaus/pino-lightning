@@ -8,6 +8,8 @@ band_eval() is pure measurement: it forwards a (possibly adapted) model over the
 test set and band-resolves the error vs GT and the residual fractions. GT enters
 ONLY here, strictly downstream of any adaptation — a Method never sees it.
 """
+import random
+
 import numpy as np
 import torch
 from neuralop import LpLoss
@@ -61,12 +63,15 @@ def resid_minus_forcing(w: torch.Tensor, nu: float) -> torch.Tensor:
 
 
 def band_eval(model: torch.nn.Module, dataset, device,
-              op_re: int, test_re: int, zero_coarse: bool = False) -> dict:
+              op_re: int, test_re: int, zero_coarse: bool = False,
+              shuffle_coarse: bool = False) -> dict:
     """Forward `model` over `dataset`; band-resolve err(û,GT) and residual fractions.
 
     op_re  -> ν for the residual band-fraction (the operator's own physics claim).
     test_re-> ν for residual(GT) self-consistency check.
-    zero_coarse -> feed zeros as the coarse channel (5-ch model, ablation).
+    zero_coarse    -> feed zeros as the coarse channel (5-ch model, ablation).
+    shuffle_coarse -> feed a random other sample's coarse (seed=42, no self-match).
+                     Mirrors coarse_shuffle_p training; tests phase-mismatch sensitivity.
     Returns scalars (err_k7, err_full, early, late, ratio, resu_f7, resgt_f7),
     the pre-registered gate booleans, the time curve err_t, and raw band powers.
     """
@@ -75,6 +80,15 @@ def band_eval(model: torch.nn.Module, dataset, device,
     n_bands = S // 2 + 1
     kinf = cheb_bins(S, device)
     nu_u, nu_gt = 1.0 / op_re, 1.0 / test_re
+
+    _shuf: list = []
+    if shuffle_coarse:
+        rng = random.Random(42)
+        _shuf = list(range(len(dataset)))
+        rng.shuffle(_shuf)
+        for _i in range(len(_shuf)):
+            if _shuf[_i] == _i:
+                _shuf[_i] = (_i + 1) % len(dataset)
 
     u_pt = np.zeros((n_bands, T_eff))
     gt_pt = np.zeros((n_bands, T_eff))
@@ -86,6 +100,8 @@ def band_eval(model: torch.nn.Module, dataset, device,
         T = gt.shape[-1]
         if zero_coarse:
             coarse_traj = torch.zeros(1, S, S, T, device=device)
+        elif shuffle_coarse and "coarse" in dataset[i]:
+            coarse_traj = dataset[_shuf[i]]["coarse"].unsqueeze(0).to(device)
         elif "coarse" in dataset[i]:
             coarse_traj = dataset[i]["coarse"].unsqueeze(0).to(device)
         else:
