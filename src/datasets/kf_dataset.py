@@ -1,3 +1,5 @@
+import random
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -23,10 +25,14 @@ class KFDataset(Dataset):
                      as path). When provided, items include a "coarse" key with the
                      low-passed trajectory (S, S, T_eff). Must be derived from the same
                      source as path so that index alignment holds.
+        coarse_shuffle_p: probability of replacing the matched coarse trajectory with a
+                          random other sample's coarse during __getitem__. Only set on
+                          the training dataset; leave at 0.0 for val/test.
     """
 
     def __init__(self, path: str, n_samples: int, offset: int = 0, *,
-                 sub_t: int, coarse_path: Optional[str] = None):
+                 sub_t: int, coarse_path: Optional[str] = None,
+                 coarse_shuffle_p: float = 0.0):
         raw = np.load(path, mmap_mode='r')
         # Slice the requested window
         chunk = raw[offset: offset + n_samples]                  # (n_samples, T+1, S, S)
@@ -46,6 +52,7 @@ class KFDataset(Dataset):
             self.coarse = torch.from_numpy(
                 np.ascontiguousarray(chunk_c.transpose(0, 2, 3, 1))
             )
+        self.coarse_shuffle_p = coarse_shuffle_p
 
     def __len__(self) -> int:
         return self.data.shape[0]
@@ -55,5 +62,10 @@ class KFDataset(Dataset):
         ic = traj[..., 0]      # (S, S) — first time frame
         out = {"x": ic, "y": traj}
         if self.coarse is not None:
-            out["coarse"] = self.coarse[idx]   # (S, S, T_eff)
+            coarse_idx = idx
+            if self.coarse_shuffle_p > 0.0 and random.random() < self.coarse_shuffle_p:
+                coarse_idx = random.randint(0, len(self) - 1)
+                if coarse_idx == idx and len(self) > 1:
+                    coarse_idx = (idx + 1) % len(self)
+            out["coarse"] = self.coarse[coarse_idx]
         return out

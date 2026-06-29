@@ -1,0 +1,46 @@
+# @package _global_
+# Shuffled-coarse training — p=0.5 of training steps replace the matched GT k<=7
+# coarse channel with a random OTHER sample's coarse trajectory.
+# Tests whether the oracle win is phase-copying (shuffled → null) or structural
+# (shuffled → still below null: model extracts energy statistics, not phase).
+# val always uses real coarse + logs val_l2_zerocoarse.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: coarse-k7-re100-shuffle50
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 15
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  coarse_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k7_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+  coarse_shuffle_p: 0.5
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  data_channels: 5
+  lifting_channel_ratio: 0
+  hidden_channels: 128
