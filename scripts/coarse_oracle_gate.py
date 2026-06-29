@@ -57,13 +57,14 @@ def main():
     print(f"{'mode':<14}{'late_k7':>10}{'early_k7':>10}{'err_k7':>10}{'err_full':>10}")
     print("-" * 50)
 
-    for label, ds, zc in [
-        ("with_coarse",  ds_with, False),
-        ("zero_coarse",  ds_zero, True),
+    for label, ds, zc, sc in [
+        ("with_coarse",    ds_with, False, False),
+        ("shuffle_coarse", ds_with, False, True),
+        ("zero_coarse",    ds_zero, True,  False),
     ]:
         r = band_eval(model, ds, device, op_re=args.op_re, test_re=args.op_re,
-                      zero_coarse=zc)
-        print(f"{label:<14}{r['late']:>10.4f}{r['early']:>10.4f}"
+                      zero_coarse=zc, shuffle_coarse=sc)
+        print(f"{label:<16}{r['late']:>10.4f}{r['early']:>10.4f}"
               f"{r['err_k7']:>10.4f}{r['err_full']:>10.4f}")
     print()
 
