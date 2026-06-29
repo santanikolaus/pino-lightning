@@ -16,7 +16,7 @@ trainer:
 data:
   data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
   coarse_paths:
-    - /system/user/studentwork/wehofer/perturb/sibling_coarse_re100/sibling_coarse_re100_s30_sib0_part0.npy
+    - /system/user/studentwork/wehofer/perturb/sibling_coarse_re100/sibling_coarse_re100_s30_sib1_part0.npy
   n_train: 200
   n_val: 60
   batch_size: 1
