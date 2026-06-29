@@ -28,11 +28,16 @@ class KFDataset(Dataset):
         coarse_shuffle_p: probability of replacing the matched coarse trajectory with a
                           random other sample's coarse during __getitem__. Only set on
                           the training dataset; leave at 0.0 for val/test.
+        coarse_ic_only: when True, batch["coarse"] is the IC frame (t=0) of the coarse
+                        trajectory broadcast across all T time steps instead of the full
+                        trajectory. Use for phase experiments where the 5th FNO channel
+                        should carry only IC-time amplitude information.
     """
 
     def __init__(self, path: str, n_samples: int, offset: int = 0, *,
                  sub_t: int, coarse_path: Optional[str] = None,
-                 coarse_shuffle_p: float = 0.0):
+                 coarse_shuffle_p: float = 0.0,
+                 coarse_ic_only: bool = False):
         raw = np.load(path, mmap_mode='r')
         # Slice the requested window
         chunk = raw[offset: offset + n_samples]                  # (n_samples, T+1, S, S)
@@ -53,6 +58,7 @@ class KFDataset(Dataset):
                 np.ascontiguousarray(chunk_c.transpose(0, 2, 3, 1))
             )
         self.coarse_shuffle_p = coarse_shuffle_p
+        self.coarse_ic_only = coarse_ic_only
 
     def __len__(self) -> int:
         return self.data.shape[0]
@@ -67,5 +73,9 @@ class KFDataset(Dataset):
                 coarse_idx = random.randint(0, len(self) - 1)
                 if coarse_idx == idx and len(self) > 1:
                     coarse_idx = (idx + 1) % len(self)
-            out["coarse"] = self.coarse[coarse_idx]
+            if self.coarse_ic_only:
+                raw_ic = self.coarse[coarse_idx][..., 0]          # (S, S)
+                out["coarse"] = raw_ic.unsqueeze(-1).expand(-1, -1, traj.shape[-1]).clone()
+            else:
+                out["coarse"] = self.coarse[coarse_idx]
         return out

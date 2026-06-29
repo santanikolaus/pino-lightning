@@ -70,9 +70,21 @@ data:
   ns_re500_res16_spectral: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res16_part0.npy
   ns_re500_res16_strided:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res16_strided_part0.npy
 
-  # 8² spectral downsample of Re100 256² GT via scripts/materialize_res256.py (256→8), (300, 129, 8, 8) f32, ~3 MB
-  # Nyquist=4; retains only 4 lowest Fourier modes — extreme under-resolution
-  ns_re100_res8_spectral:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res8_part0.npy
+  # 128² Re100 with k>kmax zeroed — grid-preserving coarse channels (equiv. 16² and 32² mode content)
+  # produced by scripts/materialize_coarse_k7.py; same shape (300, 129, 128, 128) f32 as GT
+  # byte-identical to cheb_lowpass(·, kmax) used at training time
+  ns_re100_res128_coarse_k1:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k1_part0.npy
+  ns_re100_res128_coarse_k3:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k3_part0.npy
+  ns_re100_res128_coarse_k4:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k4_part0.npy
+  ns_re100_res128_coarse_k5:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k5_part0.npy
+  ns_re100_res128_coarse_k6:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k6_part0.npy
+  ns_re100_res128_coarse_k7:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k7_part0.npy
+  ns_re100_res128_coarse_k15: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_k15_part0.npy
+
+  # 128² Re100 with k<=kmax modes phase-normalized (unit amplitude), k>kmax zeroed
+  # produced by scripts/materialize_phase_k7.py; same shape (300, 129, 128, 128) f32
+  # L2 loss on these fields = circular phase loss: 2*(1 - cos(delta_phi)) per mode
+  ns_re100_res128_phase_k7:  /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_phase_k7_part0.npy
 
 outputs:
   hydra_outputs: /system/user/studentwork/wehofer/pino-lightning/outputs

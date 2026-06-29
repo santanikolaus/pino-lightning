@@ -21,6 +21,7 @@ class KFDataModule(L.LightningDataModule):
         sub_t: int,
         coarse_path: Optional[str] = None,
         coarse_shuffle_p: float = 0.0,
+        coarse_ic_only: bool = False,
     ) -> None:
         super().__init__()
         self.data_path = data_path
@@ -33,15 +34,18 @@ class KFDataModule(L.LightningDataModule):
         self.sub_t = sub_t
         self.coarse_path = coarse_path
         self.coarse_shuffle_p = coarse_shuffle_p
+        self.coarse_ic_only = coarse_ic_only
 
     def setup(self, stage: Optional[str] = None) -> None:
         if hasattr(self, "train_dataset"):
             return
         self.train_dataset = KFDataset(self.data_path, self.n_train, offset=self.offset_train,
                                        sub_t=self.sub_t, coarse_path=self.coarse_path,
-                                       coarse_shuffle_p=self.coarse_shuffle_p)
+                                       coarse_shuffle_p=self.coarse_shuffle_p,
+                                       coarse_ic_only=self.coarse_ic_only)
         self.val_dataset = KFDataset(self.data_path, self.n_val, offset=self.offset_val,
-                                     sub_t=self.sub_t, coarse_path=self.coarse_path)
+                                     sub_t=self.sub_t, coarse_path=self.coarse_path,
+                                     coarse_ic_only=self.coarse_ic_only)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
