@@ -95,6 +95,7 @@ def main():
     ap.add_argument("--outdir", default="/tmp/ic_cluster")
     ap.add_argument("--k_max", type=int, default=K_MAX_DEFAULT)
     ap.add_argument("--n_train", type=int, default=N_TRAIN)
+    ap.add_argument("--re", type=int, default=100)
     ap.add_argument("--feature", choices=["amp", "reim"], default="amp",
                     help="amp: amplitudes (translation-invariant, default); reim: raw (Re,Im)")
     args = ap.parse_args()
@@ -102,10 +103,10 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    ds = KFDataset(str(setup.data_path(100)), n_samples=args.n_train,
+    ds = KFDataset(str(setup.data_path(args.re)), n_samples=args.n_train,
                    offset=0, sub_t=setup.SUB_T)
     ics = np.stack([ds[i]["x"].numpy() for i in range(len(ds))])   # (N, S, S)
-    print(f"ICs: {ics.shape}")
+    print(f"Re={args.re}  ICs: {ics.shape}")
 
     amp_only = args.feature == "amp"
     feats, k1_energy, jet_ratio, mask = extract_k_features(ics, args.k_max, amp_only=amp_only)
