@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 import lightning as L
 from torch.utils.data import DataLoader
@@ -22,6 +22,7 @@ class KFDataModule(L.LightningDataModule):
         coarse_path: Optional[str] = None,
         coarse_shuffle_p: float = 0.0,
         coarse_ic_only: bool = False,
+        coarse_paths: Optional[List[str]] = None,
     ) -> None:
         super().__init__()
         self.data_path = data_path
@@ -35,6 +36,7 @@ class KFDataModule(L.LightningDataModule):
         self.coarse_path = coarse_path
         self.coarse_shuffle_p = coarse_shuffle_p
         self.coarse_ic_only = coarse_ic_only
+        self.coarse_paths = coarse_paths
 
     def setup(self, stage: Optional[str] = None) -> None:
         if hasattr(self, "train_dataset"):
@@ -42,10 +44,12 @@ class KFDataModule(L.LightningDataModule):
         self.train_dataset = KFDataset(self.data_path, self.n_train, offset=self.offset_train,
                                        sub_t=self.sub_t, coarse_path=self.coarse_path,
                                        coarse_shuffle_p=self.coarse_shuffle_p,
-                                       coarse_ic_only=self.coarse_ic_only)
+                                       coarse_ic_only=self.coarse_ic_only,
+                                       coarse_paths=self.coarse_paths)
         self.val_dataset = KFDataset(self.data_path, self.n_val, offset=self.offset_val,
                                      sub_t=self.sub_t, coarse_path=self.coarse_path,
-                                     coarse_ic_only=self.coarse_ic_only)
+                                     coarse_ic_only=self.coarse_ic_only,
+                                     coarse_paths=self.coarse_paths)
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

@@ -10,3 +10,4 @@ temporal_pad: 5  # paper-style temporal padding: append 5 frames before FNO forw
 pad_mode: zero  # "zero": append zero frames (default); "periodic": wrap first P frames (Cao et al. §2.2)
 coarse_path: null
 coarse_shuffle_p: null
+coarse_paths: null

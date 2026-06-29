@@ -55,7 +55,10 @@ def prepare_input(ic: Tensor, T: int, time_scale: float = 1.0,
 
     channels = [gridx, gridy, gridt, ic_broadcast]
     if coarse_traj is not None:
-        channels.append(coarse_traj.unsqueeze(-1))   # (B, S, S, T, 1)
+        if coarse_traj.ndim == 4:                              # (B, S, S, T) single coarse
+            channels.append(coarse_traj.unsqueeze(-1))         # → (B, S, S, T, 1)
+        else:                                                   # (B, n_sibs, S, S, T)
+            channels.append(coarse_traj.permute(0, 2, 3, 4, 1))  # → (B, S, S, T, n_sibs)
     return torch.cat(channels, dim=-1)
 
 
