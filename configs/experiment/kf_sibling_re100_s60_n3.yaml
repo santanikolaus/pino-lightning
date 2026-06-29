@@ -1,0 +1,44 @@
+# @package _global_
+# Sibling-as-coarse: σ=0.6, 3 siblings → data_channels=7. Ceiling probe: no dropout.
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: sibling-s60-n3-re100
+
+trainer:
+  max_epochs: 150
+  check_val_every_n_epoch: 15
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  coarse_paths:
+    - /system/user/studentwork/wehofer/perturb/sibling_coarse_re100/sibling_coarse_re100_s60_sib0_part0.npy
+    - /system/user/studentwork/wehofer/perturb/sibling_coarse_re100/sibling_coarse_re100_s60_sib1_part0.npy
+    - /system/user/studentwork/wehofer/perturb/sibling_coarse_re100/sibling_coarse_re100_s60_sib2_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2
+  num_workers: 0
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  data_channels: 7
+  lifting_channel_ratio: 0
+  hidden_channels: 128

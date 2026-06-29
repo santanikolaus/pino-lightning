@@ -3,7 +3,7 @@ import random
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from typing import Optional
+from typing import List, Optional
 
 
 class KFDataset(Dataset):
@@ -32,12 +32,16 @@ class KFDataset(Dataset):
                         trajectory broadcast across all T time steps instead of the full
                         trajectory. Use for phase experiments where the 5th FNO channel
                         should carry only IC-time amplitude information.
+        coarse_paths: list of paths to sibling coarse trajectory files (same shape as path).
+                      Each file provides one sibling channel; batch["coarse"] is
+                      (n_sibs, S, S, T_eff). Mutually exclusive with coarse_path.
     """
 
     def __init__(self, path: str, n_samples: int, offset: int = 0, *,
                  sub_t: int, coarse_path: Optional[str] = None,
                  coarse_shuffle_p: float = 0.0,
-                 coarse_ic_only: bool = False):
+                 coarse_ic_only: bool = False,
+                 coarse_paths: Optional[List[str]] = None):
         raw = np.load(path, mmap_mode='r')
         # Slice the requested window
         chunk = raw[offset: offset + n_samples]                  # (n_samples, T+1, S, S)
@@ -60,6 +64,18 @@ class KFDataset(Dataset):
         self.coarse_shuffle_p = coarse_shuffle_p
         self.coarse_ic_only = coarse_ic_only
 
+        self.coarses = None
+        if coarse_paths is not None:
+            self.coarses = []
+            for cp in coarse_paths:
+                raw_c = np.load(cp, mmap_mode='r')
+                chunk_c = raw_c[offset: offset + n_samples]
+                if sub_t > 1:
+                    chunk_c = chunk_c[:, ::sub_t, :, :]
+                self.coarses.append(torch.from_numpy(
+                    np.ascontiguousarray(chunk_c.transpose(0, 2, 3, 1))
+                ))
+
     def __len__(self) -> int:
         return self.data.shape[0]
 
@@ -67,7 +83,9 @@ class KFDataset(Dataset):
         traj = self.data[idx]  # (S, S, T+1)
         ic = traj[..., 0]      # (S, S) — first time frame
         out = {"x": ic, "y": traj}
-        if self.coarse is not None:
+        if self.coarses is not None:
+            out["coarse"] = torch.stack([c[idx] for c in self.coarses], dim=0)
+        elif self.coarse is not None:
             coarse_idx = idx
             if self.coarse_shuffle_p > 0.0 and random.random() < self.coarse_shuffle_p:
                 coarse_idx = random.randint(0, len(self) - 1)
@@ -79,3 +97,4 @@ class KFDataset(Dataset):
             else:
                 out["coarse"] = self.coarse[coarse_idx]
         return out
+
