@@ -9,3 +9,4 @@ sub_t: 1    # temporal subsampling stride; 1 = no subsampling (T64 files), 2 = p
 temporal_pad: 5  # paper-style temporal padding: append 5 frames before FNO forward, trim after
 pad_mode: zero  # "zero": append zero frames (default); "periodic": wrap first P frames (Cao et al. §2.2)
 coarse_path: null
+coarse_shuffle_p: null

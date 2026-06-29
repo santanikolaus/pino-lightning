@@ -21,6 +21,7 @@ def main(cfg: DictConfig) -> None:
         num_workers=cfg.data.num_workers,
         sub_t=cfg.data.sub_t,
         coarse_path=cfg.data.get("coarse_path", None),
+        coarse_shuffle_p=cfg.data.get("coarse_shuffle_p") or 0.0,
     )
     datamodule.setup(stage="fit")
 
