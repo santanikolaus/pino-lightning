@@ -9,6 +9,9 @@ def _make_dataset(n: int, p: float) -> KFDataset:
     ds.data = torch.zeros(n, 8, 8, 4)
     ds.coarse = torch.stack([torch.full((8, 8, 4), float(i)) for i in range(n)])
     ds.coarse_shuffle_p = p
+    ds.coarse_ic_only = False
+    ds.coarses = None
+    ds.n_context = 1
     return ds
 
 

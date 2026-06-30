@@ -90,7 +90,7 @@ class TestKFDatasetNoCoarse:
         _write_npy(p, N, T + 1, S, np.random.default_rng(0))
         ds = KFDataset(str(p), n_samples=N, sub_t=1)
         item = ds[0]
-        assert set(item.keys()) == {"x", "y"}
+        assert set(item.keys()) == {"x", "y", "ctx"}
 
     def test_item_x_shape_is_S_S(self, tmp_path):
         p = tmp_path / "gt.npy"
