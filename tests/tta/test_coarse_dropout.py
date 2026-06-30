@@ -77,7 +77,7 @@ def test_dropout_p0_coarse_unchanged():
 
     captured = {}
 
-    def fake_forward(ic, T=None, time_scale=None, coarse=None):
+    def fake_forward(ic, T=None, time_scale=None, coarse=None, ctx=None):
         captured["coarse"] = coarse
         return _mock_forward_return()
 
@@ -97,7 +97,7 @@ def test_dropout_p1_coarse_zeroed():
 
     captured = {}
 
-    def fake_forward(ic, T=None, time_scale=None, coarse=None):
+    def fake_forward(ic, T=None, time_scale=None, coarse=None, ctx=None):
         captured["coarse"] = coarse
         return _mock_forward_return()
 
@@ -117,7 +117,7 @@ def test_val_step_coarse_not_dropped():
 
     call_args_list = []
 
-    def fake_forward(ic, T=None, time_scale=None, coarse=None):
+    def fake_forward(ic, T=None, time_scale=None, coarse=None, ctx=None):
         call_args_list.append(coarse)
         return _mock_forward_return()
 
@@ -151,7 +151,7 @@ def test_no_coarse_in_batch_is_unaffected():
     module = KFLitModule(_make_cfg(dropout_p=1.0))
     module.log = MagicMock()
 
-    def fake_forward(ic, T=None, time_scale=None, coarse=None):
+    def fake_forward(ic, T=None, time_scale=None, coarse=None, ctx=None):
         return _mock_forward_return()
 
     module.forward = fake_forward

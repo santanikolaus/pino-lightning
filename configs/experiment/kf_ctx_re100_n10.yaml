@@ -1,0 +1,44 @@
+# @package _global_
+# Context-frames experiment — Re=100 Kolmogorov flow, n_context=10.
+# 4th FNO channel: time-varying trajectory of 10 GT frames (0..9) held constant thereafter.
+# Hypothesis: phase-velocity signal in the context window breaks the late-time k<=7 wall.
+# No coarse input. data_channels=4 (architecture unchanged vs baseline).
+# Baseline comparison: kf_pino_re100_pretrain.yaml (n_context=1, same loss/arch).
+
+defaults:
+  - override /callbacks: kf
+
+logger:
+  wandb:
+    project: pretrain-kol
+    name: ctx-n10-re100
+
+trainer:
+  max_epochs: 150
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
+  n_train: 200
+  n_val: 60
+  batch_size: 1
+  sub_t: 2          # 129 raw frames → 65 effective; n_context=10 covers frames 0..9
+  num_workers: 0
+  n_context: 10     # 10 GT frames as time-varying 4th channel; vanilla path: n_context=1
+
+loss:
+  re: 100
+  t_interval: 1.0
+  data_weight: 5.0
+  pde_weight: 1.0
+  ic_weight: 1.0
+
+opt:
+  learning_rate: 0.001
+  weight_decay: 0.0
+  milestones: [25, 50, 75, 100]
+  gamma: 0.5
+
+model:
+  data_channels: 4          # gridx, gridy, gridt, ctx_channel (time-varying); unchanged
+  lifting_channel_ratio: 0
+  hidden_channels: 128

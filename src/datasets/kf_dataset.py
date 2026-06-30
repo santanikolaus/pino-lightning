@@ -41,7 +41,8 @@ class KFDataset(Dataset):
                  sub_t: int, coarse_path: Optional[str] = None,
                  coarse_shuffle_p: float = 0.0,
                  coarse_ic_only: bool = False,
-                 coarse_paths: Optional[List[str]] = None):
+                 coarse_paths: Optional[List[str]] = None,
+                 n_context: int = 1):
         raw = np.load(path, mmap_mode='r')
         # Slice the requested window
         chunk = raw[offset: offset + n_samples]                  # (n_samples, T+1, S, S)
@@ -64,6 +65,8 @@ class KFDataset(Dataset):
         self.coarse_shuffle_p = coarse_shuffle_p
         self.coarse_ic_only = coarse_ic_only
 
+        self.n_context = n_context
+
         self.coarses = None
         if coarse_paths is not None:
             self.coarses = []
@@ -82,7 +85,7 @@ class KFDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         traj = self.data[idx]  # (S, S, T+1)
         ic = traj[..., 0]      # (S, S) — first time frame
-        out = {"x": ic, "y": traj}
+        out = {"x": ic, "y": traj, "ctx": traj[..., :self.n_context]}
         if self.coarses is not None:
             out["coarse"] = torch.stack([c[idx] for c in self.coarses], dim=0)
         elif self.coarse is not None:

@@ -30,7 +30,8 @@ def get_grid3d(S: int, T: int, time_scale: float = 1.0, device: Union[str, torch
 
 
 def prepare_input(ic: Tensor, T: int, time_scale: float = 1.0,
-                  coarse_traj: Optional[Tensor] = None) -> Tensor:
+                  coarse_traj: Optional[Tensor] = None,
+                  ctx_frames: Optional[Tensor] = None) -> Tensor:
     """Prepare FNO3d input from initial condition vorticity.
 
     Args:
@@ -39,13 +40,27 @@ def prepare_input(ic: Tensor, T: int, time_scale: float = 1.0,
         time_scale: scales the t-coordinate range to [0, time_scale]
         coarse_traj: optional band-limited trajectory (B, S, S, T); when provided,
                      appended as a 5th channel so output is (B, S, S, T, 5).
+        ctx_frames: optional context trajectory (B, S, S, n_ctx). When provided, replaces
+                    the constant IC broadcast in channel 4 with a time-varying channel:
+                    frames 0..n_ctx-1 at their true positions, last frame held for T-n_ctx
+                    remaining steps. n_ctx=1 is byte-identical to the ic_broadcast path.
+                    data_channels stays 4 regardless of n_ctx.
 
     Returns:
         Tensor of shape (B, S, S, T, 4) or (B, S, S, T, 5)
     """
     B, S, _ = ic.shape
 
-    ic_broadcast = ic.reshape(B, S, S, 1, 1).expand(B, S, S, T, 1)
+    if ctx_frames is not None:
+        n_ctx = ctx_frames.shape[-1]                               # (B, S, S, n_ctx)
+        if T > n_ctx:
+            held = ctx_frames[..., -1:].expand(-1, -1, -1, T - n_ctx)
+            full_ctx = torch.cat([ctx_frames, held], dim=-1)      # (B, S, S, T)
+        else:
+            full_ctx = ctx_frames[..., :T]
+        ic_channel = full_ctx.unsqueeze(-1)                        # (B, S, S, T, 1)
+    else:
+        ic_channel = ic.reshape(B, S, S, 1, 1).expand(B, S, S, T, 1)
 
     gridx, gridy, gridt = get_grid3d(S, T, time_scale, device=ic.device)
 
@@ -53,7 +68,7 @@ def prepare_input(ic: Tensor, T: int, time_scale: float = 1.0,
     gridy = gridy.expand(B, S, S, T, 1)
     gridt = gridt.expand(B, S, S, T, 1)
 
-    channels = [gridx, gridy, gridt, ic_broadcast]
+    channels = [gridx, gridy, gridt, ic_channel]
     if coarse_traj is not None:
         if coarse_traj.ndim == 4:                              # (B, S, S, T) single coarse
             channels.append(coarse_traj.unsqueeze(-1))         # → (B, S, S, T, 1)
@@ -216,6 +231,7 @@ def kf_forward(
     temporal_pad: int = 0,
     pad_mode: str = "zero",
     coarse_traj: Optional[Tensor] = None,
+    ctx_frames: Optional[Tensor] = None,
 ) -> Tensor:
     """Run the full KF pipeline: IC → prepare_input → permute → FNO → output.
 
@@ -237,6 +253,8 @@ def kf_forward(
                   layernorm absent — moot under norm:null).
         coarse_traj: optional band-limited trajectory (B, S, S, T); passed through to
                      prepare_input as the 5th channel. Requires model.data_channels=5.
+        ctx_frames: optional context trajectory (B, S, S, n_ctx); passed through to
+                    prepare_input to replace the constant IC channel with a time-varying one.
 
     Returns:
         Tensor shape (B, 1, S, S, T) — predicted vorticity trajectory
@@ -244,7 +262,7 @@ def kf_forward(
     if pad_mode not in ("zero", "periodic"):
         raise ValueError(f"pad_mode must be 'zero' or 'periodic', got {pad_mode!r}")
 
-    x = prepare_input(ic, T, time_scale, coarse_traj)  # (B, S, S, T, 4or5)
+    x = prepare_input(ic, T, time_scale, coarse_traj, ctx_frames)  # (B, S, S, T, 4or5)
     x = x.permute(0, 4, 1, 2, 3)                       # (B, 4or5, S, S, T)
     if temporal_pad > 0:
         if pad_mode == "periodic":
