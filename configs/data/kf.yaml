@@ -1,11 +1,10 @@
-_target_: src.datasets.kf_datamodule.KFDataModule   # kept for reference, not used by train_kf.py
-data_path: /path/to/NS_fine_T128_part0.npy
-n_train: 80
-n_val: 20
-batch_size: 2
+data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
+n_train: 240
+n_val: 30
+batch_size: 1
 num_workers: 0
 offset_train: 0
-sub_t: 1    # temporal subsampling stride; 1 = no subsampling (T64 files), 2 = paper Table 8 (T128 → effective T64)
+sub_t: 2    # temporal subsampling stride; 1 = no subsampling (T64 files), 2 = paper Table 8 (T128 → effective T64)
 temporal_pad: 5  # paper-style temporal padding: append 5 frames before FNO forward, trim after
 pad_mode: zero  # "zero": append zero frames (default); "periodic": wrap first P frames (Cao et al. §2.2)
 coarse_path: null

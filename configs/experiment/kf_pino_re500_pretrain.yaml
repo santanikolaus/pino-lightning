@@ -1,49 +1,14 @@
 # @package _global_
-# PINO pretraining on Re=500 Kolmogorov flow — Table 8 source operator.
-# Kept fully consistent with Re100–Re400: sub_t=2, data+PDE+IC, same loss weights.
-# Deliberately deviates from paper-pino Re500-pretrain-1s.yaml (sub_t=1, xy_loss=0)
-# — paper config appears to be an experimental artifact, not the Table 8 setup.
-# Ablate loss structure separately if Re500 operator quality is poor.
-#
-# Architecture aligned with fine-tuning ablation (4a_allfixes):
-#   lifting_channel_ratio=0  (single linear fc0, matches paper)
-#   hidden_channels=128      (matches fine-tune warm-start target)
-#
-# After training, checkpoint is used as warm-start for Re500 instance-wise fine-tuning.
-
-defaults:
-  - override /callbacks: kf
-
-logger:
-  wandb:
-    project: pretrain-kol
-    name: 1_pino-re500-pretrain
-
-trainer:
-  max_epochs: 150
-  check_val_every_n_epoch: 5
+# PINO pretraining on Re=500 Kolmogorov flow — sharp baseline, fixed 240/30/30 split,
+# independent (uncorrelated) chains. Relies on configs/train_kf.yaml defaults for
+# arch/loss/opt/trainer; only the Re-identifying fields are pinned here.
 
 data:
-  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_part0.npy
-  n_train: 200
-  n_val: 60
-  batch_size: 1
-  sub_t: 2
-  num_workers: 0
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res128_part0.npy
 
 loss:
   re: 500
-  t_interval: 1.0
-  data_weight: 5.0
-  pde_weight: 1.0
-  ic_weight: 1.0
 
-opt:
-  learning_rate: 0.001
-  weight_decay: 0.0
-  milestones: [25, 50, 75, 100]
-  gamma: 0.5
-
-model:
-  lifting_channel_ratio: 0   # single linear lift (paper fc0); matches 4a_allfixes fine-tune
-  hidden_channels: 128       # matches 4a_allfixes fine-tune architecture for warm-start
+logger:
+  wandb:
+    name: pino-re500-pretrain
