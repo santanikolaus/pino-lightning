@@ -1,0 +1,14 @@
+# @package _global_
+# Coarse-solver ablation — Re=100, 5th channel = free-running NS at 12^2, spectrally
+# zero-padded to 128^2 (msc/tta/coarse_solver.py --coarse-res 12). No dropout.
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
+  coarse_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_solver12_part0.npy
+
+model:
+  data_channels: 5
+
+logger:
+  wandb:
+    name: coarse-re100-solver12
