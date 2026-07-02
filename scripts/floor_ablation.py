@@ -43,7 +43,7 @@ from src.datasets.kf_dataset import KFDataset
 from src.pde.ns import NSVorticity, cheb_lowpass
 
 _ROOT     = Path(__file__).parent.parent
-DATA_ROOT = Path(yaml.safe_load((_ROOT / "documentation" / "paths.yaml").read_text())["data"]["ns"])
+DATA_ROOT = Path(yaml.safe_load((_ROOT / "msc" / "configs" / "paths.yaml").read_text())["data"]["ns"])
 
 # match gt_residual_check.py / alias_check.py so the (cd2,aliased,full) cell == banked 0.666
 N_TEST, OFFSET_TEST, SUB_T, T_INTERVAL = 40, 260, 2, 1.0
