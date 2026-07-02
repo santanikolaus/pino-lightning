@@ -31,7 +31,7 @@ from msc.tta.eval import band_power_t, cheb_bins
 from scripts.floor_ablation import floor_one
 
 _ROOT = Path(__file__).parent.parent
-DATA_ROOT = Path(yaml.safe_load((_ROOT / "documentation" / "paths.yaml").read_text())["data"]["ns"])
+DATA_ROOT = Path(yaml.safe_load((_ROOT / "msc" / "configs" / "paths.yaml").read_text())["data"]["ns"])
 RES512_DIR = DATA_ROOT / "re500_res512"
 SUB_T = 2
 RE = 500
