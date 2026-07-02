@@ -1,48 +1,14 @@
 # @package _global_
-# PINO pretraining on Re=100 Kolmogorov flow — Table 8 source operator.
-# Matches paper-pino configs/pretrain/Re100-pretrain-1s.yaml.
-#
-# Loss assembly: total = data_weight*L2 + pde_weight*PDE + ic_weight*IC
-#   paper: xy_loss=5.0, f_loss=1.0, ic_loss=1.0
-#
-# Architecture aligned with fine-tuning ablation (4a_allfixes):
-#   lifting_channel_ratio=0  (single linear fc0, matches paper)
-#   hidden_channels=128      (matches fine-tune warm-start target)
-#
-# After training, checkpoint is used as warm-start for Re100 instance-wise fine-tuning.
-
-defaults:
-  - override /callbacks: kf
-
-logger:
-  wandb:
-    project: pretrain-kol
-    name: 1_pino-re100-pretrain
-
-trainer:
-  max_epochs: 150
+# PINO pretraining on Re=100 Kolmogorov flow — sharp baseline, fixed 240/30/30 split,
+# independent (uncorrelated) chains. Relies on configs/train_kf.yaml defaults for
+# arch/loss/opt/trainer; only the Re-identifying fields are pinned here.
 
 data:
-  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_part0.npy
-  n_train: 200
-  n_val: 60
-  batch_size: 1
-  sub_t: 2          # raw 129 frames → 65 effective frames (matches paper sub_t=2)
-  num_workers: 0
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
 
 loss:
   re: 100
-  t_interval: 1.0
-  data_weight: 5.0  # paper xy_loss=5.0
-  pde_weight: 1.0   # paper f_loss=1.0
-  ic_weight: 1.0    # paper ic_loss=1.0
 
-opt:
-  learning_rate: 0.001
-  weight_decay: 0.0
-  milestones: [25, 50, 75, 100]
-  gamma: 0.5
-
-model:
-  lifting_channel_ratio: 0   # single linear lift (paper fc0); matches 4a_allfixes fine-tune
-  hidden_channels: 128       # matches 4a_allfixes fine-tune architecture for warm-start
+logger:
+  wandb:
+    name: pino-re100-pretrain
