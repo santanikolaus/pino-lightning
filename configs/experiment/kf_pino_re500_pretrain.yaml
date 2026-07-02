@@ -9,6 +9,9 @@ data:
 loss:
   re: 500
 
+trainer:
+  check_val_every_n_epoch: 1
+
 logger:
   wandb:
     name: pino-re500-pretrain
