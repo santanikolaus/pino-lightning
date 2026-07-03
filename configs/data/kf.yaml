@@ -7,6 +7,7 @@ offset_train: 0
 sub_t: 2    # temporal subsampling stride; 1 = no subsampling (T64 files), 2 = paper Table 8 (T128 → effective T64)
 temporal_pad: 5  # paper-style temporal padding: append 5 frames before FNO forward, trim after
 pad_mode: zero  # "zero": append zero frames (default); "periodic": wrap first P frames (Cao et al. §2.2)
+time_scale: 1.0  # t-grid coordinate range [0, time_scale]; was an undeclared Python-side default, now explicit
 coarse_path: null
 coarse_shuffle_p: null
 coarse_paths: null

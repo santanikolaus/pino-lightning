@@ -1,8 +1,7 @@
 import torch
 import pytest
 
-from src.models.kf_fno import build_fno_kf
-from msc.tta.setup import enable_gradient_checkpointing
+from src.models.kf_fno import build_fno_kf, enable_gradient_checkpointing
 
 _FNO_CFG = {
     "model_arch": "fno", "data_channels": 4, "out_channels": 1,

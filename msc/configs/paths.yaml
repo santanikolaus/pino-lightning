@@ -1,32 +1,101 @@
-server:
-  host: student0X -> X changes.
+# Server paths — NFS, accessible from any server (student03, student07, …)
+# Verified: 2026-07-03
+#
+# YAML note: paths are plain strings; use them in Python as pathlib.Path(paths["key"])
+
+root:
+  studentwork: /system/user/studentwork/wehofer
+  # 200 GB quota; shared NFS — same path from every studentXX server
+
+  home: /system/user/wehofer
+  # 20 GB quota; dotfiles and small scratch files only
+
   conda_env: /system/apps/studentenv/wehofer
-  project_root: /system/user/studentwork/wehofer/pino-lightning
+  # activate with: conda activate /system/apps/studentenv/wehofer
+
+projects:
+  pino_lightning: /system/user/studentwork/wehofer/pino-lightning
+  # main project repo; Hydra configs under configs/, outputs under outputs/
+
+wandb:
+  entity: megafuchs-johannes-kepler-universit-t-linz
+  project: msc-base
+  # checkpoint pattern: <projects.pino_lightning>/msc-base/<run_id>/checkpoints/best.ckpt
+
+pretrain_checkpoints:
+  # W&B project: megafuchs-johannes-kepler-universit-t-linz/msc-base/<id>
+  # pattern: .../pino-lightning/msc-base/<id>/checkpoints/best.ckpt
+  re100:  msc-base/75prctl5/checkpoints/best.ckpt   # val_l2=0.313  epoch=26
+  re500:  msc-base/nrow6j9l/checkpoints/best.ckpt   # val_l2=0.460  epoch=21
+  re300:  msc-base/<id>/checkpoints/best.ckpt        # not yet run
+  re1000: msc-base/<id>/checkpoints/best.ckpt        # not yet run
+
+coarse_checkpoints:
+  # W&B project: megafuchs-johannes-kepler-universit-t-linz/msc-base/<id>
+  # pattern: .../pino-lightning/msc-base/<id>/checkpoints/best.ckpt
+  re100_s8:  msc-base/g32z0ipc/checkpoints/best.ckpt  # val_l2=0.308
+  re100_s12: msc-base/qb6m7ux7/checkpoints/best.ckpt  # val_l2=0.273
+  re100_s14: msc-base/8140mmty/checkpoints/best.ckpt  # val_l2=0.242
+  re100_s16: msc-base/mjzrrn6o/checkpoints/best.ckpt  # val_l2=0.215
+  re500_s8:  msc-base/7xdpq52f/checkpoints/best.ckpt  # val_l2=0.445
+  re500_s12: msc-base/ec0p1swo/checkpoints/best.ckpt  # val_l2=0.377
+  re500_s14: msc-base/xg0vq2lz/checkpoints/best.ckpt  # val_l2=0.342
+  re500_s16: msc-base/b7damqem/checkpoints/best.ckpt  # val_l2=0.334 @ ep25 (training); f7onun8s diverged (0.421) — excluded
 
 data:
   ns: /system/user/studentwork/wehofer/data/ns
+
   ns_files:
+    # correlated continuous chains; original 128² dataset
     re100:  NS_fine_Re100_T128_part0.npy
-    re200:  NS_fine_Re200_T128_part0.npy
     re300:  NS_fine_Re300_T128_part0.npy
     re500:  NS_fine_Re500_T128_part0.npy
     re1000: NS_fine_Re1000_T128_indep.npy
 
-checkpoints:
-  re100:  /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/pvqq97sq/checkpoints/best.ckpt
-  re200:  /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/4em1mfrx/checkpoints/best.ckpt
-  re300:  /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/1iix0n42/checkpoints/best.ckpt
-  re500:  /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/38o0kj3y/checkpoints/best.ckpt
-  re1000: /system/user/studentwork/wehofer/pino-lightning/pretrain-kol/7gshngfh/checkpoints/best.ckpt
+  ns_re500:
+    # uncorrelated by design; 300 independent chains
+    res512: re500_res512
+    # 300 native 512² chains, each (129,512,512); NOT KFDataset-readable; use scripts/res512_gate
+    res256: NS_fine_Re500_T128_res256_part0.npy
+    # FFT-crop downsample of res512; (300,129,256,256); KFDataset-readable
+    res128: NS_fine_Re500_T128_res128_part0.npy
+    # spectral FFT-crop downsample of res256; (300,129,128,128); KFDataset-readable
+    coarse_solver8:  NS_fine_Re500_T128_res128_coarse_solver8_part0.npy
+    coarse_solver12: NS_fine_Re500_T128_res128_coarse_solver12_part0.npy
+    coarse_solver14: NS_fine_Re500_T128_res128_coarse_solver14_part0.npy
+    coarse_solver16: NS_fine_Re500_T128_res128_coarse_solver16_part0.npy
+    # msc/tta/coarse_solver.py, sourced from res128 above; (300,129,128,128) each
+    # sanity (2026-07-02): zero energy above each Nyquist to fp noise (~1e-14);
+    # coarse_solver14 has ~10x worse early k<=7 magnitude-relL2 than solver16 (both
+    # Re) despite both resolving k<=7 — k=7 sits exactly at Nyquist for res=14
+    # (degenerate, no clean phase) vs 1-mode headroom at res=16
+
+  ns_re100:
+    # uncorrelated by design; native 256² generation via generate_pilot.py --re 100 --x_res 256
+    res256: NS_fine_Re100_T128_res256_part0.npy
+    # (300,129,256,256); KFDataset-readable
+    res128: NS_fine_Re100_T128_res128_part0.npy
+    # spectral FFT-crop downsample of res256; (300,129,128,128); KFDataset-readable
+    coarse_solver24: NS_fine_Re100_T128_res128_coarse_solver24_part0.npy
+    # STALE — sourced from the old correlated ns_files.re100 (pre-independent-chain
+    # redo), confirmed via code review 2026-07-02. Do not use; superseded by the
+    # coarse_solver{8,12,14,16} entries below, all sourced from res128 above.
+    coarse_solver8:  NS_fine_Re100_T128_res128_coarse_solver8_part0.npy
+    coarse_solver12: NS_fine_Re100_T128_res128_coarse_solver12_part0.npy
+    coarse_solver14: NS_fine_Re100_T128_res128_coarse_solver14_part0.npy
+    coarse_solver16: NS_fine_Re100_T128_res128_coarse_solver16_part0.npy
+    # msc/tta/coarse_solver.py, sourced from res128 above; (300,129,128,128) each
+    # sanity (2026-07-02): zero energy above each Nyquist to fp noise (~1e-14);
+    # coarse_solver14 has ~10x worse early k<=7 magnitude-relL2 than solver16 (both
+    # Re) despite both resolving k<=7 — k=7 sits exactly at Nyquist for res=14
+    # (degenerate, no clean phase) vs 1-mode headroom at res=16
 
 outputs:
-  ood: /system/user/studentwork/wehofer/pino-lightning/msc/ood/outputs
-  tta: /system/user/studentwork/wehofer/pino-lightning/msc/tta/outputs
+  hydra_outputs: /system/user/studentwork/wehofer/pino-lightning/outputs
+  # Hydra run logs organised by date (YYYY-MM-DD/)
 
-# Base tensors — pre-computed spectral power, no model needed downstream.
-# Convention: {outputs.ood}/residuals_op{op_re}_test{test_re}.npz
-# Shape per term (Du, wt, adv, diff): (N=40, S=128, S=128, T=63) float32
-# |FFT2|^2 applied; no further aggregation.
-base_tensors:
-  op_re:   [100, 200, 300, 500, 1000]
-  test_re: [100, 200, 300, 500, 1000]
+  wandb: /system/user/studentwork/wehofer/pino-lightning/wandb
+  # W&B local artifacts; synced to cloud
+
+  tta: /system/user/studentwork/wehofer/pino-lightning/msc/tta/outputs
+  # TTA analysis outputs

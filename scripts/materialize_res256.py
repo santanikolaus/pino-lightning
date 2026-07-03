@@ -31,7 +31,7 @@ _METHODS = {
 }
 
 _ROOT = Path(__file__).parent.parent
-DATA_ROOT = Path(yaml.safe_load((_ROOT / "documentation" / "paths.yaml").read_text())["data"]["ns"])
+DATA_ROOT = Path(yaml.safe_load((_ROOT / "msc" / "configs" / "paths.yaml").read_text())["data"]["ns"])
 
 
 def resample_part(arr: np.ndarray, s_out: int, device, method: str = "spectral") -> np.ndarray:
