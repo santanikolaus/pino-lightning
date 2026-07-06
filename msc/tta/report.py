@@ -52,7 +52,8 @@ def main():
     )
     err_pt, gt_pt = grids["err_pt"], grids["gt_pt"]
 
-    header = f"{'k-band':<12}" + "".join(f"{f't{lo}-{hi}':>12}" for lo, hi in time_bins)
+    header = (f"{'k-band':<12}" + "".join(f"{f't{lo}-{hi}':>12}" for lo, hi in time_bins)
+              + f"{'aggr':>12}")
     print(header)
     print("-" * len(header))
     for k_lo, k_hi in bands:
@@ -61,6 +62,7 @@ def main():
             val = ev.rel_l2(err_pt, gt_pt,
                             bands=slice(k_lo, k_hi + 1), frames=slice(t_lo, t_hi + 1))
             row += f"{val:>12.4f}"
+        row += f"{ev.rel_l2(err_pt, gt_pt, bands=slice(k_lo, k_hi + 1)):>12.4f}"
         print(row)
 
 
