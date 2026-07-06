@@ -1,71 +1,73 @@
-"""Shared TTA setup — single source of truth for model arch, checkpoint loading,
-data path, and the LOCKED test split.
-
-Replaces the MODEL_CFG / load_model / data_path / split-constants that are
-currently copy-pasted across scripts/alias_check.py, scripts/infer_*.py, etc.
-The split (offset/n/sub_t) is a CODE CONSTANT, not a yaml knob: it is the
-comparability contract behind the 0.24 baseline — every Phase 0/1/2 run must
-reference these identical values, never re-declare them.
-"""
+"""Resolves a checkpoint's model, config, and data from its wandb run_id."""
 from pathlib import Path
 
+import hydra
 import torch
+import wandb
 import yaml
+from hydra.core.global_hydra import GlobalHydra
+from omegaconf import OmegaConf
 
+from src.datasets.kf_dataset import KFDataset
 from src.models.kf_fno import build_fno_kf
 
-ROOT = Path(__file__).resolve().parents[2]  # repo root
+ROOT = Path(__file__).resolve().parents[2]
 
-# identical architecture + inference settings to scripts/infer_re500_id.py
-MODEL_CFG = {
-    "model_arch": "fno",
-    "data_channels": 4,
-    "out_channels": 1,
-    "n_modes": [8, 8, 8],
-    "hidden_channels": 128,
-    "n_layers": 4,
-    "lifting_channel_ratio": 0,
-    "projection_channel_ratio": 2,
-    "domain_padding": 0.0,
-    "positional_embedding": None,
-    "norm": None,
-    "fno_skip": "linear",
-    "implementation": "factorized",
-    "use_channel_mlp": False,
-    "channel_mlp_expansion": 0.5,
-    "channel_mlp_dropout": 0.0,
-    "separable": False,
-    "factorization": None,
-    "rank": 1.0,
-    "fixed_rank_modes": False,
-    "stabilizer": "None",
-}
-
-# LOCKED test split (PINO Table 8 setup) — do not vary per experiment.
-OFFSET_TEST, N_TEST, SUB_T = 260, 40, 2
-TIME_SCALE, TEMPORAL_PAD, T_INTERVAL = 1.0, 5, 1.0
-
-_DATA_ROOT = Path(
-    yaml.safe_load(
-        (ROOT / "msc" / "configs" / "paths.yaml").read_text())["data"]["ns"])
+_PATHS = yaml.safe_load((ROOT / "msc" / "configs" / "paths.yaml").read_text())
+SPLIT = yaml.safe_load(
+    (ROOT / "msc" / "configs" / "configs.yaml").read_text())["split"]
 
 
-def data_path(re: int) -> Path:
-    if re == 1000:
-        return _DATA_ROOT / "NS_fine_Re1000_T128_indep.npy"
-    return _DATA_ROOT / f"NS_fine_Re{re}_T128_part0.npy"
+def resolve(run_id: str) -> dict:
+    """Live-fetches a run's launch overrides from wandb and recomposes its resolved training config.
+
+    Args:
+      run_id: wandb run id of a checkpoint launched via `python -m src.train_kf`.
+
+    Returns:
+      The fully resolved Hydra config (model/data/loss/callbacks/...) train_kf.py built at training time.
+    """
+    entity, project = _PATHS["wandb"]["entity"], _PATHS["wandb"]["project"]
+    run = wandb.Api().run(f"{entity}/{project}/{run_id}")
+    overrides = list(run.metadata["args"])
+
+    if GlobalHydra.instance().is_initialized():
+        GlobalHydra.instance().clear()
+    with hydra.initialize_config_dir(config_dir=str(ROOT / "configs"),
+                                     version_base=None):
+        cfg = hydra.compose(config_name="train_kf", overrides=overrides)
+    return OmegaConf.to_container(cfg, resolve=True)
 
 
-def resolve_ckpt(ckpt: str) -> str:
-    """Accept absolute paths or paths relative to the repo root."""
-    p = Path(ckpt)
-    return str(p) if p.is_absolute() else str(ROOT / p)
+def ckpt_path(run_id: str, cfg: dict) -> Path:
+    """Builds the checkpoint file path for a run.
+
+    Args:
+      run_id: wandb run id.
+      cfg: resolved config for run_id, as returned by resolve().
+
+    Returns:
+      Path to the run's saved checkpoint file.
+    """
+    filename = cfg["callbacks"]["model_checkpoint"]["filename"]
+    project = _PATHS["wandb"]["project"]
+    return Path(_PATHS["projects"]["pino_lightning"]
+                ) / project / run_id / "checkpoints" / f"{filename}.ckpt"
 
 
-def load_model(ckpt: str, device: torch.device) -> torch.nn.Module:
-    """Build the KF FNO and strict-load a Lightning checkpoint's `model.*` weights."""
-    model = build_fno_kf(MODEL_CFG)
-    state_dict = torch.load(resolve_ckpt(ckpt),
+def load_model(run_id: str, device: torch.device):
+    """Builds the KF FNO for a run and strict-loads its checkpoint weights.
+
+    Args:
+      run_id: wandb run id.
+      device: torch device to load the model onto.
+
+    Returns:
+      A tuple (model, cfg): the loaded model in eval mode, and its resolved config.
+    """
+    cfg = resolve(run_id)
+    model = build_fno_kf(cfg["model"])
+    state_dict = torch.load(ckpt_path(run_id, cfg),
                             weights_only=False,
                             map_location=device)["state_dict"]
     state = {
@@ -73,46 +75,27 @@ def load_model(ckpt: str, device: torch.device) -> torch.nn.Module:
         for k, v in state_dict.items() if k.startswith("model.")
     }
     model.load_state_dict(state, strict=True)
-    return model.to(device).eval()
+    return model.to(device).eval(), cfg
 
 
-def enable_gradient_checkpointing(model: torch.nn.Module) -> torch.nn.Module:
-    """Wrap each FNO layer in gradient checkpointing to trade compute for activation memory.
+def build_dataset(cfg: dict, split_name: str) -> KFDataset:
+    """Builds the KFDataset for one split window, wired with cfg's own data paths.
 
-    FNO only — UNO checkpointing support was removed.
+    Args:
+      cfg: resolved config, as returned by resolve(). To evaluate against a
+        different Re's ground truth, pass a cfg with data.data_path/coarse_path
+        overridden at the call site.
+      split_name: one of the split keys in msc/configs/configs.yaml ("train", "val", "test").
+
+    Returns:
+      A KFDataset over the requested split window.
     """
-    if hasattr(model, "horizontal_skips_map"):
-        raise NotImplementedError("enable_gradient_checkpointing is FNO-only; "
-                                  "UNO is not supported")
-
-    import types
-    import torch.utils.checkpoint as ckpt
-
-    n_layers = model.n_layers
-    fno_blocks = model.fno_blocks
-    lifting = model.lifting
-    projection = model.projection
-    domain_padding = model.domain_padding
-    positional_embedding = model.positional_embedding
-
-    def _checkpointed_forward(_self, x, output_shape=None, **_kwargs):
-        out_shapes = [None] * n_layers if output_shape is None else (
-            [None] * (n_layers - 1) + [output_shape] if isinstance(
-                output_shape, tuple) else list(output_shape))
-        if positional_embedding is not None:
-            x = positional_embedding(x)
-        x = lifting(x)
-        if domain_padding is not None:
-            x = domain_padding.pad(x)
-        for layer_idx in range(n_layers):
-
-            def _layer(x, idx=layer_idx, os=out_shapes[layer_idx]):
-                return fno_blocks(x, idx, output_shape=os)
-
-            x = ckpt.checkpoint(_layer, x, use_reentrant=False)
-        if domain_padding is not None:
-            x = domain_padding.unpad(x)
-        return projection(x)
-
-    model.forward = types.MethodType(_checkpointed_forward, model)
-    return model
+    sp = SPLIT[split_name]
+    data_cfg = cfg["data"]
+    return KFDataset(
+        data_cfg["data_path"],
+        sp["n"],
+        offset=sp["offset"],
+        sub_t=data_cfg["sub_t"],
+        coarse_path=data_cfg.get("coarse_path"),
+    )

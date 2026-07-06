@@ -34,7 +34,7 @@ def main(cfg: DictConfig) -> None:
         module = KFLitModule(cfg)
 
     if cfg.get("grad_checkpoint", False):
-        from msc.tta.setup import enable_gradient_checkpointing
+        from src.models.kf_fno import enable_gradient_checkpointing
         enable_gradient_checkpointing(module.model)
         print("[grad-checkpoint] enabled on module.model", flush=True)
 

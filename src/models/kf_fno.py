@@ -273,3 +273,45 @@ def kf_forward(
     if temporal_pad > 0:
         out = out[..., :-temporal_pad]            # (B, 1, S, S, T)
     return out
+
+
+def enable_gradient_checkpointing(model: torch.nn.Module) -> torch.nn.Module:
+    """Wrap each FNO layer in gradient checkpointing to trade compute for activation memory.
+
+    FNO only — UNO checkpointing support was removed.
+    """
+    if hasattr(model, "horizontal_skips_map"):
+        raise NotImplementedError("enable_gradient_checkpointing is FNO-only; "
+                                  "UNO is not supported")
+
+    import types
+    import torch.utils.checkpoint as ckpt
+
+    n_layers = model.n_layers
+    fno_blocks = model.fno_blocks
+    lifting = model.lifting
+    projection = model.projection
+    domain_padding = model.domain_padding
+    positional_embedding = model.positional_embedding
+
+    def _checkpointed_forward(_self, x, output_shape=None, **_kwargs):
+        out_shapes = [None] * n_layers if output_shape is None else (
+            [None] * (n_layers - 1) + [output_shape] if isinstance(
+                output_shape, tuple) else list(output_shape))
+        if positional_embedding is not None:
+            x = positional_embedding(x)
+        x = lifting(x)
+        if domain_padding is not None:
+            x = domain_padding.pad(x)
+        for layer_idx in range(n_layers):
+
+            def _layer(x, idx=layer_idx, os=out_shapes[layer_idx]):
+                return fno_blocks(x, idx, output_shape=os)
+
+            x = ckpt.checkpoint(_layer, x, use_reentrant=False)
+        if domain_padding is not None:
+            x = domain_padding.unpad(x)
+        return projection(x)
+
+    model.forward = types.MethodType(_checkpointed_forward, model)
+    return model

@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import torch
+from neuralop import LpLoss
 from torch.utils.data import DataLoader
 
 from src.models.kf_fno import kf_forward
@@ -29,6 +30,50 @@ class NoAdapt(Method):
 
     def adapt(self, model, dataset, device):
         return model
+
+
+# Moved out of msc/tta/eval.py: eval.py is now the pure L2-bins/time measurement
+# library, and this is the only remaining consumer. Re-implement when needed,
+# based on the actual state of the migrated adaptation code at that point.
+@torch.no_grad()
+def probe(model: torch.nn.Module, dataset, device, nu: int) -> dict:
+    """Runs one forward pass per sample and records per-sample adaptation telemetry.
+
+    Write-only: GT is strictly downstream of adaptation here, never feeds stopping or LR.
+
+    Args:
+      model: KF FNO model, already loaded and in eval mode.
+      dataset: KFDataset-like object yielding {"x": ic, "y": gt}.
+      device: torch device to run the forward pass on.
+      nu: 1/Re to evaluate the PDE residual objective at.
+
+    Returns:
+      Dict of (N,) arrays: residual_abs (rel-L2 PDE-residual-minus-forcing magnitude,
+      the actual adaptation objective), val_l2 (full-field rel-L2, the bridge metric),
+      and k7_early/k7_late/k7_aggr (band-resolved k<=7 error vs GT).
+    """
+    S, T_eff = dataset[0]["y"].shape[0], dataset[0]["y"].shape[-1]
+    n_bands, kinf = S // 2 + 1, ev.cheb_bins(S, device)
+    nE, lo = max(1, T_eff // 8), slice(0, ev.K_REP + 1)
+    lp = LpLoss(d=3, p=2, reduction="mean")
+    res_fn = KFLoss(re=nu, data_weight=0.0, pde_weight=1.0, ic_weight=0.0)
+
+    keys = ("residual_abs", "val_l2", "k7_early", "k7_late", "k7_aggr")
+    out = {k: np.zeros(len(dataset)) for k in keys}
+    for i in range(len(dataset)):
+        ic = dataset[i]["x"].unsqueeze(0).to(device)
+        gt = dataset[i]["y"].unsqueeze(0).to(device)
+        pred = kf_forward(model, ic, gt.shape[-1], time_scale=setup.TIME_SCALE,
+                          temporal_pad=setup.TEMPORAL_PAD)
+        out["residual_abs"][i] = float(res_fn(pred, gt)["pde"])
+        out["val_l2"][i] = float(lp.rel(pred.squeeze(1), gt))
+        ep = ev.band_power_t(pred.squeeze(1) - gt, kinf, n_bands)[lo]
+        gp = ev.band_power_t(gt, kinf, n_bands)[lo]
+        err_t = np.sqrt(ep.sum(0) / (gp.sum(0) + 1e-30))
+        out["k7_early"][i] = err_t[1:1 + nE].mean()
+        out["k7_late"][i] = err_t[-nE:].mean()
+        out["k7_aggr"][i] = np.sqrt(ep.sum() / (gp.sum() + 1e-30))
+    return out
 
 
 class FullWeightTTA(Method):

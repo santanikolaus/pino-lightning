@@ -1,0 +1,24 @@
+# Trajectory-index split — single source of truth for train/val/test slicing.
+#
+# Applies to every KFDataset-readable file under paths.yaml (ns_re100/ns_re500,
+# 300 independent chains each). val is the range used for checkpoint selection
+# during training (configs/data/kf.yaml: n_train=240, offset_val=offset_train+n_train);
+# test is genuinely unseen by both training and checkpoint selection.
+#
+# offset_val = offset_train + n_train; offset_test = offset_val + n_val — contiguous,
+# non-overlapping, covers the full 300.
+
+split:
+  total: 300
+
+  train:
+    offset: 0
+    n: 240
+
+  val:
+    offset: 240
+    n: 30
+
+  test:
+    offset: 270
+    n: 30

@@ -16,7 +16,7 @@ import numpy as np
 import yaml
 
 _ROOT = Path(__file__).parent.parent
-DATA_ROOT = Path(yaml.safe_load((_ROOT / "documentation" / "paths.yaml").read_text())["data"]["ns"])
+DATA_ROOT = Path(yaml.safe_load((_ROOT / "msc" / "configs" / "paths.yaml").read_text())["data"]["ns"])
 
 
 def part_path(parts_dir: Path, re: int, res: int, j: int) -> Path:
