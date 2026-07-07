@@ -10,7 +10,8 @@ Reusable class (fields in, GIFs out) for SEEING where/how the operator errs:
 The amplitude/phase swap reuses the spectral identity F = |F| * (F/|F|): replacing
 PRED's amplitude with GT's (keeping PRED's phase) isolates positional error; the
 mirror isolates magnitude error. Measured in the same Fourier coordinates as the
-planned per-mode phase loss. CLI at the bottom builds GT/PRED from a checkpoint.
+planned per-mode phase loss. CLI at the bottom builds GT/PRED from a run_id via
+setup.py (vanilla or coarse-conditioned FNO checkpoints).
 """
 import matplotlib
 matplotlib.use("Agg")
@@ -201,56 +202,37 @@ class FieldDiagAnimator:
 def _cli():
     import argparse
     import torch
-    from src.datasets.kf_dataset import KFDataset
-    from src.models.kf_fno import build_fno_kf, kf_forward
+    from src.models.kf_fno import kf_forward
+    from . import setup
 
     p = argparse.ArgumentParser(description="Render GT-vs-PRED diagnostic GIFs for one trajectory.")
-    p.add_argument("--ckpt", required=True)
-    p.add_argument("--data", required=True)
-    p.add_argument("--arch", default="fno", help="fno|unet (sets model build path)")
-    p.add_argument("--mixer", default="none", help="UNet bottleneck mixer kind")
-    p.add_argument("--modes", type=int, default=8)
-    p.add_argument("--hidden", type=int, default=64)
-    p.add_argument("--depth", type=int, default=3, help="UNet depth (res16 arms use 1)")
-    p.add_argument("--levels", default="", help="UNet extra spectral levels, e.g. 1")
-    p.add_argument("--offset", type=int, default=260, help="held-out split start")
-    p.add_argument("--traj", type=int, default=0, help="trajectory index within the split")
-    p.add_argument("--sub-t", type=int, default=2)
-    p.add_argument("--time-scale", type=float, default=1.0, help="kf_forward time_scale (match training)")
-    p.add_argument("--temporal-pad", type=int, default=5, help="kf_forward temporal_pad (match training; setup uses 5)")
+    p.add_argument("--run-id", required=True)
+    p.add_argument("--traj", type=int, default=0, help="trajectory index within the test split")
     p.add_argument("--kmax", type=int, default=7)
     p.add_argument("--stride", type=int, default=1)
     p.add_argument("--fps", type=int, default=10)
     p.add_argument("--out", default="msc/tta/outputs/figs")
     p.add_argument("--tag", default=None)
-    p.add_argument("--device", default="cuda")
+    p.add_argument("--device", default=None)
     args = p.parse_args()
 
-    device = torch.device(args.device)
-    if args.arch.lower() == "unet":
-        levels = [int(x) for x in args.levels.split(",") if x.strip()]
-        cfg = dict(model_arch="unet", data_channels=4, out_channels=1,
-                   base_channels=64, depth=args.depth, temporal_mixer=args.mixer,
-                   temporal_mixer_modes=args.modes, spatial_mixer_hidden=args.hidden)
-        if levels:
-            cfg["spatial_mixer_levels"] = levels
-        model = build_fno_kf(cfg)
-        sd = torch.load(args.ckpt, map_location=device, weights_only=False)["state_dict"]
-        state = {k[len("model."):]: v for k, v in sd.items() if k.startswith("model.")}
-        model.load_state_dict(state, strict=True)
-        model = model.to(device).eval()
-    else:
-        from msc.tta import setup  # canonical FNO arch + strict loader (matches Gate 2 / amp_phase)
-        model = setup.load_model(args.ckpt, device)
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    model, cfg = setup.load_model(args.run_id, device)
+    dataset = setup.build_dataset(cfg, "test")
 
-    ds = KFDataset(args.data, n_samples=args.traj + 1, offset=args.offset, sub_t=args.sub_t)
-    gt = _to_numpy(ds[args.traj]["y"])               # (S, S, T)
-    ic = torch.as_tensor(gt[..., 0], dtype=torch.float32, device=device)[None]
+    sample = dataset[args.traj]
+    gt = _to_numpy(sample["y"])               # (S, S, T)
+    ic = sample["x"].unsqueeze(0).to(device)
+    coarse_traj = sample["coarse"].unsqueeze(0).to(device) if "coarse" in sample else None
     with torch.no_grad():
         pred = kf_forward(model, ic, gt.shape[-1],
-                          time_scale=args.time_scale, temporal_pad=args.temporal_pad)[0, 0]  # (S, S, T)
+                          time_scale=cfg["data"]["time_scale"],
+                          temporal_pad=cfg["data"]["temporal_pad"],
+                          pad_mode=cfg["data"]["pad_mode"],
+                          coarse_traj=coarse_traj)[0, 0]  # (S, S, T)
+    pred = _to_numpy(pred)
 
-    tag = args.tag or f"{args.arch}_{args.mixer}_traj{args.traj}"
+    tag = args.tag or f"{args.run_id}_traj{args.traj}"
     paths = FieldDiagAnimator(gt, pred, kmax=args.kmax).render_all(
         args.out, tag=tag, stride=args.stride, fps=args.fps)
     print("wrote:", *paths, sep="\n  ")

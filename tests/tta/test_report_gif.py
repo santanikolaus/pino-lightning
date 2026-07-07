@@ -1,4 +1,4 @@
-"""Tests for msc/tta/field_diag.py — the GT-vs-PRED diagnostic animator.
+"""Tests for msc/tta/report_gif.py — the GT-vs-PRED diagnostic animator.
 
 Covers the pure spectral math of the amplitude/phase swap (the part that carries
 the diagnostic claim); the matplotlib rendering is exercised only as a smoke test.
@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("matplotlib")  # module imports matplotlib at top
-from msc.tta.field_diag import FieldDiagAnimator
+from msc.tta.report_gif import FieldDiagAnimator
 
 S, T, KMAX = 16, 5, 7
 
