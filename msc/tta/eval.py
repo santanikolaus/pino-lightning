@@ -31,7 +31,8 @@ def cheb_bins(S: int, device) -> torch.Tensor:
     return torch.from_numpy(np.maximum(np.abs(KX), np.abs(KY))).to(device)
 
 
-def band_power(field: torch.Tensor, kinf: torch.Tensor, n_bands: int) -> np.ndarray:
+def band_power(field: torch.Tensor, kinf: torch.Tensor,
+               n_bands: int) -> np.ndarray:
     """Sums spectral power per Chebyshev band, over batch and time.
 
     Args:
@@ -43,11 +44,12 @@ def band_power(field: torch.Tensor, kinf: torch.Tensor, n_bands: int) -> np.ndar
       (n_bands,) array of summed power per band.
     """
     fh = torch.fft.fft2(field, dim=(1, 2))
-    p = (fh.real ** 2 + fh.imag ** 2).sum(dim=(0, 3))
+    p = (fh.real**2 + fh.imag**2).sum(dim=(0, 3))
     return np.array([float(p[kinf == ki].sum()) for ki in range(n_bands)])
 
 
-def band_power_t(field: torch.Tensor, kinf: torch.Tensor, n_bands: int) -> np.ndarray:
+def band_power_t(field: torch.Tensor, kinf: torch.Tensor,
+                 n_bands: int) -> np.ndarray:
     """Sums spectral power per Chebyshev band and frame, over batch only.
 
     Args:
@@ -59,14 +61,15 @@ def band_power_t(field: torch.Tensor, kinf: torch.Tensor, n_bands: int) -> np.nd
       (n_bands, T) array of summed power per band, per frame.
     """
     fh = torch.fft.fft2(field, dim=(1, 2))
-    p = (fh.real ** 2 + fh.imag ** 2).sum(dim=0)
+    p = (fh.real**2 + fh.imag**2).sum(dim=0)
     out = np.zeros((n_bands, p.shape[-1]))
     for ki in range(n_bands):
         out[ki] = p[kinf == ki].sum(dim=0).cpu().numpy()
     return out
 
 
-def resid_minus_forcing(w: torch.Tensor, nu: float, t_interval: float) -> torch.Tensor:
+def resid_minus_forcing(w: torch.Tensor, nu: float,
+                        t_interval: float) -> torch.Tensor:
     """Computes the PDE residual with the known forcing term subtracted out.
 
     Args:
@@ -84,9 +87,16 @@ def resid_minus_forcing(w: torch.Tensor, nu: float, t_interval: float) -> torch.
     return Du - forcing
 
 
-def forward_bands(model: torch.nn.Module, dataset, device, *,
-                  op_re: int, test_re: int, time_scale: float, temporal_pad: int,
-                  pad_mode: str, t_interval: float,
+def forward_bands(model: torch.nn.Module,
+                  dataset,
+                  device,
+                  *,
+                  op_re: int,
+                  test_re: int,
+                  time_scale: float,
+                  temporal_pad: int,
+                  pad_mode: str,
+                  t_interval: float,
                   shuffle_coarse: bool = False) -> dict:
     """Forwards model over dataset; returns raw per-band, per-frame power arrays.
 
@@ -109,10 +119,10 @@ def forward_bands(model: torch.nn.Module, dataset, device, *,
         without a coarse channel never receives one either way.
 
     Returns:
-      n_bands, T_eff (dataset frame count); u_pt/gt_pt/err_pt, each (n_bands,
-      T_eff): predicted/GT/error power; res_u_pt/res_gt_pt, each (n_bands,
-      T_eff - 2): residual-minus-forcing power for û and GT (two fewer frames,
-      from the residual's finite-difference stencil).
+      n_bands, T_eff (dataset frame count); pred_pt/gt_pt/err_pt, each (n_bands,
+      T_eff): predicted/GT/error power; pde_res_pred_pt/pde_res_gt_pt, each
+      (n_bands, T_eff - 2): PDE-residual-minus-forcing power for û and GT (two
+      fewer frames, from the residual's finite-difference stencil).
     """
     S = dataset[0]["y"].shape[0]
     T_eff = dataset[0]["y"].shape[-1]
@@ -129,11 +139,11 @@ def forward_bands(model: torch.nn.Module, dataset, device, *,
             if _shuf[_i] == _i:
                 _shuf[_i] = (_i + 1) % len(dataset)
 
-    u_pt = np.zeros((n_bands, T_eff))
+    pred_pt = np.zeros((n_bands, T_eff))
     gt_pt = np.zeros((n_bands, T_eff))
     err_pt = np.zeros((n_bands, T_eff))
-    res_u_pt = np.zeros((n_bands, T_eff - 2))
-    res_gt_pt = np.zeros((n_bands, T_eff - 2))
+    pde_res_pred_pt = np.zeros((n_bands, T_eff - 2))
+    pde_res_gt_pt = np.zeros((n_bands, T_eff - 2))
     for i in range(len(dataset)):
         ic = dataset[i]["x"].unsqueeze(0).to(device)
         gt = dataset[i]["y"].unsqueeze(0).to(device)
@@ -145,24 +155,38 @@ def forward_bands(model: torch.nn.Module, dataset, device, *,
         else:
             coarse_traj = dataset[i]["coarse"].unsqueeze(0).to(device)
         with torch.no_grad():
-            uhat = kf_forward(model, ic, T, time_scale=time_scale,
-                              temporal_pad=temporal_pad, pad_mode=pad_mode,
+            uhat = kf_forward(model,
+                              ic,
+                              T,
+                              time_scale=time_scale,
+                              temporal_pad=temporal_pad,
+                              pad_mode=pad_mode,
                               coarse_traj=coarse_traj).squeeze(1)
-        u_pt += band_power_t(uhat, kinf, n_bands)
+        pred_pt += band_power_t(uhat, kinf, n_bands)
         gt_pt += band_power_t(gt, kinf, n_bands)
         err_pt += band_power_t(uhat - gt, kinf, n_bands)
-        res_u_pt += band_power_t(resid_minus_forcing(uhat, nu_u, t_interval), kinf, n_bands)
-        res_gt_pt += band_power_t(resid_minus_forcing(gt, nu_gt, t_interval), kinf, n_bands)
+        pde_res_pred_pt += band_power_t(
+            resid_minus_forcing(uhat, nu_u, t_interval), kinf, n_bands)
+        pde_res_gt_pt += band_power_t(
+            resid_minus_forcing(gt, nu_gt, t_interval), kinf, n_bands)
 
     return {
-        "n_bands": n_bands, "T_eff": T_eff,
-        "u_pt": u_pt, "gt_pt": gt_pt, "err_pt": err_pt,
-        "res_u_pt": res_u_pt, "res_gt_pt": res_gt_pt,
+        "n_bands": n_bands,
+        "T_eff": T_eff,
+        "pred_pt": pred_pt,
+        "gt_pt": gt_pt,
+        "err_pt": err_pt,
+        "pde_res_pred_pt": pde_res_pred_pt,
+        "pde_res_gt_pt": pde_res_gt_pt,
     }
 
 
-def rel_l2(err_pt: np.ndarray, gt_pt: np.ndarray,
-          bands: slice = slice(None), frames: slice = slice(None)) -> float:
+def rel_l2(
+    err_pt: np.ndarray,
+    gt_pt: np.ndarray,
+    bands: slice = slice(None),
+    frames: slice = slice(None)
+) -> float:
     """Computes pooled relative-L2 error over a band group and frame window.
 
     Pools power jointly over the selected bands and frames before dividing —
@@ -178,10 +202,13 @@ def rel_l2(err_pt: np.ndarray, gt_pt: np.ndarray,
     Returns:
       sqrt(sum(err_pt[bands, frames]) / sum(gt_pt[bands, frames])).
     """
-    return float(np.sqrt(err_pt[bands, frames].sum() / (gt_pt[bands, frames].sum() + 1e-30)))
+    return float(
+        np.sqrt(err_pt[bands, frames].sum() /
+                (gt_pt[bands, frames].sum() + 1e-30)))
 
 
-def rel_l2_curve(err_pt: np.ndarray, gt_pt: np.ndarray,
+def rel_l2_curve(err_pt: np.ndarray,
+                 gt_pt: np.ndarray,
                  bands: slice = slice(None)) -> np.ndarray:
     """Computes the per-frame relative-L2 error curve for a band group.
 
@@ -200,3 +227,21 @@ def rel_l2_curve(err_pt: np.ndarray, gt_pt: np.ndarray,
       (T,) array; entry t is sqrt(sum(err_pt[bands, t]) / sum(gt_pt[bands, t])).
     """
     return np.sqrt(err_pt[bands].sum(0) / (gt_pt[bands].sum(0) + 1e-30))
+
+
+def pde_residual(
+    res_pt: np.ndarray,
+    bands: slice = slice(None),
+    frames: slice = slice(None)
+) -> float:
+    """Computes the RMS physics-residual magnitude over a band/frame window.
+
+    Args:
+      res_pt: (n_bands, T-2) PDE-residual power, as returned by forward_bands.
+      bands: band slice to pool over (default: all bands).
+      frames: frame slice to pool over (default: all frames).
+
+    Returns:
+      Not yet implemented.
+    """
+    raise NotImplementedError()

@@ -32,11 +32,15 @@ def main():
                     help="Re for the operator's own residual; defaults to the run's training Re.")
     ap.add_argument("--test-re", type=int, default=None,
                     help="Re for GT self-consistency; defaults to the run's training Re.")
+    ap.add_argument("--data-path", default=None,
+                    help="Override the test data file, e.g. run a Re100 checkpoint on Re500 data.")
     ap.add_argument("--device", default=None)
     args = ap.parse_args()
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, cfg = setup.load_model(args.run_id, device)
+    if args.data_path:
+        cfg["data"]["data_path"] = args.data_path
     dataset = setup.build_dataset(cfg, "test")
 
     bands = _parse_groups(args.bands)
