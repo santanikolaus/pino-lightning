@@ -203,16 +203,16 @@ def test_forward_bands_output_keys_and_shapes():
 
     expected_n_bands = S // 2 + 1
     assert set(out.keys()) == {
-        "n_bands", "T_eff", "u_pt", "gt_pt", "err_pt", "res_u_pt", "res_gt_pt",
+        "n_bands", "T_eff", "pred_pt", "gt_pt", "err_pt", "pde_res_pred_pt", "pde_res_gt_pt",
     }
     assert out["n_bands"] == expected_n_bands
     assert out["T_eff"] == T
 
-    for key in ("u_pt", "gt_pt", "err_pt"):
+    for key in ("pred_pt", "gt_pt", "err_pt"):
         assert out[key].shape == (expected_n_bands, T), f"{key} shape={out[key].shape}"
         assert np.isfinite(out[key]).all(), f"{key} contains non-finite values"
 
-    for key in ("res_u_pt", "res_gt_pt"):
+    for key in ("pde_res_pred_pt", "pde_res_gt_pt"):
         assert out[key].shape == (expected_n_bands, T - 2), f"{key} shape={out[key].shape}"
         assert np.isfinite(out[key]).all(), f"{key} contains non-finite values"
 
