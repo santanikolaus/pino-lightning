@@ -1,0 +1,16 @@
+# @package _global_
+# Run D (combination) — modes32 (Run A) + layers6 (trimmed from Run C's 8 to fit
+# 32GB at hidden_channels=128). Modes-heavy / light-layers-boost interaction arm.
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
+  coarse_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_solver16_part0.npy
+
+model:
+  data_channels: 5
+  n_modes: [32, 32, 8]
+  n_layers: 6
+
+logger:
+  wandb:
+    name: coarse-re100-solver16-modes32-layers6

@@ -1,0 +1,17 @@
+# @package _global_
+# Run A (modes lever) — solver16 base, n_modes 8->32 (spatial only, t stays 8).
+# Single lever vs kf_coarse_re100_solver16.yaml; hidden_channels/n_layers unchanged.
+# Modes capped at 32, not Nyquist 64: Re100 dissipation k_d in [22,31]
+# (spectrum_diag, 2026-06-18) — 64 would only add dissipation-floor noise.
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
+  coarse_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_solver16_part0.npy
+
+model:
+  data_channels: 5
+  n_modes: [32, 32, 8]
+
+logger:
+  wandb:
+    name: coarse-re100-solver16-modes32
