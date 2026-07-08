@@ -1,0 +1,15 @@
+# @package _global_
+# Run B (channels lever) — solver16 base, hidden_channels 128->256.
+# Single lever vs kf_coarse_re100_solver16.yaml; n_modes/n_layers unchanged.
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
+  coarse_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_solver16_part0.npy
+
+model:
+  data_channels: 5
+  hidden_channels: 256
+
+logger:
+  wandb:
+    name: coarse-re100-solver16-h256

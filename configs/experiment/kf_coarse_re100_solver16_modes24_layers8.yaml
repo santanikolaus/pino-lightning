@@ -1,0 +1,16 @@
+# @package _global_
+# Run E (combination) — layers8 (Run C) + modes24 (trimmed from Run A's 32 to fit
+# 32GB at hidden_channels=128, n_layers=8). Layers-heavy / light-modes-boost arm.
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
+  coarse_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_coarse_solver16_part0.npy
+
+model:
+  data_channels: 5
+  n_modes: [24, 24, 8]
+  n_layers: 8
+
+logger:
+  wandb:
+    name: coarse-re100-solver16-modes24-layers8
