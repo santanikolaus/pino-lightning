@@ -108,6 +108,30 @@ def main():
         row += f"{ev.rel_l2(err_pt, gt_pt, bands=slice(k_lo, k_hi + 1)):>12.4f}"
         print(row)
 
+    print(f"\namplitude ratio gamma = sqrt(E_pred/E_gt), pooled per band x window "
+          f"(1 = GT energy, <1 deficit/blur, >1 excess)")
+    print(header)
+    print("-" * len(header))
+    for k_lo, k_hi in bands:
+        row = f"{f'k{k_lo}-{k_hi}':<12}"
+        for t_lo, t_hi in time_bins:
+            g = ev.amp_ratio(pred_pt, gt_pt,
+                             bands=slice(k_lo, k_hi + 1), frames=slice(t_lo, t_hi + 1))
+            row += f"{g:>12.4f}"
+        row += f"{ev.amp_ratio(pred_pt, gt_pt, bands=slice(k_lo, k_hi + 1)):>12.4f}"
+        print(row)
+
+    print("\ndecomposition (aggr): rel_l2^2 = (1 - rho^2) + (gamma - rho)^2")
+    dec_header = f"{'k-band':<12}" + "".join(f"{c:>12}" for c in ("rel_l2", "rho", "gamma"))
+    print(dec_header)
+    print("-" * len(dec_header))
+    for k_lo, k_hi in bands:
+        b = slice(k_lo, k_hi + 1)
+        r = ev.rel_l2(err_pt, gt_pt, bands=b)
+        rho = ev.corr_pooled(pred_pt, gt_pt, err_pt, bands=b)
+        g = ev.amp_ratio(pred_pt, gt_pt, bands=b)
+        print(f"{f'k{k_lo}-{k_hi}':<12}{r:>12.4f}{rho:>12.4f}{g:>12.4f}")
+
     thresholds = [0.9, 0.8]
     print(f"\ncorr-horizon: first frame band corr < thresh (of {grids['T_eff']}); "
           f"mean [2.5,97.5] bootstrap CI over samples; cens = never-decorrelated")
