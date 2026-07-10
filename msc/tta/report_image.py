@@ -47,8 +47,8 @@ def main():
             t_interval=cfg["loss"]["t_interval"],
         )
         err_pt, gt_pt = grids["err_pt"], grids["gt_pt"]
-        ax.plot(ev.rel_l2_curve(err_pt, gt_pt, bands=slice(0, 8)), label="k<=7")
-        ax.plot(ev.rel_l2_curve(err_pt, gt_pt), label="full aggregate")
+        ax.plot(ev.rel_l2(err_pt, gt_pt, bands=slice(0, 8), per_frame=True), label="k<=7")
+        ax.plot(ev.rel_l2(err_pt, gt_pt, per_frame=True), label="full aggregate")
         title = f"{run_id} — error accumulation over lead time"
     else:
         cmap = plt.colormaps["viridis"]
@@ -65,7 +65,7 @@ def main():
                 t_interval=cfg["loss"]["t_interval"],
             )
             err_pt, gt_pt = grids["err_pt"], grids["gt_pt"]
-            curve_k7 = ev.rel_l2_curve(err_pt, gt_pt, bands=slice(0, 8))
+            curve_k7 = ev.rel_l2(err_pt, gt_pt, bands=slice(0, 8), per_frame=True)
             color = cmap(i / (len(args.run_id) - 1))
             ax.plot(curve_k7, label=labels[i], color=color)
         title = f"k<=7 error over lead time — {len(args.run_id)}-run comparison"

@@ -4,8 +4,10 @@ GT enters only here, strictly downstream of any adaptation; a Method never sees 
 No config resolution and no fixed band/time/threshold choices happen here — every
 physics parameter and every aggregation choice is an explicit argument, supplied
 by a caller. forward_bands() runs the model once and returns full-resolution
-(n_bands, T) arrays; rel_l2()/rel_l2_curve() are the small functions a caller
-composes over those arrays to build whatever summary it needs.
+(N, n_bands, T) arrays — the sample axis is kept, not collapsed, so a caller can
+pool bands, mean over samples, or bootstrap the sample axis for a CI as it sees
+fit. rel_l2()/corr_curve() are the small functions a caller composes over
+those arrays to build whatever summary it needs.
 """
 import random
 
@@ -119,10 +121,13 @@ def forward_bands(model: torch.nn.Module,
         without a coarse channel never receives one either way.
 
     Returns:
-      n_bands, T_eff (dataset frame count); pred_pt/gt_pt/err_pt, each (n_bands,
-      T_eff): predicted/GT/error power; pde_res_pred_pt/pde_res_gt_pt, each
-      (n_bands, T_eff - 2): PDE-residual-minus-forcing power for û and GT (two
-      fewer frames, from the residual's finite-difference stencil).
+      n_bands, T_eff (dataset frame count); pred_pt/gt_pt/err_pt, each (N,
+      n_bands, T_eff): per-sample predicted/GT/error power; pde_res_pred_pt/
+      pde_res_gt_pt, each (N, n_bands, T_eff - 2): per-sample PDE-residual-minus-
+      forcing power for û and GT (two fewer frames, from the residual's finite-
+      difference stencil). The sample axis is kept per-sample because it is the
+      only bootstrap unit for a test-set CI; batching the loop below would
+      re-collapse it.
     """
     S = dataset[0]["y"].shape[0]
     T_eff = dataset[0]["y"].shape[-1]
@@ -139,11 +144,11 @@ def forward_bands(model: torch.nn.Module,
             if _shuf[_i] == _i:
                 _shuf[_i] = (_i + 1) % len(dataset)
 
-    pred_pt = np.zeros((n_bands, T_eff))
-    gt_pt = np.zeros((n_bands, T_eff))
-    err_pt = np.zeros((n_bands, T_eff))
-    pde_res_pred_pt = np.zeros((n_bands, T_eff - 2))
-    pde_res_gt_pt = np.zeros((n_bands, T_eff - 2))
+    pred_ps: list = []
+    gt_ps: list = []
+    err_ps: list = []
+    pde_res_pred_ps: list = []
+    pde_res_gt_ps: list = []
     for i in range(len(dataset)):
         ic = dataset[i]["x"].unsqueeze(0).to(device)
         gt = dataset[i]["y"].unsqueeze(0).to(device)
@@ -162,71 +167,140 @@ def forward_bands(model: torch.nn.Module,
                               temporal_pad=temporal_pad,
                               pad_mode=pad_mode,
                               coarse_traj=coarse_traj).squeeze(1)
-        pred_pt += band_power_t(uhat, kinf, n_bands)
-        gt_pt += band_power_t(gt, kinf, n_bands)
-        err_pt += band_power_t(uhat - gt, kinf, n_bands)
-        pde_res_pred_pt += band_power_t(
-            resid_minus_forcing(uhat, nu_u, t_interval), kinf, n_bands)
-        pde_res_gt_pt += band_power_t(
-            resid_minus_forcing(gt, nu_gt, t_interval), kinf, n_bands)
+        pred_ps.append(band_power_t(uhat, kinf, n_bands))
+        gt_ps.append(band_power_t(gt, kinf, n_bands))
+        err_ps.append(band_power_t(uhat - gt, kinf, n_bands))
+        pde_res_pred_ps.append(
+            band_power_t(resid_minus_forcing(uhat, nu_u, t_interval), kinf,
+                         n_bands))
+        pde_res_gt_ps.append(
+            band_power_t(resid_minus_forcing(gt, nu_gt, t_interval), kinf,
+                         n_bands))
 
     return {
         "n_bands": n_bands,
         "T_eff": T_eff,
-        "pred_pt": pred_pt,
-        "gt_pt": gt_pt,
-        "err_pt": err_pt,
-        "pde_res_pred_pt": pde_res_pred_pt,
-        "pde_res_gt_pt": pde_res_gt_pt,
+        "pred_pt": np.stack(pred_ps),
+        "gt_pt": np.stack(gt_ps),
+        "err_pt": np.stack(err_ps),
+        "pde_res_pred_pt": np.stack(pde_res_pred_ps),
+        "pde_res_gt_pt": np.stack(pde_res_gt_ps),
     }
 
 
-def rel_l2(
-    err_pt: np.ndarray,
-    gt_pt: np.ndarray,
-    bands: slice = slice(None),
-    frames: slice = slice(None)
-) -> float:
+def rel_l2(err_pt: np.ndarray,
+           gt_pt: np.ndarray,
+           bands: slice = slice(None),
+           frames: slice = slice(None),
+           per_frame: bool = False) -> "float | np.ndarray":
     """Computes pooled relative-L2 error over a band group and frame window.
 
-    Pools power jointly over the selected bands and frames before dividing —
-    the numerator and denominator are each summed once, then a single ratio
-    is taken (never averages pre-computed per-bin ratios).
+    Pools power jointly before dividing — numerator and denominator are each
+    summed once, then a single ratio is taken (never averages pre-computed
+    per-bin ratios). With per_frame=True the frame axis is kept, giving a curve
+    whose entry t is the scalar rel_l2 over that single frame. The curve cannot
+    be aggregated back into a windowed scalar: mean-of-per-frame-ratios differs
+    from ratio-of-pooled-sums whenever the window spans more than one frame —
+    call rel_l2 again over the window instead.
 
     Args:
-      err_pt: (n_bands, T) error power, as returned by forward_bands.
-      gt_pt: (n_bands, T) GT power, as returned by forward_bands.
+      err_pt: (N, n_bands, T) error power, as returned by forward_bands.
+      gt_pt: (N, n_bands, T) GT power, as returned by forward_bands.
       bands: band slice to pool over (default: all bands).
       frames: frame slice to pool over (default: all frames).
+      per_frame: keep the frame axis, returning a per-frame curve.
 
     Returns:
-      sqrt(sum(err_pt[bands, frames]) / sum(gt_pt[bands, frames])).
+      Scalar sqrt(sum(err) / sum(gt)) over the selection; or, if per_frame,
+      a (T_sel,) array with that ratio taken per frame.
     """
-    return float(
-        np.sqrt(err_pt[bands, frames].sum() /
-                (gt_pt[bands, frames].sum() + 1e-30)))
+    num = err_pt[:, bands, frames]
+    den = gt_pt[:, bands, frames]
+    if per_frame:
+        return np.sqrt(num.sum((0, 1)) / (den.sum((0, 1)) + 1e-30))
+    return float(np.sqrt(num.sum() / (den.sum() + 1e-30)))
 
 
-def rel_l2_curve(err_pt: np.ndarray,
-                 gt_pt: np.ndarray,
-                 bands: slice = slice(None)) -> np.ndarray:
-    """Computes the per-frame relative-L2 error curve for a band group.
+def corr_curve(pred_pt: np.ndarray,
+               gt_pt: np.ndarray,
+               err_pt: np.ndarray,
+               bands: slice = slice(None)) -> np.ndarray:
+    """Computes the per-sample, band-pooled correlation curve.
 
-    A vectorized convenience over calling rel_l2(bands, frames=slice(t, t+1))
-    once per frame — not a distinct formula. Do not average this curve over a
-    window and expect it to match rel_l2() over that same window: mean-of-
-    per-frame-ratios differs from ratio-of-pooled-sums whenever the window
-    spans more than one frame.
+    Correlation is pooled over the band group's spectral power, not averaged
+    over per-band correlations — the two differ because correlation is not
+    linear in the band index. The pooled cross term is recovered from the three
+    power arrays via 2*Re<pred, gt> = |pred|^2 + |gt|^2 - |pred - gt|^2, so no
+    extra forward pass is needed. Over all bands (default) this equals the
+    physical-field Pearson correlation for a zero-mean field, by Parseval.
 
     Args:
-      err_pt: (n_bands, T) error power, as returned by forward_bands.
-      gt_pt: (n_bands, T) GT power, as returned by forward_bands.
+      pred_pt: (N, n_bands, T) predicted power, as returned by forward_bands.
+      gt_pt: (N, n_bands, T) GT power, as returned by forward_bands.
+      err_pt: (N, n_bands, T) error power, as returned by forward_bands.
       bands: band slice to pool over (default: all bands).
 
     Returns:
-      (T,) array; entry t is sqrt(sum(err_pt[bands, t]) / sum(gt_pt[bands, t])).
+      (N, T) per-sample correlation in [-1, 1]; caller means over N for the set
+      curve and bootstraps over N for a CI. Over all bands this is the raw-field
+      cosine similarity; it equals the mean-subtracted Pearson correlation only
+      when the DC/band-0 mode is zero — true for KF vorticity (curl, mean 0),
+      not for a general non-zero-mean field.
     """
-    return np.sqrt(err_pt[bands].sum(0) / (gt_pt[bands].sum(0) + 1e-30))
+    pp = pred_pt[:, bands].sum(1)
+    gp = gt_pt[:, bands].sum(1)
+    ep = err_pt[:, bands].sum(1)
+    cross = 0.5 * (pp + gp - ep)
+    rho = cross / (np.sqrt(pp * gp) + 1e-30)
+    return np.clip(rho, -1.0, 1.0)
+
+
+def time_to_threshold(curve: np.ndarray,
+                      thresh: float,
+                      mode: str = "first_cross") -> "int | np.ndarray":
+    """Frames a correlation curve stays coherent before dropping below thresh.
+
+    Args:
+      curve: (T,) or (N, T) correlation curve(s), as returned by corr_curve.
+      thresh: correlation threshold (e.g. 0.9, 0.8).
+      mode: "first_cross" (frame index of the first value below thresh; the
+        window length T if it never drops, i.e. right-censored) or "count"
+        (Lippe-faithful count of frames at or above thresh).
+
+    Returns:
+      int horizon for a (T,) curve, or (N,) int horizons for an (N, T) curve.
+    """
+    arr = np.asarray(curve)
+    scalar_in = arr.ndim == 1
+    c = arr[None] if scalar_in else arr
+    T = c.shape[-1]
+    if mode == "count":
+        out = (c >= thresh).sum(-1)
+    else:
+        below = c < thresh
+        out = np.where(below.any(-1), below.argmax(-1), T)
+    return int(out[0]) if scalar_in else out
+
+
+def bootstrap_ci(values: np.ndarray,
+                 n_boot: int = 1000,
+                 seed: int = 0) -> tuple:
+    """Bootstraps a mean and percentile CI by resampling the sample axis.
+
+    Args:
+      values: (N,) per-sample scalars (e.g. per-sample horizons).
+      n_boot: number of bootstrap resamples.
+      seed: RNG seed for reproducibility.
+
+    Returns:
+      (mean, lo, hi); lo/hi are the 2.5/97.5 percentiles of the resampled means.
+    """
+    v = np.asarray(values, dtype=float)
+    rng = np.random.default_rng(seed)
+    n = len(v)
+    means = np.array([v[rng.integers(0, n, n)].mean() for _ in range(n_boot)])
+    return float(v.mean()), float(np.percentile(means, 2.5)), float(
+        np.percentile(means, 97.5))
 
 
 def pde_residual(
