@@ -221,6 +221,76 @@ def rel_l2(err_pt: np.ndarray,
     return float(np.sqrt(num.sum() / (den.sum() + 1e-30)))
 
 
+def amp_ratio(pred_pt: np.ndarray,
+              gt_pt: np.ndarray,
+              bands: slice = slice(None),
+              frames: slice = slice(None),
+              per_frame: bool = False) -> "float | np.ndarray":
+    """Computes the pooled amplitude (spectrum) ratio over a band/frame window.
+
+    gamma = sqrt(sum(pred_power) / sum(gt_power)): the phase-blind amplitude
+    ratio, pooled exactly as rel_l2 pools (sum numerator and denominator once,
+    then a single ratio — never a mean of per-bin ratios). It is the clean
+    amplitude read: gamma == 1 means the band carries GT energy regardless of
+    phase, gamma < 1 a deficit (blur / hedging toward the mean), gamma > 1 an
+    excess. Quote gamma itself for the amplitude claim; the (gamma - rho)^2 term
+    of the rel_l2 identity mixes residual phase whenever rho < 1.
+
+    Args:
+      pred_pt: (N, n_bands, T) predicted power, as returned by forward_bands.
+      gt_pt: (N, n_bands, T) GT power, as returned by forward_bands.
+      bands: band slice to pool over (default: all bands).
+      frames: frame slice to pool over (default: all frames).
+      per_frame: keep the frame axis, returning a per-frame curve.
+
+    Returns:
+      Scalar sqrt(sum(pred) / sum(gt)) over the selection; or, if per_frame, a
+      (T_sel,) array with that ratio taken per frame.
+    """
+    pp = pred_pt[:, bands, frames]
+    gp = gt_pt[:, bands, frames]
+    if per_frame:
+        return np.sqrt(pp.sum((0, 1)) / (gp.sum((0, 1)) + 1e-30))
+    return float(np.sqrt(pp.sum() / (gp.sum() + 1e-30)))
+
+
+def corr_pooled(pred_pt: np.ndarray,
+                gt_pt: np.ndarray,
+                err_pt: np.ndarray,
+                bands: slice = slice(None),
+                frames: slice = slice(None),
+                per_frame: bool = False) -> "float | np.ndarray":
+    """Computes the correlation pooled over samples, bands and frames.
+
+    Pools power the same way rel_l2 and amp_ratio do (sum first, then ratio), so
+    the three satisfy rel_l2^2 = (1 - rho^2) + (gamma - rho)^2 exactly over any
+    band/frame window — the amplitude/phase split of the pooled error. This is
+    the set-level companion to corr_curve, which instead keeps the sample axis
+    for a per-sample horizon and its bootstrap CI. Being a ratio of pooled sums,
+    this value is not the mean of corr_curve's per-sample rho (mean-of-ratios
+    differs from ratio-of-sums), so do not cross-check it against the horizon
+    table's per-sample correlations.
+
+    Args:
+      pred_pt: (N, n_bands, T) predicted power, as returned by forward_bands.
+      gt_pt: (N, n_bands, T) GT power, as returned by forward_bands.
+      err_pt: (N, n_bands, T) error power, as returned by forward_bands.
+      bands: band slice to pool over (default: all bands).
+      frames: frame slice to pool over (default: all frames).
+      per_frame: keep the frame axis, returning a per-frame curve.
+
+    Returns:
+      Scalar pooled correlation in [-1, 1]; or, if per_frame, a (T_sel,) curve.
+    """
+    axes = (0, 1) if per_frame else None
+    pp = pred_pt[:, bands, frames].sum(axes)
+    gp = gt_pt[:, bands, frames].sum(axes)
+    ep = err_pt[:, bands, frames].sum(axes)
+    rho = 0.5 * (pp + gp - ep) / (np.sqrt(pp * gp) + 1e-30)
+    rho = np.clip(rho, -1.0, 1.0)
+    return rho if per_frame else float(rho)
+
+
 def corr_curve(pred_pt: np.ndarray,
                gt_pt: np.ndarray,
                err_pt: np.ndarray,
