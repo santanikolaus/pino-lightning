@@ -23,6 +23,40 @@ def _parse_groups(s: str) -> list[tuple[int, int]]:
     return groups
 
 
+def corr_horizon_rows(pred_pt, gt_pt, err_pt, bands: list, T: int,
+                      thresholds: list) -> list:
+    """Builds the per-band correlation-horizon table rows.
+
+    For each band group and threshold, takes the per-sample first frame the band
+    correlation drops below the threshold (censored at T when it never does),
+    then reports the mean horizon with a bootstrap CI over samples and the count
+    of censored (never-decorrelated) samples.
+
+    Args:
+      pred_pt: (N, n_bands, T) predicted power, as returned by forward_bands.
+      gt_pt: (N, n_bands, T) GT power, as returned by forward_bands.
+      err_pt: (N, n_bands, T) error power, as returned by forward_bands.
+      bands: list of (lo, hi) inclusive band-index tuples.
+      T: window length in frames; the horizon value assigned to censored samples.
+      thresholds: correlation thresholds to report a horizon for.
+
+    Returns:
+      List of formatted row strings, one per band group.
+    """
+    n = err_pt.shape[0]
+    rows = []
+    for k_lo, k_hi in bands:
+        c = ev.corr_curve(pred_pt, gt_pt, err_pt, bands=slice(k_lo, k_hi + 1))
+        row = f"{f'k{k_lo}-{k_hi}':<12}"
+        for th in thresholds:
+            h = ev.time_to_threshold(c, th)
+            mean, lo, hi = ev.bootstrap_ci(h)
+            cens = int((h == T).sum())
+            row += f"{f'{mean:.1f} [{lo:.1f},{hi:.1f}] cens {cens}/{n}':>28}"
+        rows.append(row)
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-id", required=True)
@@ -59,7 +93,7 @@ def main():
         pad_mode=cfg["data"]["pad_mode"],
         t_interval=cfg["loss"]["t_interval"],
     )
-    err_pt, gt_pt = grids["err_pt"], grids["gt_pt"]
+    pred_pt, err_pt, gt_pt = grids["pred_pt"], grids["err_pt"], grids["gt_pt"]
 
     header = (f"{'k-band':<12}" + "".join(f"{f't{lo}-{hi}':>12}" for lo, hi in time_bins)
               + f"{'aggr':>12}")
@@ -72,6 +106,15 @@ def main():
                             bands=slice(k_lo, k_hi + 1), frames=slice(t_lo, t_hi + 1))
             row += f"{val:>12.4f}"
         row += f"{ev.rel_l2(err_pt, gt_pt, bands=slice(k_lo, k_hi + 1)):>12.4f}"
+        print(row)
+
+    thresholds = [0.9, 0.8]
+    print(f"\ncorr-horizon: first frame band corr < thresh (of {grids['T_eff']}); "
+          f"mean [2.5,97.5] bootstrap CI over samples; cens = never-decorrelated")
+    ch_header = f"{'k-band':<12}" + "".join(f"{f'corr<{th}':>28}" for th in thresholds)
+    print(ch_header)
+    print("-" * len(ch_header))
+    for row in corr_horizon_rows(pred_pt, gt_pt, err_pt, bands, grids["T_eff"], thresholds):
         print(row)
 
 
