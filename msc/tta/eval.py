@@ -373,6 +373,141 @@ def bootstrap_ci(values: np.ndarray,
         np.percentile(means, 97.5))
 
 
+def _sq_dists(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Computes pairwise squared Euclidean distances between two bags of points.
+
+    Args:
+      a: (Na, D) bag of points.
+      b: (Nb, D) bag of points.
+
+    Returns:
+      (Na, Nb) non-negative squared distances; rectangular-safe.
+    """
+    aa = (a * a).sum(1)
+    bb = (b * b).sum(1)
+    return (aa[:, None] + bb[None, :] - 2.0 * a @ b.T).clamp_min(0.0)
+
+
+def mmd(x: torch.Tensor, y: torch.Tensor,
+        bandwidth: "tuple[float, ...]") -> torch.Tensor:
+    """Maximum mean discrepancy between two bags via a rational-quadratic kernel.
+
+    Sums rational-quadratic kernels over the bandwidth scales and returns the
+    biased V-statistic (diagonal included, matching swirl-dynamics). The result
+    is a differentiable 0-dim tensor, so the same primitive doubles as a
+    label-free loss. Lower means more evidence the two bags share a distribution.
+
+    Args:
+      x: (Nx, D) first bag.
+      y: (Ny, D) second bag.
+      bandwidth: kernel distance scales; the kernel is sum_a a^2 / (a^2 + d^2).
+
+    Returns:
+      Scalar MMD as a 0-dim tensor.
+    """
+    def k(d: torch.Tensor) -> torch.Tensor:
+        return torch.stack([a * a / (a * a + d) for a in bandwidth]).sum(0)
+
+    return (k(_sq_dists(x, x)).mean() + k(_sq_dists(y, y)).mean()
+            - 2.0 * k(_sq_dists(x, y)).mean())
+
+
+def mmd_bandwidth_median(ref: torch.Tensor,
+                         mults: "tuple[float, ...]" = (0.5, 1.0, 2.0)) -> tuple:
+    """Freezes a median-heuristic bandwidth mixture on a reference bag.
+
+    Sets the base scale to the root-median off-diagonal distance, placing the
+    kernel at half-response on the typical pair, then spreads it multiscale.
+    Compute once on the in-distribution reference and reuse the returned tuple
+    verbatim for every comparison, or MMD values stop being comparable.
+
+    Args:
+      ref: (N, D) reference bag.
+      mults: multiscale factors applied to the base scale.
+
+    Returns:
+      Bandwidth scales, one per entry of mults.
+    """
+    d = _sq_dists(ref, ref)
+    n = d.shape[0]
+    off = d[~torch.eye(n, dtype=torch.bool, device=d.device)]
+    a_med = float(off.median().clamp_min(1e-12).sqrt())
+    return tuple(a_med * m for m in mults)
+
+
+def inband_frames(field: torch.Tensor, kmax: "int | None" = 8,
+                  s_out: int = 16) -> torch.Tensor:
+    """Spectrally downsamples a field to low-band real snapshots, one per frame.
+
+    Keeps the low s_out x s_out Fourier block of each frame (optionally zeroing
+    Chebyshev shells above kmax), inverse-transforms on the s_out grid, and
+    flattens the spatial axes. The amplitude is scaled by (s_out / S) ** 2 so the
+    output is the field resampled on the coarse grid. Each frame becomes one
+    point in R^(s_out ** 2) — the sample unit an MMD bag is built from.
+
+    Args:
+      field: (B, S, S, T) real-valued spatial field.
+      kmax: keep only L-inf modes with shell index <= kmax; None keeps the full
+        s_out block (a no-op, since s_out // 2 is that block's Nyquist shell).
+      s_out: coarse grid size; the flattened point dimension is s_out ** 2.
+
+    Returns:
+      (B, T, s_out ** 2) real low-band snapshots.
+    """
+    B, S, _, T = field.shape
+    h = s_out // 2
+    idx = list(range(h)) + list(range(S - h, S))
+    fh = torch.fft.fft2(field, dim=(1, 2))
+    fh = fh[:, idx][:, :, idx]
+    if kmax is not None:
+        keep = (cheb_bins(s_out, field.device) <= kmax).to(fh.dtype)
+        fh = fh * keep[None, :, :, None]
+    w = torch.fft.ifft2(fh, dim=(1, 2)).real * (s_out / S) ** 2
+    return w.permute(0, 3, 1, 2).reshape(B, T, s_out * s_out)
+
+
+def forward_inband(model: torch.nn.Module,
+                   dataset,
+                   device,
+                   *,
+                   kmax: "int | None",
+                   s_out: int,
+                   time_scale: float,
+                   temporal_pad: int,
+                   pad_mode: str) -> torch.Tensor:
+    """Forwards the model over a dataset and returns predicted in-band frames.
+
+    Only the prediction bag is produced here; GT frames come straight from
+    inband_frames on the dataset without a forward pass. The sample axis is
+    kept so a caller can split or pool bags by trajectory. No coarse channel is
+    ever fed, so a coarse-conditioned checkpoint would be run outside its
+    training regime — this is for unconditioned operators only.
+
+    Args:
+      model: KF FNO model, already loaded and in eval mode.
+      dataset: KFDataset-like object yielding {"x": ic, "y": gt}.
+      device: torch device to run the forward pass on.
+      kmax: Chebyshev shell cutoff for the crop; passed to inband_frames.
+      s_out: coarse grid size for the crop; passed to inband_frames.
+      time_scale: kf_forward's t-grid coordinate scale.
+      temporal_pad: kf_forward's frame padding before the forward pass.
+      pad_mode: kf_forward's padding mode ("zero" or "periodic").
+
+    Returns:
+      (N, T, s_out ** 2) predicted in-band frames on the CPU.
+    """
+    frames: list = []
+    for i in range(len(dataset)):
+        ic = dataset[i]["x"].unsqueeze(0).to(device)
+        T = dataset[i]["y"].shape[-1]
+        with torch.no_grad():
+            uhat = kf_forward(model, ic, T, time_scale=time_scale,
+                              temporal_pad=temporal_pad, pad_mode=pad_mode,
+                              coarse_traj=None).squeeze(1)
+        frames.append(inband_frames(uhat, kmax, s_out)[0].cpu())
+    return torch.stack(frames)
+
+
 def pde_residual(
     res_pt: np.ndarray,
     bands: slice = slice(None),
