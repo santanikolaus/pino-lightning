@@ -147,9 +147,14 @@ def main():
     if args.run_id:
         from . import setup
         model, cfg = setup.load_model(args.run_id, device)
-        sp = _SPLIT["test"]
-        ds = KFDataset(_data_path("ns_re100"), sp["n"], offset=sp["offset"],
-                       sub_t=args.sub_t)
+        expected = _data_path("ns_re100")
+        if cfg["data"]["data_path"] != expected:
+            raise SystemExit(
+                f"checkpoint data_path {cfg['data']['data_path']} != {expected}; "
+                "GT and prediction bags would be sourced differently — the coarse "
+                "channel's index alignment cannot be assumed. Resolve before grading.")
+        cfg["data"]["sub_t"] = args.sub_t
+        ds = setup.build_dataset(cfg, "test")
         pred = ev.forward_inband(
             model, ds, device, kmax=args.kmax, s_out=args.s_out,
             time_scale=cfg["data"]["time_scale"],

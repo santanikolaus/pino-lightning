@@ -479,13 +479,13 @@ def forward_inband(model: torch.nn.Module,
 
     Only the prediction bag is produced here; GT frames come straight from
     inband_frames on the dataset without a forward pass. The sample axis is
-    kept so a caller can split or pool bags by trajectory. No coarse channel is
-    ever fed, so a coarse-conditioned checkpoint would be run outside its
-    training regime — this is for unconditioned operators only.
+    kept so a caller can split or pool bags by trajectory. The matched coarse
+    trajectory is fed when the dataset carries one, so coarse-conditioned and
+    unconditioned checkpoints are both run inside their training regime.
 
     Args:
       model: KF FNO model, already loaded and in eval mode.
-      dataset: KFDataset-like object yielding {"x": ic, "y": gt}.
+      dataset: KFDataset-like object yielding {"x": ic, "y": gt, "coarse": opt}.
       device: torch device to run the forward pass on.
       kmax: Chebyshev shell cutoff for the crop; passed to inband_frames.
       s_out: coarse grid size for the crop; passed to inband_frames.
@@ -498,12 +498,15 @@ def forward_inband(model: torch.nn.Module,
     """
     frames: list = []
     for i in range(len(dataset)):
-        ic = dataset[i]["x"].unsqueeze(0).to(device)
-        T = dataset[i]["y"].shape[-1]
+        item = dataset[i]
+        ic = item["x"].unsqueeze(0).to(device)
+        T = item["y"].shape[-1]
+        coarse_traj = (item["coarse"].unsqueeze(0).to(device)
+                       if "coarse" in item else None)
         with torch.no_grad():
             uhat = kf_forward(model, ic, T, time_scale=time_scale,
                               temporal_pad=temporal_pad, pad_mode=pad_mode,
-                              coarse_traj=None).squeeze(1)
+                              coarse_traj=coarse_traj).squeeze(1)
         frames.append(inband_frames(uhat, kmax, s_out)[0].cpu())
     return torch.stack(frames)
 
