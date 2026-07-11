@@ -2,20 +2,30 @@ import numpy as np
 import torch
 
 from msc.tta import eval as ev
-from msc.tta.mmd_gate import _half_bags, _standardize
+from msc.tta.mmd_gate import _half_bags, _mmd_ci, _mmd_pt, _standardize
 
 
 def test_half_bags_are_equal_size_and_disjoint_by_trajectory():
-    """All three compared bags carry the same point count, split by trajectory.
+    """All three bags carry the same trajectory count; the in-dist halves are disjoint.
 
     Equal size is what makes the V-stat diagonal bias cancel between floor and
-    dist; splitting by trajectory (not by frame) keeps the floor honest.
+    dist; disjoint trajectories keep the floor from sharing frames.
     """
     in_dist, ood = torch.randn(30, 65, 4), torch.randn(30, 65, 4)
-    fa, fb, oo = _half_bags(in_dist, ood, strip=False)
-    assert fa.shape == fb.shape == oo.shape == (15 * 65, 4)
-    assert torch.allclose(fa, in_dist[:15].reshape(-1, 4))
-    assert torch.allclose(fb, in_dist[15:30].reshape(-1, 4))
+    fa, fb, oo = _half_bags(in_dist, ood)
+    assert fa.shape == fb.shape == oo.shape == (15, 65, 4)
+    assert torch.allclose(fa, in_dist[:15])
+    assert torch.allclose(fb, in_dist[15:30])
+
+
+def test_mmd_ci_is_deterministic_and_brackets_the_point_estimate():
+    """A fixed seed reproduces the CI, and the point MMD lies within it."""
+    torch.manual_seed(0)
+    a, b = torch.randn(12, 20, 4), torch.randn(12, 20, 4) + 1.0
+    bw = ev.mmd_bandwidth_median(a.reshape(-1, 4))
+    lo, hi = _mmd_ci(a, b, bw, strip=False, n_boot=200, seed=7)
+    assert (lo, hi) == _mmd_ci(a, b, bw, strip=False, n_boot=200, seed=7)
+    assert lo <= _mmd_pt(a, b, bw, strip=False) <= hi
 
 
 def test_mmd_matches_closed_form_biased_v_statistic():
