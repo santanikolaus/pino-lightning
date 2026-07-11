@@ -1,14 +1,21 @@
-"""Wall-clock scaling of the coarse NS solver: grid size x Re.
+"""Wall-clock scaling of the coarse NS solver: grid size x Re x IC.
 
-For each (Re, coarse_res) cell, times CoarseSolver.solve() producing one
-T-frame chain from a real GT initial condition (spectral-cropped to coarse_res,
-padded back to native resolution) -- the exact operation msc/tta/coarse_solver.py
-uses to materialize training data. Each cell runs in its own spawned subprocess
-so a hang or blowup at one (Re, coarse_res) can't stall or corrupt the sweep.
+For each (Re, coarse_res, ic) cell, times solve_from_ic() producing one
+T-frame chain at coarse_res from a real GT initial condition (spectral-cropped
+from a native-resolution GT snapshot). Excludes the resolution-independent
+zero-pad back to native resolution that msc/tta/coarse_solver.py applies for
+storage, since that constant cost would swamp small-coarse_res timings.
+
+Each cell runs in its own spawned subprocess so a hang or blowup at one
+(Re, coarse_res, ic) can't stall or corrupt the sweep. Multiple ICs per Re
+(distinct GT chains, same file) are run and aggregated (mean/CV) to check
+whether a single IC is representative or IC choice materially moves the
+timing, since a fresh random field would flatten the Re-dependent flow
+character the sweep is meant to expose.
 
 Run:
   PYTHONPATH=$PWD python scripts/solver_scaling_bench.py \
-      --res 8 12 16 24 36 --re 100 300 500 1000 --device cuda
+      --res 8 12 16 24 36 --re 100 300 500 1000 --n_ics 5 --device cuda
 """
 import argparse
 import time
@@ -31,11 +38,12 @@ NS_FILES = _PATHS["data"]["ns_files"]
 WARMUP_FRAMES = 2
 
 
-def load_ic(re: int) -> torch.Tensor:
-    """Loads the first frame of the first GT chain as the shared IC for one Re.
+def load_ic(re: int, chain_idx: int = 0) -> torch.Tensor:
+    """Loads the first frame of one GT chain as an IC for one Re.
 
     Args:
       re: Reynolds number key; must have an entry in paths.yaml data.ns_files.
+      chain_idx: which stored chain to draw frame 0 from (a distinct real IC).
 
     Returns:
       (S, S) float32 CPU tensor, S = native GT resolution.
@@ -45,7 +53,7 @@ def load_ic(re: int) -> torch.Tensor:
         raise KeyError(f"no GT file for Re={re} in paths.yaml data.ns_files "
                        f"(available: {sorted(NS_FILES)}); pass a subset via --re")
     arr = np.load(DATA_ROOT / NS_FILES[key], mmap_mode="r")
-    return torch.from_numpy(np.ascontiguousarray(arr[0, 0])).float()
+    return torch.from_numpy(np.ascontiguousarray(arr[chain_idx, 0])).float()
 
 
 def _cell_worker(coarse_res: int, re: int, ic: torch.Tensor, device_str: str,
@@ -133,28 +141,61 @@ def time_one_chain(coarse_res: int, re: int, ic: torch.Tensor, device_str: str,
     return {"status": status, "min_s": min(reps) if status == "ok" else None, "reps": reps}
 
 
-def print_table(results: dict, re_list: list, res_list: list) -> None:
-    """Prints the Re x coarse_res timing table (min-of-reps seconds, or status)."""
-    print("\n" + "Re".rjust(6) + "".join(f"{s:>10}" for s in res_list))
+def aggregate_over_ics(results: dict, re_list: list, res_list: list, ic_list: list) -> dict:
+    """Collapses the ic axis: mean/std of min_s per (re, res) over ok cells.
+
+    Args:
+      results: (re, res, ic) -> time_one_chain() dict.
+      re_list, res_list, ic_list: sweep axes.
+
+    Returns:
+      (re, res) -> {mean_s, std_s, n_ok, n_total, bad_status} — mean_s/std_s
+      are None if no ic ran "ok" for that cell.
+    """
+    agg = {}
+    for re in re_list:
+        for s in res_list:
+            cells = [results[(re, s, i)] for i in ic_list]
+            oks = [c["min_s"] for c in cells if c["status"] == "ok"]
+            bad = [c["status"] for c in cells if c["status"] != "ok"]
+            agg[(re, s)] = {
+                "mean_s": float(np.mean(oks)) if oks else None,
+                "std_s": float(np.std(oks)) if len(oks) > 1 else 0.0,
+                "n_ok": len(oks),
+                "n_total": len(ic_list),
+                "bad_status": bad,
+            }
+    return agg
+
+
+def print_ic_comparison(agg: dict, re_list: list, res_list: list) -> None:
+    """Prints mean_s and coefficient of variation (%) across ICs, per cell."""
+    w = 20
+    print("\nIC comparison — mean seconds (CV% across ICs):")
+    print("Re".rjust(6) + "".join(f"{s:>{w}}" for s in res_list))
     for re in re_list:
         row = f"{re:>6}"
         for s in res_list:
-            r = results[(re, s)]
-            cell = f"{r['min_s']:.3f}s" if r["status"] == "ok" else r["status"]
-            row += f"{cell:>10}"
+            a = agg[(re, s)]
+            if a["n_ok"] == 0:
+                cell = "no-ok-ic"
+            else:
+                cv = 100 * a["std_s"] / a["mean_s"] if a["mean_s"] else 0.0
+                flag = "" if a["n_ok"] == a["n_total"] else f"[{a['n_ok']}/{a['n_total']}]"
+                cell = f"{a['mean_s']:.3f}s({cv:4.1f}%){flag}"
+            row += f"{cell:>{w}}"
         print(row)
 
 
-def save_csv(results: dict, re_list: list, res_list: list, out_path: Path) -> None:
-    """Writes the Re x coarse_res timing table as CSV (min-of-reps seconds, or status)."""
+def save_csv(agg: dict, re_list: list, res_list: list, out_path: Path) -> None:
+    """Writes the Re x coarse_res table as CSV: mean_s and std_s per cell."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["re," + ",".join(str(s) for s in res_list)]
+    lines = ["re,coarse_res,mean_s,std_s,n_ok,n_total"]
     for re in re_list:
-        cells = []
         for s in res_list:
-            r = results[(re, s)]
-            cells.append(f"{r['min_s']:.4f}" if r["status"] == "ok" else r["status"])
-        lines.append(f"{re}," + ",".join(cells))
+            a = agg[(re, s)]
+            mean_s = f"{a['mean_s']:.4f}" if a["mean_s"] is not None else "NA"
+            lines.append(f"{re},{s},{mean_s},{a['std_s']:.4f},{a['n_ok']},{a['n_total']}")
     out_path.write_text("\n".join(lines) + "\n")
     print(f"Saved -> {out_path}")
 
@@ -166,6 +207,7 @@ def main():
     ap.add_argument("--t_frames", type=int, default=128)
     ap.add_argument("--t_interval", type=float, default=1.0)
     ap.add_argument("--n_reps", type=int, default=3)
+    ap.add_argument("--n_ics", type=int, default=5, help="number of distinct GT chains per Re")
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--device", default=None)
     ap.add_argument("--out", default="scripts/outputs/solver_scaling_bench.csv")
@@ -173,21 +215,24 @@ def main():
 
     device_str = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     ctx = mp.get_context("spawn")
-    print(f"device={device_str}  res={args.res}  re={args.re}  "
+    ic_list = list(range(args.n_ics))
+    print(f"device={device_str}  res={args.res}  re={args.re}  ic_idx={ic_list}  "
           f"t_frames={args.t_frames}  n_reps={args.n_reps}  timeout={args.timeout}s\n")
 
     results = {}
     for re in args.re:
-        ic = load_ic(re)
-        for s in args.res:
-            r = time_one_chain(s, re, ic, device_str, args.t_frames, args.t_interval,
-                               args.n_reps, args.timeout, ctx)
-            headline = f"{r['min_s']:.3f}s" if r["status"] == "ok" else r["status"]
-            print(f"Re{re:<5} S={s:<3} {headline}")
-            results[(re, s)] = r
+        for i in ic_list:
+            ic = load_ic(re, i)
+            for s in args.res:
+                r = time_one_chain(s, re, ic, device_str, args.t_frames, args.t_interval,
+                                   args.n_reps, args.timeout, ctx)
+                headline = f"{r['min_s']:.3f}s" if r["status"] == "ok" else r["status"]
+                print(f"Re{re:<5} S={s:<3} ic={i} {headline}")
+                results[(re, s, i)] = r
 
-    print_table(results, args.re, args.res)
-    save_csv(results, args.re, args.res, _ROOT / args.out)
+    agg = aggregate_over_ics(results, args.re, args.res, ic_list)
+    print_ic_comparison(agg, args.re, args.res)
+    save_csv(agg, args.re, args.res, _ROOT / args.out)
 
 
 if __name__ == "__main__":
