@@ -13,6 +13,7 @@ import random
 
 import numpy as np
 import torch
+from scipy import stats
 
 from src.models.kf_fno import kf_forward
 from src.pde.ns import NSVorticity
@@ -509,6 +510,72 @@ def forward_inband(model: torch.nn.Module,
                               coarse_traj=coarse_traj).squeeze(1)
         frames.append(inband_frames(uhat, kmax, s_out)[0].cpu())
     return torch.stack(frames)
+
+
+def forward_fields(model: torch.nn.Module,
+                   dataset,
+                   device,
+                   *,
+                   time_scale: float,
+                   temporal_pad: int,
+                   pad_mode: str) -> "tuple[torch.Tensor, torch.Tensor]":
+    """Forwards the model over a dataset; returns full-resolution pred/GT fields.
+
+    The field-domain companion to forward_bands/forward_inband: it keeps the raw
+    (N, S, S, T) fields those forwards reduce and discard, for value-distribution
+    (w1_values) and, later, covariance metrics. The matched coarse trajectory is
+    fed when the dataset carries one, matching each checkpoint's training regime.
+
+    Args:
+      model: KF FNO model, already loaded and in eval mode.
+      dataset: KFDataset-like object yielding {"x": ic, "y": gt, "coarse": opt}.
+      device: torch device to run the forward pass on.
+      time_scale: kf_forward's t-grid coordinate scale.
+      temporal_pad: kf_forward's frame padding before the forward pass.
+      pad_mode: kf_forward's padding mode ("zero" or "periodic").
+
+    Returns:
+      (pred, gt), each an (N, S, S, T) CPU tensor.
+    """
+    preds: list = []
+    gts: list = []
+    for i in range(len(dataset)):
+        item = dataset[i]
+        T = item["y"].shape[-1]
+        coarse_traj = (item["coarse"].unsqueeze(0).to(device)
+                       if "coarse" in item else None)
+        with torch.no_grad():
+            uhat = kf_forward(model, item["x"].unsqueeze(0).to(device), T,
+                              time_scale=time_scale, temporal_pad=temporal_pad,
+                              pad_mode=pad_mode, coarse_traj=coarse_traj).squeeze(1)
+        preds.append(uhat[0].cpu())
+        gts.append(item["y"])
+    return torch.stack(preds), torch.stack(gts)
+
+
+def w1_values(pred, gt, frames: slice = slice(None),
+              normalize: bool = True) -> float:
+    """Point-wise Wasserstein-1 between pooled vorticity value distributions.
+
+    Pools every scalar value into one multiset per side, so it is blind to
+    spatial arrangement by construction (permute pixels -> unchanged) and reads
+    the full value-PDF distance: location, scale, and shape. Its signal is
+    normally dominated by the mean/variance mismatch; the residual once those
+    match is the intermittency/tail difference that amp_ratio cannot see.
+
+    Args:
+      pred: (N, S, S, T) predicted vorticity, torch tensor or array.
+      gt: (N, S, S, T) ground-truth vorticity, same shape.
+      frames: frame slice to pool over (default: all frames).
+      normalize: divide by std(gt) for a dimensionless, cross-nu-comparable value.
+
+    Returns:
+      Scalar Wasserstein-1 distance between the two value distributions.
+    """
+    a = np.asarray(pred)[..., frames].ravel()
+    b = np.asarray(gt)[..., frames].ravel()
+    w = stats.wasserstein_distance(a, b)
+    return float(w / (b.std() + 1e-30)) if normalize else float(w)
 
 
 def pde_residual(

@@ -132,6 +132,22 @@ def main():
         g = ev.amp_ratio(pred_pt, gt_pt, bands=b)
         print(f"{f'k{k_lo}-{k_hi}':<12}{r:>12.4f}{rho:>12.4f}{g:>12.4f}")
 
+    pred_f, gt_f = ev.forward_fields(
+        model, dataset, device,
+        time_scale=cfg["data"]["time_scale"],
+        temporal_pad=cfg["data"]["temporal_pad"],
+        pad_mode=cfg["data"]["pad_mode"],
+    )
+    n = pred_f.shape[0]
+    late = slice(max(0, grids["T_eff"] - 8), None)
+    floor_all = ev.w1_values(gt_f[:n // 2], gt_f[n // 2:])
+    floor_late = ev.w1_values(gt_f[:n // 2], gt_f[n // 2:], frames=late)
+    print(f"\nW1(vorticity values) /std(gt); GT-vs-GT floor per window "
+          f"(companion column, not a paper Table-1 reproduction)")
+    print(f"{'window':<14}{'W1':>12}{'floor':>12}")
+    print(f"{'all frames':<14}{ev.w1_values(pred_f, gt_f):>12.4f}{floor_all:>12.4f}")
+    print(f"{'late (last8)':<14}{ev.w1_values(pred_f, gt_f, frames=late):>12.4f}{floor_late:>12.4f}")
+
     thresholds = [0.9, 0.8]
     print(f"\ncorr-horizon: first frame band corr < thresh (of {grids['T_eff']}); "
           f"mean [2.5,97.5] bootstrap CI over samples; cens = never-decorrelated")
