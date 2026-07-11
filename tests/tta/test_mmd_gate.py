@@ -2,7 +2,72 @@ import numpy as np
 import torch
 
 from msc.tta import eval as ev
-from msc.tta.mmd_gate import _half_bags, _perm_pvalue, _standardize
+import pytest
+
+from msc.tta.mmd_gate import (_coarse_path, _eval_vs_ref, _half_bags,
+                              _perm_pvalue, _standardize)
+
+
+def test_eval_vs_ref_floor_matches_gate_floor():
+    """The eval floor equals the gate floor for the same lineage+bandwidth.
+
+    The gate holds the FIRST half as reference; _eval_vs_ref holds the SECOND.
+    They must still report the same floor (MMD is symmetric) — this catches a
+    transposed slice or an off-by-one in m, not just MMD's algebraic symmetry.
+    """
+    torch.manual_seed(0)
+    ref = torch.randn(8, 10, 16)
+    m = ref.shape[0] // 2
+    bw = ev.mmd_bandwidth_median(ref.reshape(-1, 16))
+    gate_floor, _, _ = _perm_pvalue(ref[:m], ref[m:2 * m], ref[m:2 * m], bw,
+                                    strip=False, n_perm=1)
+    eval_floor, _, _, _ = _eval_vs_ref(torch.randn(m, 10, 16), ref, bw, seed=0)
+    assert abs(gate_floor - eval_floor) < 1e-6
+
+
+def test_eval_vs_ref_flags_shift_not_matched():
+    """Prediction from ref's distribution reads on-attractor (ratio~1, large p);
+    a shifted prediction reads off (ratio>1, small p)."""
+    torch.manual_seed(0)
+    ref = torch.randn(12, 20, 64)
+    bw = ev.mmd_bandwidth_median(ref.reshape(-1, 64))
+    _, _, p_same, r_same = _eval_vs_ref(torch.randn(6, 20, 64), ref, bw, seed=1)
+    _, _, p_shift, r_shift = _eval_vs_ref(torch.randn(6, 20, 64) + 3.0, ref, bw, seed=1)
+    assert p_same > 0.1 and p_shift < 0.05
+    assert r_shift > r_same
+
+
+def test_eval_vs_ref_rejects_short_prediction_bag():
+    """A prediction with fewer trajectories than the reference half fails loud."""
+    ref = torch.randn(10, 5, 8)
+    bw = ev.mmd_bandwidth_median(ref.reshape(-1, 8))
+    with pytest.raises(SystemExit):
+        _eval_vs_ref(torch.randn(4, 5, 8), ref, bw, seed=0)
+
+
+def test_coarse_path_swaps_lineage_preserves_solver():
+    """Lineage swaps to the target Re; the coarse-solver number is preserved."""
+    out = _coarse_path("ns_re500",
+                       "/d/NS_fine_Re100_T128_res128_coarse_solver16_part0.npy")
+    assert "Re500" in out and "coarse_solver16" in out and "Re100" not in out
+
+
+def test_coarse_path_raises_without_solver_token():
+    """No coarse-solver token → SystemExit, never a silent default."""
+    with pytest.raises(SystemExit):
+        _coarse_path("ns_re500", "/d/NS_fine_Re100_T128_res128_part0.npy")
+
+
+def test_perm_pvalue_label_swap_sums_to_one():
+    """Swapping which bag is 'farther' sends p -> ~1-p (symmetric permutation null)."""
+    torch.manual_seed(0)
+    ref = torch.randn(10, 15, 32)
+    b = torch.randn(10, 15, 32)
+    o = torch.randn(10, 15, 32) + 0.5
+    bw = ev.mmd_bandwidth_median(ref.reshape(-1, 32))
+    _, _, p1 = _perm_pvalue(ref, b, o, bw, strip=False, n_perm=400, seed=2)
+    _, _, p2 = _perm_pvalue(ref, o, b, bw, strip=False, n_perm=400, seed=2)
+    assert abs((p1 + p2) - 1.0) < 0.1
 
 
 def test_half_bags_are_equal_size_and_disjoint_by_trajectory():
