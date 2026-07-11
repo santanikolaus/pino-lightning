@@ -10,6 +10,7 @@ checkpoint's prediction bag sits against the frozen reference.
 import argparse
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 
@@ -72,36 +73,69 @@ def _standardize(bag: torch.Tensor) -> torch.Tensor:
     return (bag - bag.mean()) / (bag.std() + 1e-12)
 
 
-def _half_bags(in_dist: torch.Tensor, ood: torch.Tensor,
-               strip: bool) -> tuple:
-    """Cuts equal-size bags: two disjoint in-dist halves and a matching OOD half.
+def _half_bags(in_dist: torch.Tensor, ood: torch.Tensor) -> tuple:
+    """Cuts equal-size, trajectory-structured bags: two in-dist halves and an OOD half.
 
     Every bag carries the same trajectory count. The biased V-statistic's
     diagonal term is an n-dependent positive bias, so unequal bags would make
-    the compared numbers differ by that artifact alone, independent of any real
-    distributional gap.
+    the compared numbers differ by that artifact alone. Bags are kept
+    (m, T, D) so the trajectory axis can be resampled for a CI.
 
     Args:
       in_dist: (N, T, D) in-distribution GT frames.
       ood: (N, T, D) OOD GT frames.
-      strip: standardize each bag by its own stats (removes gross amplitude).
 
     Returns:
-      (fa, fb, oo), each (N // 2 * T, D).
+      (fa, fb, oo), each (N // 2, T, D); fa and fb are disjoint by trajectory.
     """
-    d = in_dist.shape[-1]
     m = in_dist.shape[0] // 2
-    bags = (in_dist[:m].reshape(-1, d), in_dist[m:2 * m].reshape(-1, d),
-            ood[:m].reshape(-1, d))
-    return tuple(map(_standardize, bags)) if strip else bags
+    return in_dist[:m], in_dist[m:2 * m], ood[:m]
+
+
+def _prep(bag: torch.Tensor, strip: bool) -> torch.Tensor:
+    """Flattens a trajectory bag to points, standardizing by its own stats if strip."""
+    b = _standardize(bag) if strip else bag
+    return b.reshape(-1, b.shape[-1])
+
+
+def _mmd_pt(a: torch.Tensor, b: torch.Tensor, bw: tuple, strip: bool) -> float:
+    """Point MMD between two trajectory bags under a frozen bandwidth."""
+    return float(ev.mmd(_prep(a, strip), _prep(b, strip), bw))
+
+
+def _mmd_ci(a: torch.Tensor, b: torch.Tensor, bw: tuple, strip: bool,
+            n_boot: int = 300, seed: int = 0) -> tuple:
+    """Percentile CI for MMD, resampling the trajectory axis (correlated frames).
+
+    Trajectories, not frames, are the independent unit — a window spans only a
+    few eddy turnovers, so resampling frames would understate the variance.
+
+    Args:
+      a: (na, T, D) first bag.
+      b: (nb, T, D) second bag.
+      bw: frozen bandwidth tuple.
+      strip: standardize each resampled bag by its own stats.
+      n_boot: bootstrap resamples.
+      seed: RNG seed.
+
+    Returns:
+      (lo, hi) 2.5/97.5 percentiles of the resampled MMD.
+    """
+    rng = np.random.default_rng(seed)
+    na, nb = a.shape[0], b.shape[0]
+    vals = [_mmd_pt(a[rng.integers(0, na, na)], b[rng.integers(0, nb, nb)], bw, strip)
+            for _ in range(n_boot)]
+    lo, hi = np.percentile(vals, [2.5, 97.5])
+    return float(lo), float(hi)
 
 
 def _run_gate(name: str, in_dist: torch.Tensor, ood: torch.Tensor, strip: bool,
               bw: tuple) -> None:
-    """Prints floor vs OOD MMD under a pre-frozen bandwidth.
+    """Prints floor vs OOD MMD with bootstrap CIs and a CI-based verdict.
 
-    Floor splits the in-distribution bag by trajectory (disjoint halves), so it
-    cannot deflate by sharing frames of one trajectory across both halves.
+    Verdict clears noise only when the two CIs do not overlap: PASS when the
+    floor CI sits entirely below the OOD CI, FAIL when reversed, else OVERLAP
+    (separation not resolved at this sample size).
 
     Args:
       name: gate label for the printout.
@@ -110,13 +144,18 @@ def _run_gate(name: str, in_dist: torch.Tensor, ood: torch.Tensor, strip: bool,
       strip: standardize each bag by its own stats before comparing.
       bw: frozen bandwidth tuple, reused verbatim for both comparisons.
     """
-    fa, fb, oo = _half_bags(in_dist, ood, strip)
-    floor = float(ev.mmd(fa, fb, bw))
-    dist = float(ev.mmd(fa, oo, bw))
-    verdict = "PASS" if floor < dist else "FAIL"
-    print(f"[{name}] bw={tuple(round(b, 4) for b in bw)}  "
-          f"bags (equal-size): {fa.shape[0]} pts each")
-    print(f"[{name}] floor(in,in)={floor:.6e}  ood(in,ood)={dist:.6e}  "
+    fa, fb, oo = _half_bags(in_dist, ood)
+    floor, f_ci = _mmd_pt(fa, fb, bw, strip), _mmd_ci(fa, fb, bw, strip, seed=1)
+    dist, d_ci = _mmd_pt(fa, oo, bw, strip), _mmd_ci(fa, oo, bw, strip, seed=2)
+    if f_ci[1] < d_ci[0]:
+        verdict = "PASS"
+    elif d_ci[1] < f_ci[0]:
+        verdict = "FAIL"
+    else:
+        verdict = "OVERLAP"
+    print(f"[{name}] bw={tuple(round(b, 4) for b in bw)}  bags: {fa.shape[0]} traj each")
+    print(f"[{name}] floor={floor:.4e} [{f_ci[0]:.4e},{f_ci[1]:.4e}]  "
+          f"ood={dist:.4e} [{d_ci[0]:.4e},{d_ci[1]:.4e}]  "
           f"ratio={dist / (floor + 1e-30):.2f}  -> {verdict}")
 
 
@@ -161,12 +200,16 @@ def main():
             temporal_pad=cfg["data"]["temporal_pad"],
             pad_mode=cfg["data"]["pad_mode"])
         m = in_dist.shape[0] // 2
-        fa, _, _ = _half_bags(in_dist, ood, strip=False)
-        pred_bag = pred[:m].reshape(-1, pred.shape[-1])
-        score = float(ev.mmd(fa, pred_bag, bw_raw))
-        print(f"[eval] MMD(GT, pred) [run {args.run_id}] = {score:.6e} "
-              f"(frozen bw_raw; {fa.shape[0]}v{pred_bag.shape[0]} pts, "
-              f"same bag size as the floor — compare directly against it)")
+        fa, fb, _ = _half_bags(in_dist, ood)
+        pred_half = pred[:m]                                  # ICs disjoint from fb
+        floor = _mmd_pt(fa, fb, bw_raw, strip=False)
+        score = _mmd_pt(fb, pred_half, bw_raw, strip=False)
+        s_ci = _mmd_ci(fb, pred_half, bw_raw, strip=False, seed=3)
+        rel = "~= floor (on-attractor)" if s_ci[0] <= floor <= s_ci[1] else (
+            "> floor (drifted)" if score > floor else "< floor (tracks matched GT)")
+        print(f"[eval] MMD(held-out GT, pred) [run {args.run_id}] = {score:.4e} "
+              f"[{s_ci[0]:.4e},{s_ci[1]:.4e}]  vs floor {floor:.4e}  -> {rel}")
+        print("[eval] disjoint ICs (fb vs pred[:m]): same footing as the floor")
 
 
 if __name__ == "__main__":
