@@ -578,6 +578,37 @@ def w1_values(pred, gt, frames: slice = slice(None),
     return float(w / (b.std() + 1e-30)) if normalize else float(w)
 
 
+def cov_rmse(pred, gt, feat_axis: int = 2,
+             frames: slice = slice(None)) -> float:
+    """Relative Frobenius RMSE of the fixed-x-slice covariance (DySLIM Eq. 24-25).
+
+    Treats each vector along feat_axis (the forced y-direction for KF) as one
+    realization, pooling samples, time, and the homogeneous x-translates into
+    the row set implicitly via the reshape. Forms the feat_axis x feat_axis
+    covariance for pred and gt and returns their relative Frobenius distance.
+    Reads the y-anisotropy the isotropic shell average erases; second-order,
+    not a coherent-structure detector.
+
+    Args:
+      pred: (N, S, S, T) predicted vorticity, torch tensor or array.
+      gt: (N, S, S, T) ground-truth vorticity, same shape.
+      feat_axis: spatial axis kept as the covariance feature (KF: 2, the forced y).
+      frames: frame slice to pool over (default: all frames).
+
+    Returns:
+      Scalar ||Cov_pred - Cov_gt||_F / ||Cov_gt||_F.
+    """
+    def cov(w):
+        w = np.asarray(w)[..., frames]
+        cols = np.moveaxis(w, feat_axis, -1).reshape(-1, w.shape[feat_axis])
+        cols = cols.astype(np.float64)
+        cols = cols - cols.mean(0, keepdims=True)
+        return cols.T @ cols / cols.shape[0]
+
+    Cp, Cg = cov(pred), cov(gt)
+    return float(np.linalg.norm(Cp - Cg) / (np.linalg.norm(Cg) + 1e-30))
+
+
 def pde_residual(
     res_pt: np.ndarray,
     bands: slice = slice(None),
