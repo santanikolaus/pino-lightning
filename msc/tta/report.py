@@ -148,6 +148,14 @@ def main():
     print(f"{'all frames':<14}{ev.w1_values(pred_f, gt_f):>12.4f}{floor_all:>12.4f}")
     print(f"{'late (last8)':<14}{ev.w1_values(pred_f, gt_f, frames=late):>12.4f}{floor_late:>12.4f}")
 
+    cov_floor_all = ev.cov_rmse(gt_f[:n // 2], gt_f[n // 2:])
+    cov_floor_late = ev.cov_rmse(gt_f[:n // 2], gt_f[n // 2:], frames=late)
+    print(f"\ncovRMSE(fixed-x-slice cov along forced y) relative Frobenius; GT-vs-GT floor "
+          f"per window (companion column, not a paper Table-1 reproduction)")
+    print(f"{'window':<14}{'covRMSE':>12}{'floor':>12}")
+    print(f"{'all frames':<14}{ev.cov_rmse(pred_f, gt_f):>12.4f}{cov_floor_all:>12.4f}")
+    print(f"{'late (last8)':<14}{ev.cov_rmse(pred_f, gt_f, frames=late):>12.4f}{cov_floor_late:>12.4f}")
+
     thresholds = [0.9, 0.8]
     print(f"\ncorr-horizon: first frame band corr < thresh (of {grids['T_eff']}); "
           f"mean [2.5,97.5] bootstrap CI over samples; cens = never-decorrelated")
