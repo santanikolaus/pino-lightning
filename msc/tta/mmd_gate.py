@@ -103,39 +103,51 @@ def _mmd_pt(a: torch.Tensor, b: torch.Tensor, bw: tuple, strip: bool) -> float:
     return float(ev.mmd(_prep(a, strip), _prep(b, strip), bw))
 
 
-def _mmd_ci(a: torch.Tensor, b: torch.Tensor, bw: tuple, strip: bool,
-            n_boot: int = 300, seed: int = 0) -> tuple:
-    """Percentile CI for MMD, resampling the trajectory axis (correlated frames).
+def _perm_pvalue(ref: torch.Tensor, b: torch.Tensor, o: torch.Tensor, bw: tuple,
+                 strip: bool, n_perm: int = 500, seed: int = 0) -> tuple:
+    """Permutation p-value that o is farther from ref than b is (duplication-free).
 
-    Trajectories, not frames, are the independent unit — a window spans only a
-    few eddy turnovers, so resampling frames would understate the variance.
+    Pools the b and o trajectories and reassigns their labels; each permutation
+    uses every trajectory exactly once, so — unlike a with-replacement bootstrap —
+    no duplicated point inflates the biased V-statistic's zero-distance diagonal.
+    Each MMD is over distinct samples as in swirl-dynamics; the permutation
+    wrapper for a discrimination verdict is not something swirl does.
 
     Args:
-      a: (na, T, D) first bag.
-      b: (nb, T, D) second bag.
+      ref: (nr, T, D) fixed reference bag, disjoint from b and o.
+      b: (nb, T, D) in-distribution comparison bag (the floor's other half).
+      o: (no, T, D) bag under test (OOD, or a prediction).
       bw: frozen bandwidth tuple.
-      strip: standardize each resampled bag by its own stats.
-      n_boot: bootstrap resamples.
+      strip: standardize each bag by its own stats before comparing.
+      n_perm: number of label permutations.
       seed: RNG seed.
 
     Returns:
-      (lo, hi) 2.5/97.5 percentiles of the resampled MMD.
+      (floor, dist, p): floor=mmd(ref,b), dist=mmd(ref,o), and the one-sided
+      p-value P(dist* - floor* >= dist - floor) under the exchangeable null.
     """
+    floor = _mmd_pt(ref, b, bw, strip)
+    dist = _mmd_pt(ref, o, bw, strip)
+    obs = dist - floor
+    pool = torch.cat([b, o], dim=0)
+    nb = b.shape[0]
     rng = np.random.default_rng(seed)
-    na, nb = a.shape[0], b.shape[0]
-    vals = [_mmd_pt(a[rng.integers(0, na, na)], b[rng.integers(0, nb, nb)], bw, strip)
-            for _ in range(n_boot)]
-    lo, hi = np.percentile(vals, [2.5, 97.5])
-    return float(lo), float(hi)
+    ge = 0
+    for _ in range(n_perm):
+        idx = rng.permutation(pool.shape[0])
+        d = (_mmd_pt(ref, pool[idx[nb:]], bw, strip)
+             - _mmd_pt(ref, pool[idx[:nb]], bw, strip))
+        ge += int(d >= obs)
+    return floor, dist, (ge + 1) / (n_perm + 1)
 
 
 def _run_gate(name: str, in_dist: torch.Tensor, ood: torch.Tensor, strip: bool,
               bw: tuple) -> None:
-    """Prints floor vs OOD MMD with bootstrap CIs and a CI-based verdict.
+    """Prints floor vs OOD MMD with a permutation-test verdict.
 
-    Verdict clears noise only when the two CIs do not overlap: PASS when the
-    floor CI sits entirely below the OOD CI, FAIL when reversed, else OVERLAP
-    (separation not resolved at this sample size).
+    The floor is mmd(fa, fb) between disjoint in-dist halves; the OOD distance is
+    mmd(fa, oo). The permutation test asks whether oo sits farther from fa than a
+    fresh in-dist half does, beyond chance.
 
     Args:
       name: gate label for the printout.
@@ -145,18 +157,16 @@ def _run_gate(name: str, in_dist: torch.Tensor, ood: torch.Tensor, strip: bool,
       bw: frozen bandwidth tuple, reused verbatim for both comparisons.
     """
     fa, fb, oo = _half_bags(in_dist, ood)
-    floor, f_ci = _mmd_pt(fa, fb, bw, strip), _mmd_ci(fa, fb, bw, strip, seed=1)
-    dist, d_ci = _mmd_pt(fa, oo, bw, strip), _mmd_ci(fa, oo, bw, strip, seed=2)
-    if f_ci[1] < d_ci[0]:
-        verdict = "PASS"
-    elif d_ci[1] < f_ci[0]:
-        verdict = "FAIL"
+    floor, dist, p = _perm_pvalue(fa, fb, oo, bw, strip, seed=1)
+    if p < 0.05:
+        verdict = "PASS (discriminates)"
+    elif dist < floor:
+        verdict = "NS (ood not farther — non-discriminative)"
     else:
-        verdict = "OVERLAP"
+        verdict = "NS (separation not resolved)"
     print(f"[{name}] bw={tuple(round(b, 4) for b in bw)}  bags: {fa.shape[0]} traj each")
-    print(f"[{name}] floor={floor:.4e} [{f_ci[0]:.4e},{f_ci[1]:.4e}]  "
-          f"ood={dist:.4e} [{d_ci[0]:.4e},{d_ci[1]:.4e}]  "
-          f"ratio={dist / (floor + 1e-30):.2f}  -> {verdict}")
+    print(f"[{name}] floor={floor:.4e}  ood={dist:.4e}  ratio={dist / (floor + 1e-30):.2f}  "
+          f"perm-p={p:.3f}  -> {verdict}")
 
 
 def main():
@@ -201,15 +211,14 @@ def main():
             pad_mode=cfg["data"]["pad_mode"])
         m = in_dist.shape[0] // 2
         fa, fb, _ = _half_bags(in_dist, ood)
-        pred_half = pred[:m]                                  # ICs disjoint from fb
-        floor = _mmd_pt(fa, fb, bw_raw, strip=False)
-        score = _mmd_pt(fb, pred_half, bw_raw, strip=False)
-        s_ci = _mmd_ci(fb, pred_half, bw_raw, strip=False, seed=3)
-        rel = "~= floor (on-attractor)" if s_ci[0] <= floor <= s_ci[1] else (
-            "> floor (drifted)" if score > floor else "< floor (tracks matched GT)")
-        print(f"[eval] MMD(held-out GT, pred) [run {args.run_id}] = {score:.4e} "
-              f"[{s_ci[0]:.4e},{s_ci[1]:.4e}]  vs floor {floor:.4e}  -> {rel}")
-        print("[eval] disjoint ICs (fb vs pred[:m]): same footing as the floor")
+        pred_half = pred[:m]                                  # ICs 270-284
+        floor, score, p = _perm_pvalue(fb, fa, pred_half, bw_raw, strip=False, seed=3)
+        rel = ("drifted (score significantly > floor)" if p < 0.05
+               else "on-attractor (indistinguishable from a fresh in-dist half)")
+        print(f"[eval] MMD(fb, pred) [run {args.run_id}] = {score:.4e}  vs floor "
+              f"{floor:.4e}  ratio={score / (floor + 1e-30):.2f}  perm-p={p:.3f}  -> {rel}")
+        print("[eval] reference fb=285-299 GT; tested fa=270-284 GT vs pred=270-284 "
+              "(all disjoint from fb): no matched-IC artifact")
 
 
 if __name__ == "__main__":

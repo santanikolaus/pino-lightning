@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 from msc.tta import eval as ev
-from msc.tta.mmd_gate import _half_bags, _mmd_ci, _mmd_pt, _standardize
+from msc.tta.mmd_gate import _half_bags, _perm_pvalue, _standardize
 
 
 def test_half_bags_are_equal_size_and_disjoint_by_trajectory():
@@ -18,14 +18,32 @@ def test_half_bags_are_equal_size_and_disjoint_by_trajectory():
     assert torch.allclose(fb, in_dist[15:30])
 
 
-def test_mmd_ci_is_deterministic_and_brackets_the_point_estimate():
-    """A fixed seed reproduces the CI, and the point MMD lies within it."""
+def test_perm_pvalue_high_when_indistinguishable_low_when_ood():
+    """p is large when o matches the in-dist bag, small when o is clearly shifted.
+
+    Uses trajectory-structured bags at D=256 — the regime where a with-replacement
+    bootstrap fails; the permutation test uses each trajectory once, so its point
+    estimates are unbiased and the p-value is meaningful.
+    """
     torch.manual_seed(0)
-    a, b = torch.randn(12, 20, 4), torch.randn(12, 20, 4) + 1.0
-    bw = ev.mmd_bandwidth_median(a.reshape(-1, 4))
-    lo, hi = _mmd_ci(a, b, bw, strip=False, n_boot=200, seed=7)
-    assert (lo, hi) == _mmd_ci(a, b, bw, strip=False, n_boot=200, seed=7)
-    assert lo <= _mmd_pt(a, b, bw, strip=False) <= hi
+    ref = torch.randn(15, 30, 256)
+    b = torch.randn(15, 30, 256)                              # same distribution
+    o_same = torch.randn(15, 30, 256)
+    o_ood = torch.randn(15, 30, 256) + 3.0                    # shifted
+    bw = ev.mmd_bandwidth_median(ref.reshape(-1, 256))
+    _, _, p_same = _perm_pvalue(ref, b, o_same, bw, strip=False, n_perm=200, seed=1)
+    _, _, p_ood = _perm_pvalue(ref, b, o_ood, bw, strip=False, n_perm=200, seed=1)
+    assert p_same > 0.1
+    assert p_ood < 0.05
+
+
+def test_perm_pvalue_is_deterministic():
+    """A fixed seed reproduces the p-value and the two point estimates."""
+    torch.manual_seed(0)
+    ref, b, o = (torch.randn(10, 20, 8) for _ in range(3))
+    bw = ev.mmd_bandwidth_median(ref.reshape(-1, 8))
+    assert _perm_pvalue(ref, b, o, bw, strip=False, n_perm=100, seed=4) == \
+        _perm_pvalue(ref, b, o, bw, strip=False, n_perm=100, seed=4)
 
 
 def test_mmd_matches_closed_form_biased_v_statistic():
