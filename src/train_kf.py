@@ -24,12 +24,16 @@ def main(cfg: DictConfig) -> None:
         coarse_shuffle_p=cfg.data.get("coarse_shuffle_p") or 0.0,
         coarse_ic_only=cfg.data.get("coarse_ic_only", False),
         coarse_paths=cfg.data.get("coarse_paths", None),
+        n_context=cfg.data.get("n_context", 1),
     )
     datamodule.setup(stage="fit")
 
     if cfg.get("module_class", "KFLitModule") == "KFLitModuleChain":
         from src.models.kf_module_chain import KFLitModuleChain
         module = KFLitModuleChain(cfg)
+    elif cfg.get("module_class", "KFLitModule") == "KFLitModuleOneStep":
+        from src.models.kf_module_onestep import KFLitModuleOneStep
+        module = KFLitModuleOneStep(cfg)
     else:
         module = KFLitModule(cfg)
 

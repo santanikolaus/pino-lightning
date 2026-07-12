@@ -12,6 +12,10 @@ Usage:
     python -m src.train_kf_instance experiment=kf_scratch_re500_data_only \\
         instance.start=280 instance.stop=282 \\
         trainer.max_epochs=10 trainer.accelerator=cpu ~logger
+
+# NOTE: LEGACY SCRIPT — per-instance scratch loop (instances 280-299, Re500 oracle baseline).
+# Wandb runs are named scratch_re500_i{N}. Does NOT support coarse_paths / sibling / neighbor
+# conditioning. For standard operator training (pool, coarse, neighbors) use src.train_kf instead.
 """
 import hydra
 from omegaconf import DictConfig, OmegaConf

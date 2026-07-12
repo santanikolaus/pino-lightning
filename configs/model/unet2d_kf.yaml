@@ -1,0 +1,12 @@
+model_arch: unet2d
+hidden_channels: 64      # Lippe Unetmod-64 (~144M params); reduce for param-matching to FNO/UNet3D arms (~21-23M)
+time_history: 4          # warmup frames fed to the one-step net (seeding knob)
+activation: gelu
+norm: true               # GroupNorm(8) -> hidden_channels must be divisible by 8
+ch_mults: [1, 2, 2, 4]   # 4 resolutions, 3 downsamples -> S must be divisible by 8
+is_attn: [false, false, false, false]
+mid_attn: false
+n_blocks: 2
+use1x1: false
+# No data_channels: the wrapper reads vorticity (channel 3) and ignores grid/coarse channels.
+# temporal_pad must be 0 for the rollout path — set at the experiment/data level.

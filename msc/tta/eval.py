@@ -151,15 +151,17 @@ def forward_bands(model: torch.nn.Module,
     pde_res_pred_ps: list = []
     pde_res_gt_ps: list = []
     for i in range(len(dataset)):
-        ic = dataset[i]["x"].unsqueeze(0).to(device)
-        gt = dataset[i]["y"].unsqueeze(0).to(device)
+        item = dataset[i]
+        ic = item["x"].unsqueeze(0).to(device)
+        gt = item["y"].unsqueeze(0).to(device)
         T = gt.shape[-1]
-        if "coarse" not in dataset[i]:
+        if "coarse" not in item:
             coarse_traj = None
         elif shuffle_coarse:
             coarse_traj = dataset[_shuf[i]]["coarse"].unsqueeze(0).to(device)
         else:
-            coarse_traj = dataset[i]["coarse"].unsqueeze(0).to(device)
+            coarse_traj = item["coarse"].unsqueeze(0).to(device)
+        ctx = item["ctx"].unsqueeze(0).to(device) if "ctx" in item else None
         with torch.no_grad():
             uhat = kf_forward(model,
                               ic,
@@ -167,7 +169,8 @@ def forward_bands(model: torch.nn.Module,
                               time_scale=time_scale,
                               temporal_pad=temporal_pad,
                               pad_mode=pad_mode,
-                              coarse_traj=coarse_traj).squeeze(1)
+                              coarse_traj=coarse_traj,
+                              ctx_frames=ctx).squeeze(1)
         pred_ps.append(band_power_t(uhat, kinf, n_bands))
         gt_ps.append(band_power_t(gt, kinf, n_bands))
         err_ps.append(band_power_t(uhat - gt, kinf, n_bands))
@@ -504,10 +507,11 @@ def forward_inband(model: torch.nn.Module,
         T = item["y"].shape[-1]
         coarse_traj = (item["coarse"].unsqueeze(0).to(device)
                        if "coarse" in item else None)
+        ctx = item["ctx"].unsqueeze(0).to(device) if "ctx" in item else None
         with torch.no_grad():
             uhat = kf_forward(model, ic, T, time_scale=time_scale,
                               temporal_pad=temporal_pad, pad_mode=pad_mode,
-                              coarse_traj=coarse_traj).squeeze(1)
+                              coarse_traj=coarse_traj, ctx_frames=ctx).squeeze(1)
         frames.append(inband_frames(uhat, kmax, s_out)[0].cpu())
     return torch.stack(frames)
 
@@ -544,10 +548,12 @@ def forward_fields(model: torch.nn.Module,
         T = item["y"].shape[-1]
         coarse_traj = (item["coarse"].unsqueeze(0).to(device)
                        if "coarse" in item else None)
+        ctx = item["ctx"].unsqueeze(0).to(device) if "ctx" in item else None
         with torch.no_grad():
             uhat = kf_forward(model, item["x"].unsqueeze(0).to(device), T,
                               time_scale=time_scale, temporal_pad=temporal_pad,
-                              pad_mode=pad_mode, coarse_traj=coarse_traj).squeeze(1)
+                              pad_mode=pad_mode, coarse_traj=coarse_traj,
+                              ctx_frames=ctx).squeeze(1)
         preds.append(uhat[0].cpu())
         gts.append(item["y"])
     return torch.stack(preds), torch.stack(gts)
