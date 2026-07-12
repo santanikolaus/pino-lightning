@@ -115,6 +115,32 @@ def _build_unet(model_cfg) -> torch.nn.Module:
     return UNet3D(**cfg)
 
 
+def _build_unet2d(model_cfg) -> torch.nn.Module:
+    """Construct a Unet2DRollout wrapping a 2D one-step U-Net (model_arch=unet2d).
+
+    Vorticity is single-channel, so the scalar/vector component counts and
+    time_future=1 are fixed here; the config carries the remaining U-Net
+    hyperparameters. The inner net has no in_channels arg — its input width is
+    derived from time_history.
+    """
+    from src.models.kf_unet2d import Unet2DRollout
+    from src.models.pdearena import Unet
+    cfg = {
+        k: OmegaConf.to_container(v, resolve=True) if OmegaConf.is_config(v) else v
+        for k, v in dict(model_cfg).items()
+    }
+    cfg.pop("model_arch", None)
+    net = Unet(
+        n_input_scalar_components=1,
+        n_input_vector_components=0,
+        n_output_scalar_components=1,
+        n_output_vector_components=0,
+        time_future=1,
+        **cfg,
+    )
+    return Unet2DRollout(net)
+
+
 def build_fno_kf(config) -> torch.nn.Module:
     """Instantiate the KF operator from a config mapping.
 
@@ -159,6 +185,8 @@ def build_fno_kf(config) -> torch.nn.Module:
         return _build_unet(model_cfg)
     if arch == 'fno2d':
         return _build_fno2d(model_cfg)
+    if arch == 'unet2d':
+        return _build_unet2d(model_cfg)
     return get_model(wrapped)
 
 
