@@ -1,0 +1,23 @@
+# @package _global_
+# Lippe modern U-Net (2D one-step) on Re=100 vorticity — the autoregressive-rollout arm.
+# One-step teacher-forced training (KFLitModuleOneStep); data-only loss (pde_weight=0).
+# 4-frame warmup at validation/eval (data.n_context = model.time_history = 4).
+# Compared against the one-shot FNO/PINO arm on phase / step-size.
+
+defaults:
+  - override /model: unet2d_kf
+  - override /loss: kf_data_only
+
+module_class: KFLitModuleOneStep
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
+  n_context: 4       # = model.time_history; enables the true 4-frame warmup at validation/eval
+  temporal_pad: 0    # rollout ignores time-padding; keep 0
+
+loss:
+  re: 100            # kf_data_only defaults to 500; only used if pde_weight is later turned on
+
+logger:
+  wandb:
+    name: unet2d-re100-onestep

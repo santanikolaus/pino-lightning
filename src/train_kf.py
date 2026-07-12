@@ -24,6 +24,7 @@ def main(cfg: DictConfig) -> None:
         coarse_shuffle_p=cfg.data.get("coarse_shuffle_p") or 0.0,
         coarse_ic_only=cfg.data.get("coarse_ic_only", False),
         coarse_paths=cfg.data.get("coarse_paths", None),
+        n_context=cfg.data.get("n_context", 1),
     )
     datamodule.setup(stage="fit")
 
