@@ -98,4 +98,5 @@ def build_dataset(cfg: dict, split_name: str) -> KFDataset:
         offset=sp["offset"],
         sub_t=data_cfg["sub_t"],
         coarse_path=data_cfg.get("coarse_path"),
+        n_context=data_cfg.get("n_context", 1),
     )
