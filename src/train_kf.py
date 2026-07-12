@@ -30,6 +30,9 @@ def main(cfg: DictConfig) -> None:
     if cfg.get("module_class", "KFLitModule") == "KFLitModuleChain":
         from src.models.kf_module_chain import KFLitModuleChain
         module = KFLitModuleChain(cfg)
+    elif cfg.get("module_class", "KFLitModule") == "KFLitModuleOneStep":
+        from src.models.kf_module_onestep import KFLitModuleOneStep
+        module = KFLitModuleOneStep(cfg)
     else:
         module = KFLitModule(cfg)
 
