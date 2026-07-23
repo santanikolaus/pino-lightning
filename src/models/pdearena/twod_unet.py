@@ -26,6 +26,7 @@ class ResidualBlock(nn.Module):
         activation: str = "gelu",
         norm: bool = False,
         n_groups: int = 1,
+        padding_mode: str = "zeros",
     ):
         super().__init__()
         self.activation: nn.Module = ACTIVATION_REGISTRY.get(activation, None)
@@ -35,11 +36,13 @@ class ResidualBlock(nn.Module):
         self.conv1 = nn.Conv2d(in_channels,
                                out_channels,
                                kernel_size=(3, 3),
-                               padding=(1, 1))
+                               padding=(1, 1),
+                               padding_mode=padding_mode)
         self.conv2 = nn.Conv2d(out_channels,
                                out_channels,
                                kernel_size=(3, 3),
-                               padding=(1, 1))
+                               padding=(1, 1),
+                               padding_mode=padding_mode)
         if in_channels != out_channels:
             self.shortcut = nn.Conv2d(in_channels,
                                       out_channels,
@@ -119,12 +122,14 @@ class DownBlock(nn.Module):
         has_attn: bool = False,
         activation: str = "gelu",
         norm: bool = False,
+        padding_mode: str = "zeros",
     ):
         super().__init__()
         self.res = ResidualBlock(in_channels,
                                  out_channels,
                                  activation=activation,
-                                 norm=norm)
+                                 norm=norm,
+                                 padding_mode=padding_mode)
         if has_attn:
             self.attn = AttentionBlock(out_channels)
         else:
@@ -154,13 +159,15 @@ class UpBlock(nn.Module):
         has_attn: bool = False,
         activation: str = "gelu",
         norm: bool = False,
+        padding_mode: str = "zeros",
     ):
         super().__init__()
         # Input width is in_channels + out_channels: the same-resolution encoder skip is concatenated.
         self.res = ResidualBlock(in_channels + out_channels,
                                  out_channels,
                                  activation=activation,
-                                 norm=norm)
+                                 norm=norm,
+                                 padding_mode=padding_mode)
         if has_attn:
             self.attn = AttentionBlock(out_channels)
         else:
@@ -186,17 +193,20 @@ class MiddleBlock(nn.Module):
                  n_channels: int,
                  has_attn: bool = False,
                  activation: str = "gelu",
-                 norm: bool = False):
+                 norm: bool = False,
+                 padding_mode: str = "zeros"):
         super().__init__()
         self.res1 = ResidualBlock(n_channels,
                                   n_channels,
                                   activation=activation,
-                                  norm=norm)
+                                  norm=norm,
+                                  padding_mode=padding_mode)
         self.attn = AttentionBlock(n_channels) if has_attn else nn.Identity()
         self.res2 = ResidualBlock(n_channels,
                                   n_channels,
                                   activation=activation,
-                                  norm=norm)
+                                  norm=norm,
+                                  padding_mode=padding_mode)
 
     def forward(self, x: torch.Tensor):
         x = self.res1(x)
@@ -220,9 +230,10 @@ class Upsample(nn.Module):
 class Downsample(nn.Module):
     """Scale the feature map down by 2x."""
 
-    def __init__(self, n_channels):
+    def __init__(self, n_channels, padding_mode: str = "zeros"):
         super().__init__()
-        self.conv = nn.Conv2d(n_channels, n_channels, (3, 3), (2, 2), (1, 1))
+        self.conv = nn.Conv2d(n_channels, n_channels, (3, 3), (2, 2), (1, 1),
+                              padding_mode=padding_mode)
 
     def forward(self, x: torch.Tensor):
         return self.conv(x)
@@ -246,6 +257,9 @@ class Unet(nn.Module):
         mid_attn: Whether to use attention in the middle block.
         n_blocks: Number of residual blocks per resolution.
         use1x1: Whether to use 1x1 convolutions in the initial and final layers.
+        padding_mode: Conv2d padding mode ("zeros" or "circular"); "circular"
+            matches the periodic Kolmogorov domain. ConvTranspose2d (Upsample)
+            stays zeros — circular is unsupported there.
     """
 
     def __init__(
@@ -265,6 +279,7 @@ class Unet(nn.Module):
         mid_attn: bool = False,
         n_blocks: int = 2,
         use1x1: bool = False,
+        padding_mode: str = "zeros",
     ) -> None:
         super().__init__()
         self.n_input_scalar_components = n_input_scalar_components
@@ -290,7 +305,8 @@ class Unet(nn.Module):
             self.image_proj = nn.Conv2d(insize,
                                         n_channels,
                                         kernel_size=(3, 3),
-                                        padding=(1, 1))
+                                        padding=(1, 1),
+                                        padding_mode=padding_mode)
 
         down = []
         out_channels = in_channels = n_channels
@@ -304,17 +320,19 @@ class Unet(nn.Module):
                         has_attn=is_attn[i],
                         activation=activation,
                         norm=norm,
+                        padding_mode=padding_mode,
                     ))
                 in_channels = out_channels
             if i < n_resolutions - 1:
-                down.append(Downsample(in_channels))
+                down.append(Downsample(in_channels, padding_mode=padding_mode))
 
         self.down = nn.ModuleList(down)
 
         self.middle = MiddleBlock(out_channels,
                                   has_attn=mid_attn,
                                   activation=activation,
-                                  norm=norm)
+                                  norm=norm,
+                                  padding_mode=padding_mode)
 
         up = []
         in_channels = out_channels
@@ -328,6 +346,7 @@ class Unet(nn.Module):
                         has_attn=is_attn[i],
                         activation=activation,
                         norm=norm,
+                        padding_mode=padding_mode,
                     ))
             out_channels = in_channels // ch_mults[i]
             up.append(
@@ -335,7 +354,8 @@ class Unet(nn.Module):
                         out_channels,
                         has_attn=is_attn[i],
                         activation=activation,
-                        norm=norm))
+                        norm=norm,
+                        padding_mode=padding_mode))
             in_channels = out_channels
             if i > 0:
                 up.append(Upsample(in_channels))
@@ -354,7 +374,8 @@ class Unet(nn.Module):
             self.final = nn.Conv2d(in_channels,
                                    out_channels,
                                    kernel_size=(3, 3),
-                                   padding=(1, 1))
+                                   padding=(1, 1),
+                                   padding_mode=padding_mode)
 
     def forward(self, x: torch.Tensor):
         assert x.dim() == 5

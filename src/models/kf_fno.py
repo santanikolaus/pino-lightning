@@ -130,6 +130,9 @@ def _build_unet2d(model_cfg) -> torch.nn.Module:
         for k, v in dict(model_cfg).items()
     }
     cfg.pop("model_arch", None)
+    residual = cfg.pop("residual", False)
+    output_factor = cfg.pop("output_factor", 1.0)
+    cfg.pop("ema_decay", None)                       # consumed by the Lightning module, not the net
     net = Unet(
         n_input_scalar_components=1,
         n_input_vector_components=0,
@@ -138,7 +141,7 @@ def _build_unet2d(model_cfg) -> torch.nn.Module:
         time_future=1,
         **cfg,
     )
-    return Unet2DRollout(net)
+    return Unet2DRollout(net, residual=residual, output_factor=output_factor)
 
 
 def build_fno_kf(config) -> torch.nn.Module:

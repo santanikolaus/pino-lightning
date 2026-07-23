@@ -1,6 +1,6 @@
 model_arch: unet2d
 hidden_channels: 64      # Lippe Unetmod-64 (~144M params); reduce for param-matching to FNO/UNet3D arms (~21-23M)
-time_history: 4          # warmup frames fed to the one-step net (seeding knob)
+time_history: 1          # single previous frame (Lippe Kolmogorov; more history worsens rollout, Fig 19)
 activation: gelu
 norm: true               # GroupNorm(8) -> hidden_channels must be divisible by 8
 ch_mults: [1, 2, 2, 4]   # 4 resolutions, 3 downsamples -> S must be divisible by 8
@@ -8,5 +8,9 @@ is_attn: [false, false, false, false]
 mid_attn: false
 n_blocks: 2
 use1x1: false
+padding_mode: circular   # periodic Kolmogorov domain (Lippe); ConvTranspose2d stays zeros
+residual: true           # predict scaled increment: u_next = u_prev + output_factor * net_out
+output_factor: 0.104     # std of one-step residual (u_{t+1}-u_t) on train split at sub_t=2
+ema_decay: 0.995         # EMA of weights, evaluated/saved as the shadow (Lippe, all models)
 # No data_channels: the wrapper reads vorticity (channel 3) and ignores grid/coarse channels.
 # temporal_pad must be 0 for the rollout path — set at the experiment/data level.

@@ -1,6 +1,7 @@
 import torch
 from neuralop import LpLoss
 
+from src.models.ema import EMA
 from src.models.kf_module import KFLitModule, _get
 
 
@@ -23,6 +24,8 @@ class KFLitModuleOneStep(KFLitModule):
         self.time_history = self.model.net.time_history
         self.pde_horizon = _get(_get(config, "loss"), "pde_horizon", 3)
         self._data_lp = LpLoss(d=2, p=2, reduction="mean")
+        ema_decay = _get(_get(config, "model"), "ema_decay", 0.0) or 0.0
+        self.ema = EMA(ema_decay) if ema_decay > 0 else None
 
     def training_step(self, batch, batch_idx):
         target = batch["y"].to(self.device)
@@ -44,10 +47,31 @@ class KFLitModuleOneStep(KFLitModule):
             self.log("train_data_loss", losses["data"], on_step=True, on_epoch=True)
             self.log("train_pde_loss", losses["pde"], on_step=True, on_epoch=True)
         else:
-            window = target[..., s:s + th].permute(0, 3, 1, 2).unsqueeze(2)
-            pred = self.model.net(window)[:, 0, 0]
+            window = target[..., s:s + th].permute(0, 3, 1, 2)
+            pred = self.model.step(window)
             loss = self._data_lp.rel(pred, target[..., s + th])
             self.log("train_data_loss", loss, on_step=True, on_epoch=True)
 
         self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
         return loss
+
+    def on_fit_start(self):
+        if self.ema is not None:
+            self.ema.register(self.model)
+
+    def on_train_batch_end(self, *args, **kwargs):
+        if self.ema is not None:
+            self.ema.update(self.model)
+
+    def on_validation_start(self):
+        if self.ema is not None and self.ema.shadow:
+            self.ema.apply_to(self.model)
+
+    def on_validation_end(self):
+        if self.ema is not None and self.ema.shadow:
+            self.ema.restore(self.model)
+
+    def on_save_checkpoint(self, checkpoint):
+        if self.ema is not None and self.ema.shadow:
+            for name, val in self.ema.shadow.items():
+                checkpoint["state_dict"]["model." + name] = val

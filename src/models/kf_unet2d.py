@@ -14,12 +14,35 @@ class Unet2DRollout(nn.Module):
     Args:
       net: a one-step model mapping (B, time_history, 1, S, S) -> (B, 1, 1, S, S);
            must have integer attributes `time_history` and `time_future == 1`.
+      residual: when True, the net predicts a scaled increment and each step
+                returns u_prev + output_factor * net_out (near-identity per step,
+                the autoregressive-stability parametrization). When False, the net
+                predicts the next frame directly.
+      output_factor: scale on the predicted increment; set to the std of the
+                one-step residual so the net regresses a unit-std target.
     """
 
-    def __init__(self, net: nn.Module):
+    def __init__(self, net: nn.Module, residual: bool = False,
+                 output_factor: float = 1.0):
         super().__init__()
         assert net.time_future == 1, "rollout wrapper requires a single-step net (time_future == 1)"
         self.net = net
+        self.residual = residual
+        self.output_factor = output_factor
+
+    def step(self, window: torch.Tensor) -> torch.Tensor:
+        """Map one input window to the next frame (residual applied if enabled).
+
+        Args:
+          window: (B, time_history, S, S) input frames.
+
+        Returns:
+          (B, S, S) predicted next frame.
+        """
+        out = self.net(window.unsqueeze(2))[:, 0, 0]
+        if self.residual:
+            return window[:, -1] + self.output_factor * out
+        return out
 
     def rollout(self, seed: torch.Tensor, T: int) -> torch.Tensor:
         """Roll the one-step net autoregressively from a warmup window.
@@ -38,8 +61,7 @@ class Unet2DRollout(nn.Module):
         frames = [seed[:, i] for i in range(th)]
         window = seed
         for _ in range(th, T):
-            pred = self.net(window.unsqueeze(2))
-            nxt = pred[:, 0, 0]
+            nxt = self.step(window)
             frames.append(nxt)
             window = torch.cat([window[:, 1:], nxt.unsqueeze(1)], dim=1)
         return torch.stack(frames, dim=-1)

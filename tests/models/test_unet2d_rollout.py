@@ -15,6 +15,20 @@ class _IncrementStubNet(nn.Module):
         return x[:, -1:] + 1.0
 
 
+def test_residual_step_closed_form():
+    """residual step returns u_prev + output_factor * net_out; a wrong sign or
+    factor (or applying residual when off) would break this closed form."""
+    torch.manual_seed(0)
+    win = torch.randn(2, 4, 8, 8)
+    f = 0.104
+    res = Unet2DRollout(_IncrementStubNet(), residual=True, output_factor=f)
+    # net_out = win[:,-1] + 1 ; residual = u_prev + f*(u_prev+1)
+    assert torch.allclose(res.step(win), win[:, -1] + f * (win[:, -1] + 1.0))
+    # residual=False (default) returns the raw net output unchanged
+    plain = Unet2DRollout(_IncrementStubNet(), residual=False)
+    assert torch.allclose(plain.step(win), win[:, -1] + 1.0)
+
+
 def test_rollout_matches_closed_form_increment():
     """Catches a window-slide/re-feed off-by-one: with the increment stub,
     frame t must equal seed's last frame + (t - time_history + 1); a wrapper
