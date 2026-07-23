@@ -13,6 +13,7 @@ from src.pde.ns import cheb_lowpass
 from src.solver.periodic import NavierStokes2d
 from msc.tta import eval as ev
 from scripts.lyapunov_gate import (
+    amplification,
     band_norm,
     fit_lyapunov,
     frozen_dt,
@@ -20,6 +21,7 @@ from scripts.lyapunov_gate import (
     perturb,
     separation,
     unit_dir,
+    _amp_stat,
 )
 
 S = 16
@@ -278,3 +280,49 @@ def test_frozen_dt_returns_cfl_when_uncapped():
     expected_cfl = 0.5 * h ** 2 / mu
     result = frozen_dt(solver, ic, f, Re=Re, dt_record=100.0)
     assert result == pytest.approx(expected_cfl, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# amplification + _amp_stat (gate-free bound when no linear region resolves)
+# ---------------------------------------------------------------------------
+
+
+def test_amplification_end_and_peak():
+    """end = last/first; peak = max/first — distinguishes growth-then-saturation from monotone."""
+    end, peak = amplification(np.array([2.0, 16.0, 8.0]))
+    assert end == pytest.approx(4.0, rel=1e-12)
+    assert peak == pytest.approx(8.0, rel=1e-12)
+
+
+def test_amplification_one_efold_gives_ncap_128():
+    """A_end = e ⇒ exactly one e-fold over the window ⇒ extrapolated N_cap = 128 (t_p = T)."""
+    end, _ = amplification(np.array([1.0, math.e]))
+    assert 128.0 / math.log(end) == pytest.approx(128.0, rel=1e-9)
+
+
+def test_amplification_subthreshold_efolds_below_one():
+    """A_end < e ⇒ e-folds < 1 ⇒ horizon beyond window (the observed regime)."""
+    end, _ = amplification(np.array([1.0, 1.3]))
+    assert math.log(end) < 1.0
+
+
+def test_amplification_window_slice_differs_from_full_roll():
+    """Within-window amplification (the bound) must use the window slice, not the saturated roll.
+
+    Rises to 1.4 by end-of-window, then saturates to 50 over the long roll. The bound reads 1.4
+    (< e ⇒ horizon beyond window); using the full roll would wrongly read 50 (inverts the verdict).
+    """
+    curve = np.array([1.0, 1.2, 1.4, 30.0, 50.0, 50.0])
+    n_window = 3
+    end_window, _ = amplification(curve[:n_window])
+    end_full, _ = amplification(curve)
+    assert end_window == pytest.approx(1.4, rel=1e-12)
+    assert end_full == pytest.approx(50.0, rel=1e-12)
+    assert math.log(end_window) < 1.0 < math.log(end_full)
+
+
+def test_amp_stat_returns_medians():
+    st = _amp_stat([(4.0, 8.0), (2.0, 4.0), (10.0, 12.0)])
+    assert st["end"] == pytest.approx(4.0)
+    assert st["peak"] == pytest.approx(8.0)
+    assert st["n"] == 3
