@@ -9,11 +9,14 @@ class KFLitModuleOneStep(KFLitModule):
     """Teacher-forced one-step training for the 2D rollout wrapper.
 
     Trains the inner one-step net on (time_history GT frames -> next frame)
-    windows sampled one-per-step from each trajectory. The default loss is
-    relative-L2 on the predicted frame (data-only). pde_weight>0 switches to a
-    short autoregressive rollout so KFLoss's finite-difference physics residual
-    (which needs >=3 frames) applies. Validation is inherited: the parent rolls
-    out the full trajectory and scores val_l2.
+    windows sampled one-per-step from each trajectory. With residual mode the
+    data loss is MSE on the unit-std normalized residual (Lippe's recipe; a
+    frame-space loss would give the small increment almost no gradient and the
+    net would collapse to persistence); otherwise it is relative-L2 on the
+    predicted frame. pde_weight>0 switches to a short autoregressive rollout so
+    KFLoss's finite-difference physics residual (needs >=3 frames) applies.
+    Validation is inherited: the parent rolls out the full trajectory and scores
+    val_l2.
 
     Args:
         config: the composed run config, as for KFLitModule.
@@ -48,8 +51,18 @@ class KFLitModuleOneStep(KFLitModule):
             self.log("train_pde_loss", losses["pde"], on_step=True, on_epoch=True)
         else:
             window = target[..., s:s + th].permute(0, 3, 1, 2)
-            pred = self.model.step(window)
-            loss = self._data_lp.rel(pred, target[..., s + th])
+            gt_next = target[..., s + th]
+            if self.model.residual:
+                # Supervise the raw increment in residual space: with the residual
+                # reparam the increment is ~3% of the field, so rel-L2 on the
+                # reconstructed frame gives it almost no gradient and the net
+                # collapses to persistence. MSE on the unit-std normalized residual
+                # (Lippe's recipe) puts all signal on the increment.
+                net_out = self.model.net(window.unsqueeze(2))[:, 0, 0]
+                target_resid = (gt_next - window[:, -1]) / self.model.output_factor
+                loss = torch.nn.functional.mse_loss(net_out, target_resid)
+            else:
+                loss = self._data_lp.rel(self.model.step(window), gt_next)
             self.log("train_data_loss", loss, on_step=True, on_epoch=True)
 
         self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
