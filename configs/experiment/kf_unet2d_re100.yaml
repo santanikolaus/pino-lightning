@@ -2,7 +2,8 @@
 # Lippe modern U-Net (2D one-step) on Re=100 vorticity — the autoregressive-rollout arm.
 # One-step teacher-forced training (KFLitModuleOneStep); data-only loss (pde_weight=0).
 # Faithful-Lippe stabilizer bundle: residual target + output_factor, time_history=1,
-# circular padding, EMA 0.995 (all set in model: unet2d_kf).
+# circular padding, EMA 0.995 (all set in model: unet2d_kf), plus Lippe's training
+# recipe: AdamW wd1e-5, lr 1e-4 with warmup->cosine, batch 8.
 # Compared against the one-shot FNO/PINO arm on phase / step-size.
 
 defaults:
@@ -15,6 +16,13 @@ data:
   data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
   n_context: 1       # = model.time_history; single-frame warmup (IC) at validation/eval
   temporal_pad: 0    # rollout ignores time-padding; keep 0
+  batch_size: 8      # was 1; batch-1 gradients thrash the residual-space MSE
+
+opt:
+  learning_rate: 1.0e-4   # was 1e-3; 10x lower (Lippe)
+  weight_decay: 1.0e-5    # AdamW decoupled decay (Lippe)
+  warmup_epochs: 5        # linear warmup then cosine anneal
+  eta_min: 1.0e-6         # cosine floor
 
 loss:
   re: 100            # kf_data_only defaults to 500; only used if pde_weight is later turned on

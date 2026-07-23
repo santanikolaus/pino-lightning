@@ -5,8 +5,8 @@ defaults:
   - trainer: default
   - logger: wandb
   - callbacks: kf
-  - optional experiment: null
   - _self_
+  - optional experiment: null
 
 opt:
   learning_rate: 0.001

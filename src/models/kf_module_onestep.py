@@ -29,6 +29,9 @@ class KFLitModuleOneStep(KFLitModule):
         self._data_lp = LpLoss(d=2, p=2, reduction="mean")
         ema_decay = _get(_get(config, "model"), "ema_decay", 0.0) or 0.0
         self.ema = EMA(ema_decay) if ema_decay > 0 else None
+        opt_cfg = _get(config, "opt")
+        self._warmup_epochs = _get(opt_cfg, "warmup_epochs", 5)
+        self._eta_min = _get(opt_cfg, "eta_min", 1e-6)
 
     def training_step(self, batch, batch_idx):
         target = batch["y"].to(self.device)
@@ -67,6 +70,26 @@ class KFLitModuleOneStep(KFLitModule):
 
         self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
         return loss
+
+    def configure_optimizers(self):
+        """AdamW + linear warmup into cosine anneal (Lippe's Kolmogorov recipe)."""
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self._lr,
+                                      weight_decay=self._weight_decay)
+        max_epochs = self.trainer.max_epochs
+        warmup = min(self._warmup_epochs, max(1, max_epochs - 1))
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[
+                torch.optim.lr_scheduler.LinearLR(
+                    optimizer, start_factor=0.01, total_iters=warmup),
+                torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=max(1, max_epochs - warmup),
+                    eta_min=self._eta_min),
+            ],
+            milestones=[warmup],
+        )
+        return {"optimizer": optimizer,
+                "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"}}
 
     def on_fit_start(self):
         if self.ema is not None:
