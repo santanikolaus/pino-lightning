@@ -329,14 +329,43 @@ def corr_curve(pred_pt: np.ndarray,
     return np.clip(rho, -1.0, 1.0)
 
 
+def amp_curve(pred_pt: np.ndarray,
+              gt_pt: np.ndarray,
+              bands: slice = slice(None)) -> np.ndarray:
+    """Computes the per-sample, band-pooled amplitude-ratio curve.
+
+    The amplitude companion to corr_curve: same (N, T) shape and the same
+    band-pooling convention (sum the band group's power, then take one ratio),
+    so the two compose per sample and frame into the hedging excess
+    gamma - rho. Deliberately not clipped — gamma < 1 is an energy deficit and
+    gamma > 1 a genuine excess, both meaningful, unlike a correlation which is
+    bounded by +-1.
+
+    Args:
+      pred_pt: (N, n_bands, T) predicted power, as returned by forward_bands.
+      gt_pt: (N, n_bands, T) GT power, as returned by forward_bands.
+      bands: band slice to pool over (default: all bands).
+
+    Returns:
+      (N, T) per-sample amplitude ratio, non-negative; caller means over N for
+      the set curve and bootstraps over N for a CI. Being a per-sample ratio
+      this is not the pooled amp_ratio (mean-of-ratios differs from
+      ratio-of-sums) — quote amp_ratio for a table value, use this only for
+      horizons and their CIs.
+    """
+    pp = pred_pt[:, bands].sum(1)
+    gp = gt_pt[:, bands].sum(1)
+    return np.sqrt(pp / (gp + 1e-30))
+
+
 def time_to_threshold(curve: np.ndarray,
                       thresh: float,
                       mode: str = "first_cross") -> "int | np.ndarray":
-    """Frames a correlation curve stays coherent before dropping below thresh.
+    """Frames a curve stays at or above thresh before first dropping below it.
 
     Args:
-      curve: (T,) or (N, T) correlation curve(s), as returned by corr_curve.
-      thresh: correlation threshold (e.g. 0.9, 0.8).
+      curve: (T,) or (N, T) curve(s), as returned by corr_curve or amp_curve.
+      thresh: threshold the curve is compared against (e.g. 0.9, 0.8).
       mode: "first_cross" (frame index of the first value below thresh; the
         window length T if it never drops, i.e. right-censored) or "count"
         (Lippe-faithful count of frames at or above thresh).
