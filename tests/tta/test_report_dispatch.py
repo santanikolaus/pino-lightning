@@ -154,6 +154,8 @@ def _fake_bands_cache(N=2, n_bands=3, T=5):
         "pred_pt": rng.random((N, n_bands, T)) + 0.1,
         "gt_pt": rng.random((N, n_bands, T)) + 0.1,
         "err_pt": rng.random((N, n_bands, T)) * 0.1,
+        "pde_res_pred_pt": rng.random((N, n_bands, T - 2)) + 0.1,
+        "pde_res_gt_pt": rng.random((N, n_bands, T - 2)) + 0.1,
         "n_bands": n_bands, "T_eff": T,
     }}
 
@@ -230,6 +232,8 @@ def test_printers_run_without_crashing(capsys):
     report.print_decomp(bc, bands=bands)
     report.print_horizon(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
     report.print_blur(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
+    report.print_physics(bc, bands=bands, time_bins=tbins, test_re=100)
     report.print_w1(fc, T_eff=5, late=2)
     report.print_cov(fc, T_eff=5, late=2)
     assert capsys.readouterr().out
+

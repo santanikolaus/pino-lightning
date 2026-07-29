@@ -1,6 +1,6 @@
 """Per-report band/field eval tables for one checkpoint — binds setup.py + eval.py.
 
-Each report (error / amp / decomp / w1 / cov / horizon / blur) is a self-describing entry
+Each report (error / amp / decomp / w1 / cov / horizon / blur / physics) is a self-describing entry
 in REPORTS: the forward it consumes, its banked-default slicing (from
 msc/tta/docs/tta-thesis.md), and its printer. --reports selects a subset;
 --bands/--time-bins/--thresholds/--late override the defaults for the selected
@@ -8,7 +8,9 @@ set, else each report falls back to its own default. Forwards run only when a
 selected report needs them.
 """
 import argparse
+import subprocess
 
+import numpy as np
 import torch
 
 from . import eval as ev
@@ -16,6 +18,10 @@ from . import setup
 
 SHELLS = "shells"
 SHELLS_NODC = "shells1"
+PHYS = "phys"
+PHYS_KMAX = 24
+STENCIL_NOTE = ("stencil-limited above k~17 (Re500) / k~22 (Re100): there the GT residual "
+                "reaches the GT field amplitude, so a violation is below detection")
 
 
 def _parse_groups(s: str) -> list[tuple[int, int]]:
@@ -58,9 +64,39 @@ def _resolve_bands(default, override: "str | None", n_bands: int):
         return [(k, k) for k in range(n_bands)]
     if default == SHELLS_NODC:
         return [(k, k) for k in range(1, n_bands)]
+    if default == PHYS:
+        kmax = min(PHYS_KMAX, n_bands - 1)
+        groups = [(k, k) for k in range(1, kmax + 1)]
+        groups += [(lo, min(hi, kmax)) for lo, hi in ((1, 8), (9, 16), (17, PHYS_KMAX))
+                   if lo <= kmax]
+        if kmax < n_bands - 1:
+            groups.append((kmax + 1, n_bands - 1))
+        return groups
     if default is None:
         return None
     return _parse_groups(default)
+
+
+def _resid_window(lo: int, hi: int, t_res: int) -> "tuple[int, int] | None":
+    """Maps an inclusive field-frame window onto inclusive residual-array indices.
+
+    The residual carries T_eff - 2 frames because its centred stencil is
+    (w[t+1] - w[t-1]) / 2dt with the advection/diffusion terms sliced to the interior:
+    entry j is centred on field frame j+1, so the array spans field frames 1..t_res.
+    Field frame 0 and anything past t_res have no residual and are clipped away.
+
+    Args:
+      lo: inclusive lower field-frame index of the requested window.
+      hi: inclusive upper field-frame index of the requested window.
+      t_res: residual frame count (T_eff - 2).
+
+    Returns:
+      Inclusive (lo, hi) residual indices, or None when the window contains no
+      residual frame at all.
+    """
+    a = max(lo, 1) - 1
+    b = min(hi, t_res) - 1
+    return (a, b) if a <= b else None
 
 
 def _band_time_header(time_bins: list) -> str:
@@ -102,6 +138,33 @@ def horizon_rows(curve, bands: list, T: int, thresholds: list) -> list:
     return rows
 
 
+def band_time_table(cell, bands: list, time_bins: list, banner: "str | None" = None) -> None:
+    """Prints one band x time-window table: header, rule, a row per band group.
+
+    The shared layout behind the error/amp/physics tables; only the cell text varies.
+    The last column always aggregates over every frame.
+
+    Args:
+      cell: called as cell(band_slice, window) -> the formatted 12-char cell string,
+        where window is an inclusive (lo, hi) frame tuple, or None for the trailing
+        all-frame aggregate column.
+      bands: list of (lo, hi) inclusive band-index tuples, one row each.
+      time_bins: list of (lo, hi) inclusive frame windows, one column each.
+      banner: optional line printed above the table.
+    """
+    if banner:
+        print(banner)
+    header = _band_time_header(time_bins)
+    print(header)
+    print("-" * len(header))
+    for k_lo, k_hi in bands:
+        b = slice(k_lo, k_hi + 1)
+        row = f"{f'k{k_lo}-{k_hi}':<12}"
+        for win in time_bins:
+            row += cell(b, win)
+        print(row + cell(b, None))
+
+
 def print_error(cache, *, bands, time_bins, **_):
     """Prints the band x time-window pooled relative-L2 error table.
 
@@ -113,17 +176,12 @@ def print_error(cache, *, bands, time_bins, **_):
     """
     g = cache["bands"]
     err_pt, gt_pt = g["err_pt"], g["gt_pt"]
-    header = _band_time_header(time_bins)
-    print(header)
-    print("-" * len(header))
-    for k_lo, k_hi in bands:
-        row = f"{f'k{k_lo}-{k_hi}':<12}"
-        for t_lo, t_hi in time_bins:
-            val = ev.rel_l2(err_pt, gt_pt,
-                            bands=slice(k_lo, k_hi + 1), frames=slice(t_lo, t_hi + 1))
-            row += f"{val:>12.4f}"
-        row += f"{ev.rel_l2(err_pt, gt_pt, bands=slice(k_lo, k_hi + 1)):>12.4f}"
-        print(row)
+
+    def cell(b, win):
+        f = slice(None) if win is None else slice(win[0], win[1] + 1)
+        return f"{ev.rel_l2(err_pt, gt_pt, bands=b, frames=f):>12.4f}"
+
+    band_time_table(cell, bands, time_bins)
 
 
 def print_amp(cache, *, bands, time_bins, **_):
@@ -141,19 +199,14 @@ def print_amp(cache, *, bands, time_bins, **_):
     """
     g = cache["bands"]
     pred_pt, gt_pt = g["pred_pt"], g["gt_pt"]
-    print("\namplitude ratio gamma = sqrt(E_pred/E_gt), pooled per band x window "
-          "(1 = GT energy, <1 deficit/blur, >1 excess)")
-    header = _band_time_header(time_bins)
-    print(header)
-    print("-" * len(header))
-    for k_lo, k_hi in bands:
-        row = f"{f'k{k_lo}-{k_hi}':<12}"
-        for t_lo, t_hi in time_bins:
-            gm = ev.amp_ratio(pred_pt, gt_pt,
-                              bands=slice(k_lo, k_hi + 1), frames=slice(t_lo, t_hi + 1))
-            row += f"{gm:>12.4f}"
-        row += f"{ev.amp_ratio(pred_pt, gt_pt, bands=slice(k_lo, k_hi + 1)):>12.4f}"
-        print(row)
+
+    def cell(b, win):
+        f = slice(None) if win is None else slice(win[0], win[1] + 1)
+        return f"{ev.amp_ratio(pred_pt, gt_pt, bands=b, frames=f):>12.4f}"
+
+    band_time_table(cell, bands, time_bins,
+                    banner="\namplitude ratio gamma = sqrt(E_pred/E_gt), pooled per band "
+                           "x window (1 = GT energy, <1 deficit/blur, >1 excess)")
 
 
 def print_decomp(cache, *, bands, **_):
@@ -276,16 +329,110 @@ def print_blur(cache, *, bands, thresholds, T_eff, **_):
         print(row)
 
 
+def _git_sha() -> str:
+    """Returns the current commit sha, or "unknown" if git is unavailable."""
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                       cwd=str(setup.ROOT), text=True).strip()
+    except Exception:
+        return "unknown"
+
+
+def _save_arrays(path: str, bands_cache: dict, cfg: dict, run_id: str, op_re: int,
+                 test_re: int, T_eff: int) -> None:
+    """Writes the band/residual arrays plus run metadata to a compressed .npz.
+
+    Stores what forward_bands returned verbatim, so every later band grouping, frame
+    window or threshold is recomputable without a GPU — necessary because these metrics
+    are ratios of pooled sums and a coarser grouping cannot be rebuilt from a finer one.
+    Metadata values are stored as 0-d arrays keeping their own type (int stays int);
+    read them back with .item().
+
+    Args:
+      path: destination .npz path.
+      bands_cache: the dict forward_bands returned.
+      cfg: resolved training config for run_id.
+      run_id: wandb run id the arrays came from.
+      op_re: Re used for the operator's own residual.
+      test_re: Re used for the GT residual.
+      T_eff: dataset frame count.
+    """
+    meta = {
+        "run_id": run_id,
+        "data_path": cfg["data"]["data_path"],
+        "coarse_path": str(cfg["data"].get("coarse_path")),
+        "op_re": op_re,
+        "test_re": test_re,
+        "sub_t": cfg["data"]["sub_t"],
+        "T_eff": T_eff,
+        "split": f"test offset={setup.SPLIT['test']['offset']} n={setup.SPLIT['test']['n']}",
+        "commit": _git_sha(),
+    }
+    np.savez_compressed(path, **bands_cache,
+                        **{f"meta_{k}": np.array(v) for k, v in meta.items()})
+    print(f"\nsaved arrays + metadata -> {path}")
+
+
+def print_physics(cache, *, bands, time_bins, test_re, **_):
+    """Prints the physics-residual tables: GT-referenced ratio, self-normalised, raw RMS.
+
+    Three band x time sub-tables off one forward. ratio_gt is a signal-to-noise read
+    (1.0 = the model's violation sits at the stencil's own detection floor, >1 =
+    detectable); ratio_self replaces the GT denominator with the prediction's own field
+    power, so it is computable at test time; raw is the residual RMS per mode-frame,
+    in arbitrary S**2-scaled units, normalised by element count so windows of different
+    extent stay comparable. Time windows are given in field-frame coordinates and
+    mapped onto the two-frames-shorter residual axis; a window holding no residual
+    frame prints "-".
+
+    Args:
+      cache: holds "bands" = forward_bands output.
+      bands: (lo, hi) band groups (rows); defaults to the PHYS set. USED.
+      time_bins: (lo, hi) field-frame windows (columns), plus a full-range aggr. USED.
+      test_re: Re of the GT being scored, named in the stencil-limit note. USED.
+      thresholds / T_eff / late: not consumed by this report.
+    """
+    g = cache["bands"]
+    res_pred, res_gt, pred_pt = g["pde_res_pred_pt"], g["pde_res_gt_pt"], g["pred_pt"]
+    t_res = res_pred.shape[-1]
+    field = pred_pt[:, :, 1:t_res + 1]
+
+    def make_cell(den):
+        def cell(b, win):
+            if win is None:
+                f = slice(None)
+            else:
+                w = _resid_window(win[0], win[1], t_res)
+                if w is None:
+                    return f"{'-':>12}"
+                f = slice(w[0], w[1] + 1)
+            if den is None:
+                sel = res_pred[:, b, f]
+                return f"{float(np.sqrt(sel.sum() / sel.size)):>12.4f}"
+            return f"{ev.resid_ratio(res_pred, den, bands=b, frames=f):>12.4f}"
+        return cell
+
+    print(f"\nphysics residual, test_re={test_re}; {STENCIL_NOTE}")
+    for label, den in (("ratio_gt = sqrt(E_res_pred/E_res_gt), 1 = at the detection floor",
+                        res_gt),
+                       ("ratio_self = sqrt(E_res_pred/E_pred), GT-free, test-time viable",
+                        field),
+                       ("raw = residual RMS per mode-frame, arbitrary S^2-scaled units",
+                        None)):
+        band_time_table(make_cell(den), bands, time_bins, banner=f"\n{label}")
+
+
 REPORTS = {
     "error":   dict(fwd="bands",  bands="0-7,8-16,17-32,33-64", tbins="1-8,57-64", fn=print_error),
     "amp":     dict(fwd="bands",  bands="0-7,8-16,17-32,33-64", tbins="1-8,57-64", fn=print_amp),
     "decomp":  dict(fwd="bands",  bands=SHELLS_NODC,                               fn=print_decomp),
     "horizon": dict(fwd="bands",  bands=SHELLS, thresholds=(0.9, 0.8),             fn=print_horizon),
     "blur":    dict(fwd="bands",  bands=SHELLS_NODC, thresholds=(0.9, 0.8),        fn=print_blur),
+    "physics": dict(fwd="bands",  bands=PHYS, tbins="1-8,57-64",                   fn=print_physics),
     "w1":      dict(fwd="fields",                                                  fn=print_w1),
     "cov":     dict(fwd="fields",                                                  fn=print_cov),
 }
-ORDER = ["error", "amp", "decomp", "w1", "cov", "horizon", "blur"]
+ORDER = ["error", "amp", "decomp", "w1", "cov", "horizon", "blur", "physics"]
 
 
 def main():
@@ -313,6 +460,9 @@ def main():
                     help="Override the coarse-conditioning file, e.g. pair a Re100 coarse "
                          "checkpoint with Re500's own coarse-solver file.")
     ap.add_argument("--device", default=None)
+    ap.add_argument("--save-npz", default=None,
+                    help="Write the band-power and residual arrays plus run metadata to "
+                         "this .npz, so any later band/frame aggregation needs no forward.")
     args = ap.parse_args()
 
     selected = ORDER if args.reports == "all" else [r.strip() for r in args.reports.split(",")]
@@ -329,13 +479,19 @@ def main():
     dataset = setup.build_dataset(cfg, "test")
 
     T_eff = dataset[0]["y"].shape[-1]
+    op_re = args.op_re or cfg["loss"]["re"]
+    test_re = args.test_re or cfg["loss"]["re"]
+    regime = ("NATIVE (same physics both sides)" if op_re == test_re else
+              f"CROSS (operator physics Re{op_re} vs data physics Re{test_re})")
+    print(f"physics regime: op_re={op_re} test_re={test_re} -> {regime}")
+
     needed = {REPORTS[r]["fwd"] for r in selected}
     cache = {}
     if "bands" in needed:
         cache["bands"] = ev.forward_bands(
             model, dataset, device,
-            op_re=args.op_re or cfg["loss"]["re"],
-            test_re=args.test_re or cfg["loss"]["re"],
+            op_re=op_re,
+            test_re=test_re,
             time_scale=cfg["data"]["time_scale"],
             temporal_pad=cfg["data"]["temporal_pad"],
             pad_mode=cfg["data"]["pad_mode"],
@@ -352,6 +508,9 @@ def main():
     n_bands = (cache["bands"]["n_bands"] if "bands" in cache
                else dataset[0]["y"].shape[0] // 2 + 1)
 
+    if args.save_npz and "bands" in cache:
+        _save_arrays(args.save_npz, cache["bands"], cfg, args.run_id, op_re, test_re, T_eff)
+
     for r in ORDER:
         if r not in selected:
             continue
@@ -360,7 +519,7 @@ def main():
         tbins = _parse_groups(args.time_bins or spec.get("tbins") or "0-64")
         thr = _parse_floats(args.thresholds) if args.thresholds else spec.get("thresholds")
         spec["fn"](cache, T_eff=T_eff, bands=bands, time_bins=tbins,
-                   thresholds=thr, late=args.late)
+                   thresholds=thr, late=args.late, op_re=op_re, test_re=test_re)
 
 
 if __name__ == "__main__":
