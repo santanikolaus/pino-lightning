@@ -19,7 +19,8 @@ from . import setup
 SHELLS = "shells"
 SHELLS_NODC = "shells1"
 PHYS = "phys"
-PHYS_KMAX = 24
+FRAMES = "frames"          # tbins sentinel: one column per field frame, 0..T_eff-1
+F_RMS = 4.0 / 2.0**0.5
 STENCIL_NOTE = ("stencil-limited above k~17 (Re500) / k~22 (Re100): there the GT residual "
                 "reaches the GT field amplitude, so a violation is below detection")
 
@@ -65,13 +66,11 @@ def _resolve_bands(default, override: "str | None", n_bands: int):
     if default == SHELLS_NODC:
         return [(k, k) for k in range(1, n_bands)]
     if default == PHYS:
-        kmax = min(PHYS_KMAX, n_bands - 1)
-        groups = [(k, k) for k in range(1, kmax + 1)]
-        groups += [(lo, min(hi, kmax)) for lo, hi in ((1, 8), (9, 16), (17, PHYS_KMAX))
-                   if lo <= kmax]
-        if kmax < n_bands - 1:
-            groups.append((kmax + 1, n_bands - 1))
-        return groups
+        last = n_bands - 1
+        shells = [(k, k) for k in range(0, min(9, last) + 1)]
+        aggr = [(lo, min(hi, last)) for lo, hi in ((0, 7), (8, 16), (17, 32), (33, last))
+                if lo <= last]
+        return shells + aggr + [(0, last)]
     if default is None:
         return None
     return _parse_groups(default)
@@ -374,30 +373,30 @@ def _save_arrays(path: str, bands_cache: dict, cfg: dict, run_id: str, op_re: in
 
 
 def print_physics(cache, *, bands, time_bins, test_re, **_):
-    """Prints the physics-residual tables: GT-referenced ratio, self-normalised, raw RMS.
+    """Prints the physics-residual tables: RMS in physical units, and its signal-to-noise.
 
-    Three band x time sub-tables off one forward. ratio_gt is a signal-to-noise read
-    (1.0 = the model's violation sits at the stencil's own detection floor, >1 =
-    detectable); ratio_self replaces the GT denominator with the prediction's own field
-    power, so it is computable at test time; raw is the residual RMS per mode-frame,
-    in arbitrary S**2-scaled units, normalised by element count so windows of different
-    extent stay comparable. Time windows are given in field-frame coordinates and
-    mapped onto the two-frames-shorter residual axis; a window holding no residual
-    frame prints "-".
+    Two band x time sub-tables off one forward. res_rms is the residual in the units
+    every term of the vorticity equation shares, so it needs no ground truth and its
+    mean-squares add across disjoint bands. res_pred/res_gt divides by the GT residual,
+    which is not physics but the centred stencil's own error, making that column a
+    detectability read rather than a magnitude — and its denominator drifts with both k
+    and t, so it is only trustworthy below the stencil limit.
+
+    Time windows are given in field-frame coordinates and mapped onto the two-frames-
+    shorter residual axis; a window holding no residual frame prints "-".
 
     Args:
       cache: holds "bands" = forward_bands output.
       bands: (lo, hi) band groups (rows); defaults to the PHYS set. USED.
       time_bins: (lo, hi) field-frame windows (columns), plus a full-range aggr. USED.
-      test_re: Re of the GT being scored, named in the stencil-limit note. USED.
+      test_re: Re of the GT being scored, named in the header. USED.
       thresholds / T_eff / late: not consumed by this report.
     """
     g = cache["bands"]
-    res_pred, res_gt, pred_pt = g["pde_res_pred_pt"], g["pde_res_gt_pt"], g["pred_pt"]
+    res_pred, res_gt = g["pde_res_pred_pt"], g["pde_res_gt_pt"]
     t_res = res_pred.shape[-1]
-    field = pred_pt[:, :, 1:t_res + 1]
 
-    def make_cell(den):
+    def make_cell(metric):
         def cell(b, win):
             if win is None:
                 f = slice(None)
@@ -406,20 +405,23 @@ def print_physics(cache, *, bands, time_bins, test_re, **_):
                 if w is None:
                     return f"{'-':>12}"
                 f = slice(w[0], w[1] + 1)
-            if den is None:
-                sel = res_pred[:, b, f]
-                return f"{float(np.sqrt(sel.sum() / sel.size)):>12.4f}"
-            return f"{ev.resid_ratio(res_pred, den, bands=b, frames=f):>12.4f}"
+            return f"{metric(b, f):>12.4f}"
         return cell
 
-    print(f"\nphysics residual, test_re={test_re}; {STENCIL_NOTE}")
-    for label, den in (("ratio_gt = sqrt(E_res_pred/E_res_gt), 1 = at the detection floor",
-                        res_gt),
-                       ("ratio_self = sqrt(E_res_pred/E_pred), GT-free, test-time viable",
-                        field),
-                       ("raw = residual RMS per mode-frame, arbitrary S^2-scaled units",
-                        None)):
-        band_time_table(make_cell(den), bands, time_bins, banner=f"\n{label}")
+    print(f"\nphysics residual, test_re={test_re}")
+    print(f"  divide res_rms by ||f||={F_RMS:.4f} for the dimensionless convention the "
+          f"training loss uses (lp.rel(Du, forcing))")
+    print(f"  mean-squares add across disjoint bands, so the aggregate rows sum to the "
+          f"k0-{res_pred.shape[1] - 1} row")
+    print(f"  {STENCIL_NOTE}; the k0/DC ratio is degenerate (GT's DC residual is ~0) "
+          f"though its res_rms is not")
+    band_time_table(make_cell(lambda b, f: ev.resid_rms(res_pred, bands=b, frames=f)),
+                    bands, time_bins,
+                    banner="\nres_rms = residual RMS, physical units (same as every PDE term)")
+    band_time_table(make_cell(lambda b, f: ev.resid_ratio(res_pred, res_gt, bands=b, frames=f)),
+                    bands, time_bins,
+                    banner="\nres_pred/res_gt = signal-to-noise vs our measurement floor "
+                           "(1 = below detection)")
 
 
 REPORTS = {
@@ -428,7 +430,7 @@ REPORTS = {
     "decomp":  dict(fwd="bands",  bands=SHELLS_NODC,                               fn=print_decomp),
     "horizon": dict(fwd="bands",  bands=SHELLS, thresholds=(0.9, 0.8),             fn=print_horizon),
     "blur":    dict(fwd="bands",  bands=SHELLS_NODC, thresholds=(0.9, 0.8),        fn=print_blur),
-    "physics": dict(fwd="bands",  bands=PHYS, tbins="1-8,57-64",                   fn=print_physics),
+    "physics": dict(fwd="bands",  bands=PHYS, tbins=FRAMES,                        fn=print_physics),
     "w1":      dict(fwd="fields",                                                  fn=print_w1),
     "cov":     dict(fwd="fields",                                                  fn=print_cov),
 }
@@ -444,7 +446,8 @@ def main():
                     help="override band groups for the selected reports; else each "
                          "report's banked default.")
     ap.add_argument("--time-bins", default=None,
-                    help="override frame windows for error/amp; else 1-8,57-64.")
+                    help="override frame windows for error/amp/physics; else each report's "
+                         "default. Inclusive field-frame indices.")
     ap.add_argument("--thresholds", default=None,
                     help="override horizon/blur thresholds, e.g. '0.9,0.8'; shared by "
                          "both so the corr and gamma horizons stay comparable.")
@@ -516,7 +519,8 @@ def main():
             continue
         spec = REPORTS[r]
         bands = _resolve_bands(spec.get("bands"), args.bands, n_bands)
-        tbins = _parse_groups(args.time_bins or spec.get("tbins") or "0-64")
+        tb = args.time_bins or spec.get("tbins") or "0-64"
+        tbins = ([(t, t) for t in range(T_eff)] if tb == FRAMES else _parse_groups(tb))
         thr = _parse_floats(args.thresholds) if args.thresholds else spec.get("thresholds")
         spec["fn"](cache, T_eff=T_eff, bands=bands, time_bins=tbins,
                    thresholds=thr, late=args.late, op_re=op_re, test_re=test_re)
