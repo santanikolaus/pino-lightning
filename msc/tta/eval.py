@@ -644,19 +644,37 @@ def cov_rmse(pred, gt, feat_axis: int = 2,
     return float(np.linalg.norm(Cp - Cg) / (np.linalg.norm(Cg) + 1e-30))
 
 
-def pde_residual(
-    res_pt: np.ndarray,
-    bands: slice = slice(None),
-    frames: slice = slice(None)
-) -> float:
-    """Computes the RMS physics-residual magnitude over a band/frame window.
+def resid_ratio(res_pt: np.ndarray,
+                den_pt: np.ndarray,
+                bands: slice = slice(None),
+                frames: slice = slice(None),
+                per_frame: bool = False) -> "float | np.ndarray":
+    """Computes a pooled physics-residual ratio over a band group and frame window.
+
+    Pools exactly as rel_l2/amp_ratio do — sum numerator and denominator once, then
+    take a single ratio, never a mean of per-bin ratios. The reading depends only on
+    the denominator supplied: against pde_res_gt_pt it is a signal-to-noise ratio
+    (GT satisfies the PDE in the continuum, so its measured residual is the stencil's
+    own error, and 1.0 means the model's violation sits at the detection floor);
+    against the predicted field power it is a GT-free score computable at test time.
+
+    Both arrays must already be frame-aligned by the caller. No frame mapping happens
+    here: the residual axis is two frames shorter than the field axis, and resolving
+    that offset is the caller's job so the convention lives in one place.
 
     Args:
-      res_pt: (n_bands, T-2) PDE-residual power, as returned by forward_bands.
+      res_pt: (N, n_bands, T_res) residual power, as returned by forward_bands.
+      den_pt: (N, n_bands, T_res) denominator power, aligned to res_pt's frame axis.
       bands: band slice to pool over (default: all bands).
       frames: frame slice to pool over (default: all frames).
+      per_frame: keep the frame axis, returning a curve.
 
     Returns:
-      Not yet implemented.
+      Scalar sqrt(sum(res) / sum(den)) over the selection; or, if per_frame, a
+      (T_sel,) array with that ratio taken per frame.
     """
-    raise NotImplementedError()
+    r = res_pt[:, bands, frames]
+    d = den_pt[:, bands, frames]
+    if per_frame:
+        return np.sqrt(r.sum((0, 1)) / (d.sum((0, 1)) + 1e-30))
+    return float(np.sqrt(r.sum() / (d.sum() + 1e-30)))
