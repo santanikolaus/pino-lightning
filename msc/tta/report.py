@@ -138,6 +138,33 @@ def horizon_rows(curve, bands: list, T: int, thresholds: list) -> list:
     return rows
 
 
+def band_time_table(cell, bands: list, time_bins: list, banner: "str | None" = None) -> None:
+    """Prints one band x time-window table: header, rule, a row per band group.
+
+    The shared layout behind the error/amp/physics tables; only the cell text varies.
+    The last column always aggregates over every frame.
+
+    Args:
+      cell: called as cell(band_slice, window) -> the formatted 12-char cell string,
+        where window is an inclusive (lo, hi) frame tuple, or None for the trailing
+        all-frame aggregate column.
+      bands: list of (lo, hi) inclusive band-index tuples, one row each.
+      time_bins: list of (lo, hi) inclusive frame windows, one column each.
+      banner: optional line printed above the table.
+    """
+    if banner:
+        print(banner)
+    header = _band_time_header(time_bins)
+    print(header)
+    print("-" * len(header))
+    for k_lo, k_hi in bands:
+        b = slice(k_lo, k_hi + 1)
+        row = f"{f'k{k_lo}-{k_hi}':<12}"
+        for win in time_bins:
+            row += cell(b, win)
+        print(row + cell(b, None))
+
+
 def print_error(cache, *, bands, time_bins, **_):
     """Prints the band x time-window pooled relative-L2 error table.
 
@@ -149,17 +176,12 @@ def print_error(cache, *, bands, time_bins, **_):
     """
     g = cache["bands"]
     err_pt, gt_pt = g["err_pt"], g["gt_pt"]
-    header = _band_time_header(time_bins)
-    print(header)
-    print("-" * len(header))
-    for k_lo, k_hi in bands:
-        row = f"{f'k{k_lo}-{k_hi}':<12}"
-        for t_lo, t_hi in time_bins:
-            val = ev.rel_l2(err_pt, gt_pt,
-                            bands=slice(k_lo, k_hi + 1), frames=slice(t_lo, t_hi + 1))
-            row += f"{val:>12.4f}"
-        row += f"{ev.rel_l2(err_pt, gt_pt, bands=slice(k_lo, k_hi + 1)):>12.4f}"
-        print(row)
+
+    def cell(b, win):
+        f = slice(None) if win is None else slice(win[0], win[1] + 1)
+        return f"{ev.rel_l2(err_pt, gt_pt, bands=b, frames=f):>12.4f}"
+
+    band_time_table(cell, bands, time_bins)
 
 
 def print_amp(cache, *, bands, time_bins, **_):
@@ -177,19 +199,14 @@ def print_amp(cache, *, bands, time_bins, **_):
     """
     g = cache["bands"]
     pred_pt, gt_pt = g["pred_pt"], g["gt_pt"]
-    print("\namplitude ratio gamma = sqrt(E_pred/E_gt), pooled per band x window "
-          "(1 = GT energy, <1 deficit/blur, >1 excess)")
-    header = _band_time_header(time_bins)
-    print(header)
-    print("-" * len(header))
-    for k_lo, k_hi in bands:
-        row = f"{f'k{k_lo}-{k_hi}':<12}"
-        for t_lo, t_hi in time_bins:
-            gm = ev.amp_ratio(pred_pt, gt_pt,
-                              bands=slice(k_lo, k_hi + 1), frames=slice(t_lo, t_hi + 1))
-            row += f"{gm:>12.4f}"
-        row += f"{ev.amp_ratio(pred_pt, gt_pt, bands=slice(k_lo, k_hi + 1)):>12.4f}"
-        print(row)
+
+    def cell(b, win):
+        f = slice(None) if win is None else slice(win[0], win[1] + 1)
+        return f"{ev.amp_ratio(pred_pt, gt_pt, bands=b, frames=f):>12.4f}"
+
+    band_time_table(cell, bands, time_bins,
+                    banner="\namplitude ratio gamma = sqrt(E_pred/E_gt), pooled per band "
+                           "x window (1 = GT energy, <1 deficit/blur, >1 excess)")
 
 
 def print_decomp(cache, *, bands, **_):
@@ -379,7 +396,21 @@ def print_physics(cache, *, bands, time_bins, test_re, **_):
     res_pred, res_gt, pred_pt = g["pde_res_pred_pt"], g["pde_res_gt_pt"], g["pred_pt"]
     t_res = res_pred.shape[-1]
     field = pred_pt[:, :, 1:t_res + 1]
-    wins = [(lo, hi, _resid_window(lo, hi, t_res)) for lo, hi in time_bins]
+
+    def make_cell(den):
+        def cell(b, win):
+            if win is None:
+                f = slice(None)
+            else:
+                w = _resid_window(win[0], win[1], t_res)
+                if w is None:
+                    return f"{'-':>12}"
+                f = slice(w[0], w[1] + 1)
+            if den is None:
+                sel = res_pred[:, b, f]
+                return f"{float(np.sqrt(sel.sum() / sel.size)):>12.4f}"
+            return f"{ev.resid_ratio(res_pred, den, bands=b, frames=f):>12.4f}"
+        return cell
 
     print(f"\nphysics residual, test_re={test_re}; {STENCIL_NOTE}")
     for label, den in (("ratio_gt = sqrt(E_res_pred/E_res_gt), 1 = at the detection floor",
@@ -388,29 +419,7 @@ def print_physics(cache, *, bands, time_bins, test_re, **_):
                         field),
                        ("raw = residual RMS per mode-frame, arbitrary S^2-scaled units",
                         None)):
-        print(f"\n{label}")
-        header = _band_time_header(time_bins)
-        print(header)
-        print("-" * len(header))
-        for k_lo, k_hi in bands:
-            b = slice(k_lo, k_hi + 1)
-            row = f"{f'k{k_lo}-{k_hi}':<12}"
-            for w in (w for _, _, w in wins):
-                if w is None:
-                    row += f"{'-':>12}"
-                    continue
-                f = slice(w[0], w[1] + 1)
-                if den is None:
-                    sel = res_pred[:, b, f]
-                    row += f"{float(np.sqrt(sel.sum() / sel.size)):>12.4f}"
-                else:
-                    row += f"{ev.resid_ratio(res_pred, den, bands=b, frames=f):>12.4f}"
-            if den is None:
-                sel = res_pred[:, b]
-                row += f"{float(np.sqrt(sel.sum() / sel.size)):>12.4f}"
-            else:
-                row += f"{ev.resid_ratio(res_pred, den, bands=b):>12.4f}"
-            print(row)
+        band_time_table(make_cell(den), bands, time_bins, banner=f"\n{label}")
 
 
 REPORTS = {
