@@ -17,6 +17,7 @@ from msc.tta.eval import (
     rel_l2,
     resid_minus_forcing,
 )
+from msc.tta.setup import Regime
 from src.models.kf_fno import build_fno_kf
 
 MODEL_CFG = {
@@ -198,13 +199,14 @@ def test_forward_bands_output_keys_and_shapes():
 
     out = forward_bands(
         model, dataset, device,
-        op_re=100, test_re=100, time_scale=1.0,
+        regime=Regime(100, 100), time_scale=1.0,
         temporal_pad=0, pad_mode="zero", t_interval=0.1,
     )
 
     expected_n_bands = S // 2 + 1
     assert set(out.keys()) == {
-        "n_bands", "T_eff", "pred_pt", "gt_pt", "err_pt", "pde_res_pred_pt", "pde_res_gt_pt",
+        "n_bands", "T_eff", "pred_pt", "gt_pt", "err_pt",
+        "pde_res_pred_pt", "pde_res_pred_op_pt", "pde_res_gt_pt",
     }
     assert out["n_bands"] == expected_n_bands
     assert out["T_eff"] == T
@@ -213,9 +215,21 @@ def test_forward_bands_output_keys_and_shapes():
         assert out[key].shape == (N, expected_n_bands, T), f"{key} shape={out[key].shape}"
         assert np.isfinite(out[key]).all(), f"{key} contains non-finite values"
 
-    for key in ("pde_res_pred_pt", "pde_res_gt_pt"):
+    for key in ("pde_res_pred_pt", "pde_res_pred_op_pt", "pde_res_gt_pt"):
         assert out[key].shape == (N, expected_n_bands, T - 2), f"{key} shape={out[key].shape}"
         assert np.isfinite(out[key]).all(), f"{key} contains non-finite values"
+
+
+def test_forward_bands_residuals_false_drops_only_the_residual_arrays():
+    """report_image reads err_pt/gt_pt only, so it must be able to skip the three
+    residual passes without losing the field powers it does use."""
+    out = forward_bands(
+        _tiny_model(), _FakeDataset(n=2, S=8, T=5), torch.device("cpu"),
+        regime=Regime(100, 100), time_scale=1.0,
+        temporal_pad=0, pad_mode="zero", t_interval=0.1, residuals=False,
+    )
+
+    assert set(out.keys()) == {"n_bands", "T_eff", "pred_pt", "gt_pt", "err_pt"}
 
 
 def test_forward_bands_stacks_per_sample_not_summed():
@@ -231,7 +245,7 @@ def test_forward_bands_stacks_per_sample_not_summed():
 
     out = forward_bands(
         model, dataset, device,
-        op_re=100, test_re=100, time_scale=1.0,
+        regime=Regime(100, 100), time_scale=1.0,
         temporal_pad=0, pad_mode="zero", t_interval=0.1,
     )
 

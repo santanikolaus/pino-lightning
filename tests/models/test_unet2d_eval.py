@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from msc.tta.eval import forward_bands, forward_fields
+from msc.tta.setup import Regime
 from src.models.kf_fno import prepare_input
 from src.models.kf_unet2d import Unet2DRollout
 from src.models.pdearena import Unet
@@ -44,7 +45,7 @@ def test_forward_bands_runs_end_to_end_with_ctx_wired():
     ds = _StubKFDataset(traj, n_ctx)
     model = _make_model()
 
-    out = forward_bands(model, ds, "cpu", op_re=100, test_re=100,
+    out = forward_bands(model, ds, "cpu", regime=Regime(100, 100),
                         time_scale=1.0, temporal_pad=0, pad_mode="zero",
                         t_interval=1.0)
 

@@ -10,6 +10,7 @@ fit. rel_l2()/corr_curve() are the small functions a caller composes over
 those arrays to build whatever summary it needs.
 """
 import random
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -17,6 +18,9 @@ from scipy import stats
 
 from src.models.kf_fno import kf_forward
 from src.pde.ns import NSVorticity
+
+if TYPE_CHECKING:
+    from .setup import Regime
 
 
 def cheb_bins(S: int, device) -> torch.Tensor:
@@ -94,12 +98,12 @@ def forward_bands(model: torch.nn.Module,
                   dataset,
                   device,
                   *,
-                  op_re: int,
-                  test_re: int,
+                  regime: "Regime",
                   time_scale: float,
                   temporal_pad: int,
                   pad_mode: str,
                   t_interval: float,
+                  residuals: bool = True,
                   shuffle_coarse: bool = False) -> dict:
     """Forwards model over dataset; returns raw per-band, per-frame power arrays.
 
@@ -111,22 +115,29 @@ def forward_bands(model: torch.nn.Module,
       model: KF FNO model, already loaded and in eval mode.
       dataset: KFDataset-like object yielding {"x": ic, "y": gt, "coarse": optional}.
       device: torch device to run the forward pass on.
-      op_re: Reynolds number for the operator's own residual power.
-      test_re: Reynolds number for the GT self-consistency residual power.
+      regime: the operator/data Reynolds pair, which fixes every viscosity used here.
       time_scale: kf_forward's t-grid coordinate scale.
       temporal_pad: kf_forward's frame padding before the forward pass.
       pad_mode: kf_forward's padding mode ("zero" or "periodic").
       t_interval: physical time spanned by consecutive frames, for the residual.
+      residuals: compute the three PDE-residual arrays; False skips them for a caller
+        that reads only the field powers, saving three residual passes per sample.
       shuffle_coarse: feed a random other sample's coarse trajectory instead of
         the matched one (tests phase-mismatch sensitivity). A model trained
         without a coarse channel never receives one either way.
 
     Returns:
-      n_bands, T_eff (dataset frame count); pred_pt/gt_pt/err_pt, each (N,
-      n_bands, T_eff): per-sample predicted/GT/error power; pde_res_pred_pt/
-      pde_res_gt_pt, each (N, n_bands, T_eff - 2): per-sample PDE-residual-minus-
-      forcing power for û and GT (two fewer frames, from the residual's finite-
-      difference stencil). The sample axis is kept per-sample because it is the
+      n_bands, T_eff (dataset frame count); pred_pt/gt_pt/err_pt, each (N, n_bands,
+      T_eff): per-sample predicted/GT/error power. With residuals=True, three more
+      arrays of (N, n_bands, T_eff - 2) — two fewer frames, from the residual's
+      centred stencil: pde_res_pred_pt (û against the DATA's equation, nu_test — the
+      quantity a physics test-time step minimises), pde_res_pred_op_pt (û against the
+      OPERATOR's own training equation, nu_op — self-consistency, equal to the former
+      in a native regime), and pde_res_gt_pt (GT against the data's equation, the
+      stencil's own error floor). Both û residuals are stored rather than one derived
+      from the other: they differ by the exactly-known term -(nu_test - nu_op)*lap(û),
+      but these arrays hold power, and the cross term in |a+b|**2 needs the phase that
+      band_power_t discards. The sample axis is kept per-sample because it is the
       only bootstrap unit for a test-set CI; batching the loop below would
       re-collapse it.
     """
@@ -134,7 +145,6 @@ def forward_bands(model: torch.nn.Module,
     T_eff = dataset[0]["y"].shape[-1]
     n_bands = S // 2 + 1
     kinf = cheb_bins(S, device)
-    nu_u, nu_gt = 1.0 / op_re, 1.0 / test_re
 
     _shuf: list = []
     if shuffle_coarse:
@@ -149,6 +159,7 @@ def forward_bands(model: torch.nn.Module,
     gt_ps: list = []
     err_ps: list = []
     pde_res_pred_ps: list = []
+    pde_res_pred_op_ps: list = []
     pde_res_gt_ps: list = []
     for i in range(len(dataset)):
         item = dataset[i]
@@ -174,22 +185,29 @@ def forward_bands(model: torch.nn.Module,
         pred_ps.append(band_power_t(uhat, kinf, n_bands))
         gt_ps.append(band_power_t(gt, kinf, n_bands))
         err_ps.append(band_power_t(uhat - gt, kinf, n_bands))
-        pde_res_pred_ps.append(
-            band_power_t(resid_minus_forcing(uhat, nu_u, t_interval), kinf,
-                         n_bands))
-        pde_res_gt_ps.append(
-            band_power_t(resid_minus_forcing(gt, nu_gt, t_interval), kinf,
-                         n_bands))
+        if residuals:
+            pde_res_pred_ps.append(
+                band_power_t(resid_minus_forcing(uhat, regime.nu_test, t_interval),
+                             kinf, n_bands))
+            pde_res_pred_op_ps.append(
+                band_power_t(resid_minus_forcing(uhat, regime.nu_op, t_interval),
+                             kinf, n_bands))
+            pde_res_gt_ps.append(
+                band_power_t(resid_minus_forcing(gt, regime.nu_test, t_interval),
+                             kinf, n_bands))
 
-    return {
+    out = {
         "n_bands": n_bands,
         "T_eff": T_eff,
         "pred_pt": np.stack(pred_ps),
         "gt_pt": np.stack(gt_ps),
         "err_pt": np.stack(err_ps),
-        "pde_res_pred_pt": np.stack(pde_res_pred_ps),
-        "pde_res_gt_pt": np.stack(pde_res_gt_ps),
     }
+    if residuals:
+        out["pde_res_pred_pt"] = np.stack(pde_res_pred_ps)
+        out["pde_res_pred_op_pt"] = np.stack(pde_res_pred_op_ps)
+        out["pde_res_gt_pt"] = np.stack(pde_res_gt_ps)
+    return out
 
 
 def rel_l2(err_pt: np.ndarray,

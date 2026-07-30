@@ -3,6 +3,7 @@ import pytest
 import torch
 
 from msc.tta import report
+from msc.tta.setup import Regime
 
 
 def _fake_cfg() -> dict:
@@ -70,6 +71,27 @@ def test_bands_only_report_calls_bands_not_fields(recorder, monkeypatch, report_
     report.main()
     assert len(recorder["bands"]) == 1
     assert len(recorder["fields"]) == 0
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["--reports", "physics"], True),
+        (["--reports", "error"], False),
+        (["--reports", "error", "--save-npz", "x.npz"], True),
+    ],
+    ids=["physics_needs_them", "error_alone_skips_them", "npz_forces_them"],
+)
+def test_residual_passes_are_skipped_only_when_nothing_will_read_them(
+        recorder, monkeypatch, tmp_path, argv, expected):
+    """The three residual passes cost real time, so a report that never reads them
+    skips them — but --save-npz must override that. The npz is the durable GPU-free
+    artifact; its contents cannot silently depend on which reports were selected."""
+    argv = [a if not a.endswith(".npz") else str(tmp_path / a) for a in argv]
+    monkeypatch.setattr(report, "_save_arrays", lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["report.py", "--run-id", "fake", *argv])
+    report.main()
+    assert recorder["bands"][0]["residuals"] is expected
 
 
 def test_mixed_reports_call_both_forwards_exactly_once(recorder, monkeypatch):
@@ -232,7 +254,7 @@ def test_printers_run_without_crashing(capsys):
     report.print_decomp(bc, bands=bands)
     report.print_horizon(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
     report.print_blur(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
-    report.print_physics(bc, bands=bands, time_bins=tbins, test_re=100)
+    report.print_physics(bc, bands=bands, time_bins=tbins, regime=Regime(100, 100))
     report.print_w1(fc, T_eff=5, late=2)
     report.print_cov(fc, T_eff=5, late=2)
     assert capsys.readouterr().out
