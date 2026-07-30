@@ -1,4 +1,6 @@
-"""Resolves a checkpoint's model, config, and data from its wandb run_id."""
+"""Resolves a checkpoint's model, config, data, and physics regime from its wandb run_id."""
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import hydra
@@ -16,6 +18,94 @@ ROOT = Path(__file__).resolve().parents[2]
 _PATHS = yaml.safe_load((ROOT / "msc" / "configs" / "paths.yaml").read_text())
 SPLIT = yaml.safe_load(
     (ROOT / "msc" / "configs" / "configs.yaml").read_text())["split"]
+
+
+@dataclass(frozen=True)
+class Regime:
+    """The two Reynolds numbers a run is scored under, and the viscosity each side takes.
+
+    Frozen and passed whole so no consumer re-derives a viscosity from a bare int:
+    reaching for nu_op where nu_test belongs has to be written out to happen.
+
+    Args:
+      op_re: the operator's training Reynolds number.
+      test_re: the Reynolds number of the data being scored.
+    """
+    op_re: int
+    test_re: int
+
+    @property
+    def cross(self) -> bool:
+        """True when operator and data obey different equations."""
+        return self.op_re != self.test_re
+
+    @property
+    def nu_op(self) -> float:
+        """Viscosity of the operator's training equation."""
+        return 1.0 / self.op_re
+
+    @property
+    def nu_test(self) -> float:
+        """Viscosity of the equation the data obeys."""
+        return 1.0 / self.test_re
+
+    def banner(self) -> str:
+        """Renders the one-line regime statement printed once per run."""
+        if not self.cross:
+            return f"physics regime: NATIVE, Re{self.op_re} both sides"
+        return (f"physics regime: CROSS, operator Re{self.op_re} vs data Re{self.test_re}; "
+                f"the residual is scored against the data's equation (Re{self.test_re}) "
+                f"unless a table says otherwise")
+
+
+def path_re(path: str) -> "int | None":
+    """Reads the Reynolds token out of a KF data path, or None if it carries none.
+
+    The trailing underscore is part of the token, or "Re100" would also match "Re1000".
+
+    Args:
+      path: a KF data path, e.g. ".../Re500_T128_part0.npy".
+
+    Returns:
+      The Reynolds number in the filename, or None.
+    """
+    m = re.search(r"Re(\d+)_", path)
+    return int(m.group(1)) if m else None
+
+
+def resolve_regime(cfg: dict,
+                   op_re: "int | None" = None,
+                   test_re: "int | None" = None,
+                   announce: bool = True) -> Regime:
+    """Resolves both Reynolds numbers from CLI overrides, falling back to the training Re.
+
+    The only place that fallback lives and the only place the banner is printed, so a
+    run cannot pick a viscosity without surfacing which regime it is in. Because
+    --data-path and --test-re are independent flags, test_re is additionally checked
+    against the Reynolds token in the data path actually loaded: pointing at Re500 data
+    and forgetting --test-re would otherwise score it against the Re100 equation under a
+    confident NATIVE banner.
+
+    Args:
+      cfg: resolved training config; cfg["loss"]["re"] is the per-side default and
+        cfg["data"]["data_path"] is the file the test_re claim is checked against.
+      op_re: override for the operator's Re, or None for the training Re.
+      test_re: override for the data's Re, or None for the training Re.
+      announce: print the banner (set False when a caller prints it itself).
+
+    Returns:
+      The resolved Regime.
+    """
+    regime = Regime(op_re=op_re or cfg["loss"]["re"],
+                    test_re=test_re or cfg["loss"]["re"])
+    if announce:
+        print(regime.banner())
+        found = path_re(cfg.get("data", {}).get("data_path", ""))
+        if found is not None and found != regime.test_re:
+            print(f"  WARNING: data path says Re{found} but test_re={regime.test_re}; "
+                  f"the residual is being scored against the wrong equation unless you "
+                  f"meant this")
+    return regime
 
 
 def resolve(run_id: str) -> dict:

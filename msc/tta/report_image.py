@@ -39,12 +39,12 @@ def main():
         dataset = setup.build_dataset(cfg, "test")
         grids = ev.forward_bands(
             model, dataset, device,
-            op_re=args.op_re or cfg["loss"]["re"],
-            test_re=args.test_re or cfg["loss"]["re"],
+            regime=setup.resolve_regime(cfg, args.op_re, args.test_re, announce=False),
             time_scale=cfg["data"]["time_scale"],
             temporal_pad=cfg["data"]["temporal_pad"],
             pad_mode=cfg["data"]["pad_mode"],
             t_interval=cfg["loss"]["t_interval"],
+            residuals=False,
         )
         err_pt, gt_pt = grids["err_pt"], grids["gt_pt"]
         ax.plot(ev.rel_l2(err_pt, gt_pt, bands=slice(0, 8), per_frame=True), label="k<=7")
@@ -57,12 +57,12 @@ def main():
             dataset = setup.build_dataset(cfg, "test")
             grids = ev.forward_bands(
                 model, dataset, device,
-                op_re=args.op_re or cfg["loss"]["re"],
-                test_re=args.test_re or cfg["loss"]["re"],
+                regime=setup.resolve_regime(cfg, args.op_re, args.test_re, announce=False),
                 time_scale=cfg["data"]["time_scale"],
                 temporal_pad=cfg["data"]["temporal_pad"],
                 pad_mode=cfg["data"]["pad_mode"],
                 t_interval=cfg["loss"]["t_interval"],
+                residuals=False,
             )
             err_pt, gt_pt = grids["err_pt"], grids["gt_pt"]
             curve_k7 = ev.rel_l2(err_pt, gt_pt, bands=slice(0, 8), per_frame=True)

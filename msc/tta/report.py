@@ -21,8 +21,11 @@ SHELLS_NODC = "shells1"
 PHYS = "phys"
 FRAMES = "frames"          # tbins sentinel: one column per field frame, 0..T_eff-1
 F_RMS = 4.0 / 2.0**0.5
-STENCIL_NOTE = ("stencil-limited above k~17 (Re500) / k~22 (Re100): there the GT residual "
-                "reaches the GT field amplitude, so a violation is below detection")
+STENCIL_NOTE = ("res_gt is the centred stencil's own truncation error, not physics, and grows "
+                "with k and t; where the ratio approaches 1 the violation is at that floor and "
+                "the column says nothing. Read the crossing off this table — the earlier k~17 "
+                "(Re500) / k~22 (Re100) figures came from a since-retired residual-vs-field "
+                "comparison")
 
 
 def _parse_groups(s: str) -> list[tuple[int, int]]:
@@ -337,13 +340,14 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def _save_arrays(path: str, bands_cache: dict, cfg: dict, run_id: str, op_re: int,
-                 test_re: int, T_eff: int) -> None:
+def _save_arrays(path: str, bands_cache: dict, cfg: dict, run_id: str, regime,
+                 T_eff: int) -> None:
     """Writes the band/residual arrays plus run metadata to a compressed .npz.
 
     Stores what forward_bands returned verbatim, so every later band grouping, frame
-    window or threshold is recomputable without a GPU — necessary because these metrics
-    are ratios of pooled sums and a coarser grouping cannot be rebuilt from a finer one.
+    window or threshold is recomputable without a GPU — necessary because the ratio
+    metrics (rel_l2, amp_ratio, resid_ratio) are ratios of pooled sums, which no coarser
+    grouping can rebuild from a finer one. Only resid_rms re-aggregates.
     Metadata values are stored as 0-d arrays keeping their own type (int stays int);
     read them back with .item().
 
@@ -352,16 +356,16 @@ def _save_arrays(path: str, bands_cache: dict, cfg: dict, run_id: str, op_re: in
       bands_cache: the dict forward_bands returned.
       cfg: resolved training config for run_id.
       run_id: wandb run id the arrays came from.
-      op_re: Re used for the operator's own residual.
-      test_re: Re used for the GT residual.
+      regime: the run's Reynolds pair, recorded so a reader knows which equation
+        each stored residual was scored against.
       T_eff: dataset frame count.
     """
     meta = {
         "run_id": run_id,
         "data_path": cfg["data"]["data_path"],
         "coarse_path": str(cfg["data"].get("coarse_path")),
-        "op_re": op_re,
-        "test_re": test_re,
+        "op_re": regime.op_re,
+        "test_re": regime.test_re,
         "sub_t": cfg["data"]["sub_t"],
         "T_eff": T_eff,
         "split": f"test offset={setup.SPLIT['test']['offset']} n={setup.SPLIT['test']['n']}",
@@ -372,29 +376,37 @@ def _save_arrays(path: str, bands_cache: dict, cfg: dict, run_id: str, op_re: in
     print(f"\nsaved arrays + metadata -> {path}")
 
 
-def print_physics(cache, *, bands, time_bins, test_re, **_):
-    """Prints the physics-residual tables: RMS in physical units, and its signal-to-noise.
+def print_physics(cache, *, bands, time_bins, regime, **_):
+    """Prints the physics-residual tables: RMS in forcing units, and its signal-to-noise.
 
-    Two band x time sub-tables off one forward. res_rms is the residual in the units
-    every term of the vorticity equation shares, so it needs no ground truth and its
-    mean-squares add across disjoint bands. res_pred/res_gt divides by the GT residual,
-    which is not physics but the centred stencil's own error, making that column a
-    detectability read rather than a magnitude — and its denominator drifts with both k
-    and t, so it is only trustworthy below the stencil limit.
+    Both res_rms/|f| and the ratio score û against the equation the DATA obeys, so the
+    ratio's two sides answer the same equation — in a cross regime a mixed pair would
+    measure nothing. res_rms/|f| divides by the forcing RMS, the dimensionless convention
+    the training loss uses (lp.rel(Du, forcing)), needs no ground truth, and its SQUARES
+    add across disjoint bands. The ratio's denominator is not physics but the centred
+    stencil's own error, making that column a detectability read, not a magnitude.
+
+    A cross regime adds a third table, û against the operator's own training equation:
+    its gap to the first separates pure Re-mismatch from prediction error. It is
+    suppressed in a native regime, where the two coincide.
+
+    Cells print %.4g, not %.4f: per-shell values span orders of magnitude, so fixed
+    decimals would flatten the high-k rows to zero and let a degenerate ratio overflow
+    the column.
 
     Time windows are given in field-frame coordinates and mapped onto the two-frames-
     shorter residual axis; a window holding no residual frame prints "-".
 
     Args:
-      cache: holds "bands" = forward_bands output.
+      cache: holds "bands" = forward_bands output, computed with residuals=True.
       bands: (lo, hi) band groups (rows); defaults to the PHYS set. USED.
       time_bins: (lo, hi) field-frame windows (columns), plus a full-range aggr. USED.
-      test_re: Re of the GT being scored, named in the header. USED.
+      regime: the run's Reynolds pair; picks which residual array each table reads. USED.
       thresholds / T_eff / late: not consumed by this report.
     """
     g = cache["bands"]
     res_pred, res_gt = g["pde_res_pred_pt"], g["pde_res_gt_pt"]
-    t_res = res_pred.shape[-1]
+    t_res, last = res_pred.shape[-1], res_pred.shape[1] - 1
 
     def make_cell(metric):
         def cell(b, win):
@@ -405,23 +417,32 @@ def print_physics(cache, *, bands, time_bins, test_re, **_):
                 if w is None:
                     return f"{'-':>12}"
                 f = slice(w[0], w[1] + 1)
-            return f"{metric(b, f):>12.4f}"
+            return f"{metric(b, f):>12.4g}"
         return cell
 
-    print(f"\nphysics residual, test_re={test_re}")
-    print(f"  divide res_rms by ||f||={F_RMS:.4f} for the dimensionless convention the "
-          f"training loss uses (lp.rel(Du, forcing))")
-    print(f"  mean-squares add across disjoint bands, so the aggregate rows sum to the "
-          f"k0-{res_pred.shape[1] - 1} row")
-    print(f"  {STENCIL_NOTE}; the k0/DC ratio is degenerate (GT's DC residual is ~0) "
-          f"though its res_rms is not")
-    band_time_table(make_cell(lambda b, f: ev.resid_rms(res_pred, bands=b, frames=f)),
-                    bands, time_bins,
-                    banner="\nres_rms = residual RMS, physical units (same as every PDE term)")
-    band_time_table(make_cell(lambda b, f: ev.resid_ratio(res_pred, res_gt, bands=b, frames=f)),
-                    bands, time_bins,
-                    banner="\nres_pred/res_gt = signal-to-noise vs our measurement floor "
-                           "(1 = below detection)")
+    def rms_cell(res):
+        return make_cell(lambda b, f: ev.resid_rms(res, bands=b, frames=f) / F_RMS)
+
+    print(f"\nphysics residual: û scored against the data's equation Re{regime.test_re}")
+    if (0, last) in bands:
+        print(f"  res_rms/|f| squares add across disjoint bands: the squares of any "
+              f"disjoint cover sum to the k0-{last} row squared")
+    print(f"  {STENCIL_NOTE}; the k0/DC ratio is additionally degenerate (GT's DC "
+          f"residual is ~0) though its res_rms is not")
+    band_time_table(
+        rms_cell(res_pred), bands, time_bins,
+        banner=f"\nres_rms/|f| = residual RMS over forcing RMS ({F_RMS:.4f}), "
+               f"dimensionless, GT-free — the quantity a physics TTA step minimises")
+    band_time_table(
+        make_cell(lambda b, f: ev.resid_ratio(res_pred, res_gt, bands=b, frames=f)),
+        bands, time_bins,
+        banner="\nres_pred/res_gt = signal-to-noise vs our measurement floor "
+               "(1 = below detection)")
+    if regime.cross:
+        band_time_table(
+            rms_cell(g["pde_res_pred_op_pt"]), bands, time_bins,
+            banner=f"\nres_rms/|f| at the OPERATOR's own equation Re{regime.op_re} — "
+                   f"self-consistency; its gap to the first table is the Re mismatch")
 
 
 REPORTS = {
@@ -446,8 +467,9 @@ def main():
                     help="override band groups for the selected reports; else each "
                          "report's banked default.")
     ap.add_argument("--time-bins", default=None,
-                    help="override frame windows for error/amp/physics; else each report's "
-                         "default. Inclusive field-frame indices.")
+                    help="override frame windows for error/amp/physics as inclusive "
+                         f"field-frame indices, or '{FRAMES}' for one column per frame; "
+                         "else each report's default.")
     ap.add_argument("--thresholds", default=None,
                     help="override horizon/blur thresholds, e.g. '0.9,0.8'; shared by "
                          "both so the corr and gamma horizons stay comparable.")
@@ -482,23 +504,19 @@ def main():
     dataset = setup.build_dataset(cfg, "test")
 
     T_eff = dataset[0]["y"].shape[-1]
-    op_re = args.op_re or cfg["loss"]["re"]
-    test_re = args.test_re or cfg["loss"]["re"]
-    regime = ("NATIVE (same physics both sides)" if op_re == test_re else
-              f"CROSS (operator physics Re{op_re} vs data physics Re{test_re})")
-    print(f"physics regime: op_re={op_re} test_re={test_re} -> {regime}")
+    regime = setup.resolve_regime(cfg, args.op_re, args.test_re)
 
     needed = {REPORTS[r]["fwd"] for r in selected}
     cache = {}
     if "bands" in needed:
         cache["bands"] = ev.forward_bands(
             model, dataset, device,
-            op_re=op_re,
-            test_re=test_re,
+            regime=regime,
             time_scale=cfg["data"]["time_scale"],
             temporal_pad=cfg["data"]["temporal_pad"],
             pad_mode=cfg["data"]["pad_mode"],
             t_interval=cfg["loss"]["t_interval"],
+            residuals="physics" in selected or bool(args.save_npz),
         )
     if "fields" in needed:
         cache["fields"] = ev.forward_fields(
@@ -512,7 +530,7 @@ def main():
                else dataset[0]["y"].shape[0] // 2 + 1)
 
     if args.save_npz and "bands" in cache:
-        _save_arrays(args.save_npz, cache["bands"], cfg, args.run_id, op_re, test_re, T_eff)
+        _save_arrays(args.save_npz, cache["bands"], cfg, args.run_id, regime, T_eff)
 
     for r in ORDER:
         if r not in selected:
@@ -523,7 +541,7 @@ def main():
         tbins = ([(t, t) for t in range(T_eff)] if tb == FRAMES else _parse_groups(tb))
         thr = _parse_floats(args.thresholds) if args.thresholds else spec.get("thresholds")
         spec["fn"](cache, T_eff=T_eff, bands=bands, time_bins=tbins,
-                   thresholds=thr, late=args.late, op_re=op_re, test_re=test_re)
+                   thresholds=thr, late=args.late, regime=regime)
 
 
 if __name__ == "__main__":

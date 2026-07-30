@@ -19,6 +19,7 @@ import pytest
 import torch
 
 from msc.tta import report
+from msc.tta.setup import Regime
 from msc.tta.eval import (band_power_t, cheb_bins, resid_minus_forcing, resid_ratio,
                           resid_rms)
 
@@ -142,6 +143,45 @@ def test_resid_rms_matches_closed_form_1d_shear_residual():
 
 
 # ---------------------------------------------------------------------------
+# The two u_hat residual arrays are stored, not derived from one another. This
+# pins WHY: subtracting the two residual FIELDS leaves exactly the Laplacian
+# term -(nu_test - nu_op)*lap(w), whose RMS is known in closed form for the 1D
+# shear field (lap(A*cos(4y)) = -16*A*cos(4y)). Doing the same subtraction on
+# the stored POWER arrays does not reproduce it, because the cross term in
+# |a+b|**2 needs the phase band_power_t discards.
+# ---------------------------------------------------------------------------
+
+def test_the_two_viscosities_differ_by_the_closed_form_laplacian_term():
+    S, T, A, m = 16, 5, 2.3, 4
+    nu_op, nu_test, t_interval = 1.0 / 100, 1.0 / 500, 0.37
+    w = _shear_field(S, T, A, m)
+    kinf = cheb_bins(S, torch.device("cpu"))
+
+    res_op = resid_minus_forcing(w, nu_op, t_interval)
+    res_test = resid_minus_forcing(w, nu_test, t_interval)
+    diff_pt = band_power_t(res_test - res_op, kinf, S // 2 + 1)[None]
+
+    expected = abs((nu_test - nu_op) * m**2 * A) / np.sqrt(2)
+    assert resid_rms(diff_pt) == pytest.approx(expected, rel=1e-4)
+
+
+def test_power_arrays_alone_cannot_reconstruct_the_other_viscosity():
+    """The reason a third array is stored rather than corrected for post hoc: the
+    per-mode difference is exact, but these arrays hold power, so the cross term is
+    unrecoverable. Differencing the power arrays must NOT match the true answer."""
+    S, T, A, m = 16, 5, 2.3, 4
+    nu_op, nu_test, t_interval = 1.0 / 100, 1.0 / 500, 0.37
+    w = _shear_field(S, T, A, m)
+    kinf = cheb_bins(S, torch.device("cpu"))
+
+    p_op = band_power_t(resid_minus_forcing(w, nu_op, t_interval), kinf, S // 2 + 1)[None]
+    p_test = band_power_t(resid_minus_forcing(w, nu_test, t_interval), kinf, S // 2 + 1)[None]
+    truth = abs((nu_test - nu_op) * m**2 * A) / np.sqrt(2)
+
+    assert resid_rms(np.abs(p_test - p_op)) != pytest.approx(truth, rel=1e-2)
+
+
+# ---------------------------------------------------------------------------
 # resid_ratio: same pooling convention as rel_l2/amp_ratio (sum then ratio).
 # ---------------------------------------------------------------------------
 
@@ -262,8 +302,12 @@ def test_resid_window_none_and_boundary_cases(lo, hi, t_res, expected):
 # contain the bare word "res_rms") — isolate on the full banner text instead.
 # ---------------------------------------------------------------------------
 
-LABEL_RMS = "res_rms = residual RMS"
+NATIVE = Regime(op_re=100, test_re=100)
+CROSS = Regime(op_re=100, test_re=500)
+
+LABEL_RMS = "res_rms/|f| = residual RMS over forcing RMS"
 LABEL_RATIO = "res_pred/res_gt = signal-to-noise"
+LABEL_RMS_OP = "res_rms/|f| at the OPERATOR's own equation"
 
 
 def _physics_cache(res_pred, res_gt):
@@ -282,7 +326,7 @@ def test_print_physics_empty_window_prints_dash_in_every_subtable(capsys):
     cache = _physics_cache(res_pred, res_gt)
 
     report.print_physics(cache, bands=[(0, 0)],
-                         time_bins=[(0, 0), (1, 1)], test_re=100)
+                         time_bins=[(0, 0), (1, 1)], regime=NATIVE)
     out = capsys.readouterr().out
 
     for label in (LABEL_RMS, LABEL_RATIO):
@@ -295,7 +339,7 @@ def test_print_physics_res_rms_column_is_window_extent_independent(capsys):
     cache = _physics_cache(res_pred, res_gt)
 
     report.print_physics(cache, bands=[(0, 1)],
-                         time_bins=[(1, 1), (1, 4)], test_re=100)
+                         time_bins=[(1, 1), (1, 4)], regime=NATIVE)
     out = capsys.readouterr().out
 
     rms_cols = _sub_table_row(out, LABEL_RMS, "k0-1")
@@ -303,11 +347,11 @@ def test_print_physics_res_rms_column_is_window_extent_independent(capsys):
     n_bands = res_pred.shape[1]
     S = 2 * (n_bands - 1)
     # the band group spans both shells, so the selection sums 2 x 9.0 per frame
-    expected = float(np.sqrt(2 * 9.0 / S**4))
-    # cells are printed to 4 decimals, so compare at that resolution
-    assert one_frame == pytest.approx(expected, abs=5e-5)
-    assert all_frames == pytest.approx(expected, abs=5e-5)
-    assert aggr == pytest.approx(expected, abs=5e-5)
+    expected = float(np.sqrt(2 * 9.0 / S**4)) / report.F_RMS
+    # cells are printed to 4 significant digits, so compare at that resolution
+    assert one_frame == pytest.approx(expected, rel=1e-3)
+    assert all_frames == pytest.approx(expected, rel=1e-3)
+    assert aggr == pytest.approx(expected, rel=1e-3)
 
 
 def test_print_physics_stencil_note_printed_once_regardless_of_band_count(capsys):
@@ -316,10 +360,71 @@ def test_print_physics_stencil_note_printed_once_regardless_of_band_count(capsys
     cache = _physics_cache(res_pred, res_gt)
 
     report.print_physics(cache, bands=[(0, 0), (1, 1)],
-                         time_bins=[(1, 3)], test_re=100)
+                         time_bins=[(1, 3)], regime=NATIVE)
     out = capsys.readouterr().out
 
     assert out.count(report.STENCIL_NOTE) == 1
+
+
+def test_print_physics_cells_survive_the_dynamic_range_they_exist_to_show(capsys):
+    """Per-shell values span orders of magnitude by construction, so the cell format
+    must not flatten a small one to zero nor let a degenerate ratio break the column
+    grid. k1 here is 1e-12 of k0's power, and the k1 ratio's denominator is ~0."""
+    res_pred = np.array([[[1e8], [1e-4]]])
+    res_gt = np.array([[[1e8], [1e-30]]])
+    cache = _physics_cache(res_pred, res_gt)
+
+    report.print_physics(cache, bands=[(0, 0), (1, 1)], time_bins=[(1, 1)], regime=NATIVE)
+    out = capsys.readouterr().out
+
+    small = _sub_table_row(out, LABEL_RMS, "k1-1")
+    assert float(small[0]) > 0, "a nonzero residual must not print as 0"
+    widths = {len(l) for l in out.splitlines() if l.startswith("k")}
+    assert len(widths) == 1, f"a cell overflowed its column: row widths {widths}"
+
+
+def _cross_cache(res_test, res_op, res_gt):
+    return {"bands": {"pde_res_pred_pt": res_test, "pde_res_pred_op_pt": res_op,
+                      "pde_res_gt_pt": res_gt}}
+
+
+def test_print_physics_reads_the_data_equation_array_for_both_primary_tables(capsys):
+    """pde_res_pred_pt (nu_test) is the numerator of BOTH the res_rms table and the
+    ratio; pde_res_pred_op_pt (nu_op) must reach neither. Arrays differ by 100x, so a
+    swapped read shows up as a wrong number rather than merely running."""
+    res_test = np.full((1, 2, 3), 4.0)
+    res_op = np.full((1, 2, 3), 400.0)
+    res_gt = np.full((1, 2, 3), 1.0)
+    cache = _cross_cache(res_test, res_op, res_gt)
+
+    report.print_physics(cache, bands=[(0, 1)], time_bins=[(1, 3)], regime=CROSS)
+    out = capsys.readouterr().out
+
+    S = 2 * (2 - 1)
+    expected_rms = float(np.sqrt(2 * 4.0 / S**4)) / report.F_RMS
+    assert float(_sub_table_row(out, LABEL_RMS, "k0-1")[0]) == pytest.approx(
+        expected_rms, rel=1e-3)
+    assert float(_sub_table_row(out, LABEL_RATIO, "k0-1")[0]) == pytest.approx(
+        2.0, rel=1e-3)
+
+
+def test_print_physics_shows_the_operator_equation_table_only_in_a_cross_regime(capsys):
+    """In NATIVE the two u_hat residuals are the same equation, so a second res_rms
+    table would be a duplicate row-set; in CROSS its gap to the first is the finding."""
+    cache = _cross_cache(np.full((1, 2, 3), 4.0), np.full((1, 2, 3), 400.0),
+                         np.full((1, 2, 3), 1.0))
+    kwargs = dict(bands=[(0, 1)], time_bins=[(1, 3)])
+
+    report.print_physics(cache, regime=NATIVE, **kwargs)
+    assert LABEL_RMS_OP not in capsys.readouterr().out
+
+    report.print_physics(cache, regime=CROSS, **kwargs)
+    out = capsys.readouterr().out
+    assert out.count(LABEL_RMS_OP) == 1
+    S = 2 * (2 - 1)
+    op_rms = float(np.sqrt(2 * 400.0 / S**4)) / report.F_RMS
+    assert float(_sub_table_row(out, LABEL_RMS_OP, "k0-1")[0]) == pytest.approx(
+        op_rms, rel=1e-3)
 
 
 def test_print_physics_frames_sentinel_yields_dash_at_first_and_last_field_frame(capsys):
@@ -332,7 +437,7 @@ def test_print_physics_frames_sentinel_yields_dash_at_first_and_last_field_frame
     T_eff = 5
     tbins = [(t, t) for t in range(T_eff)]
 
-    report.print_physics(cache, bands=[(0, 1)], time_bins=tbins, test_re=100)
+    report.print_physics(cache, bands=[(0, 1)], time_bins=tbins, regime=NATIVE)
     out = capsys.readouterr().out
 
     row = _sub_table_row(out, LABEL_RMS, "k0-1")
