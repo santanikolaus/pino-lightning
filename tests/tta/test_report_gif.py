@@ -150,3 +150,49 @@ def test_spectrum_gif_writes_file(tmp_path):
     path = str(tmp_path / "spec.gif")
     a.spectrum_gif(path, fps=4)
     assert os.path.getsize(path) > 0
+
+
+# ---------------------------------------------------------------------------
+# 11. pinned color limits: the whole point of --vmax is cross-run comparability,
+#     so an unpinned pair must disagree and a pinned pair must not
+# ---------------------------------------------------------------------------
+
+def test_unpinned_scales_follow_each_trajectorys_own_amplitude():
+    """Two runs at different amplitudes derive different limits — rendering both
+    unpinned makes 'the OOD one looks damped' an artifact of the color scale."""
+    gt, pred = _field(13), _field(14)
+    quiet = FieldDiagAnimator(gt, pred).scales()
+    loud = FieldDiagAnimator(3.0 * gt, 3.0 * pred).scales()
+    assert loud["vmax"] == pytest.approx(3.0 * quiet["vmax"], rel=1e-9)
+    assert loud["vmax_swap"] == pytest.approx(3.0 * quiet["vmax_swap"], rel=1e-9)
+    assert loud["ylim"][1] == pytest.approx(9.0 * quiet["ylim"][1], rel=1e-9)  # power ~ amp²
+
+
+def test_splatting_scales_back_renders_two_amplitudes_on_one_scale():
+    """scales() keys are the constructor kwargs, so the round-trip is a splat."""
+    gt, pred = _field(13), _field(14)
+    ref = FieldDiagAnimator(gt, pred).scales()
+    pinned = FieldDiagAnimator(3.0 * gt, 3.0 * pred, **ref).scales()
+    assert pinned == pytest.approx(ref)
+
+
+def test_every_panel_group_is_pinned_independently():
+    """Four scales, four kwargs: pinning one must not move the other three, or a
+    'pinned' render silently flattens the residual/swap panels onto the field scale."""
+    a = FieldDiagAnimator(_field(15), _field(16), kmax=KMAX, vmax=2.0)
+    free = FieldDiagAnimator(_field(15), _field(16), kmax=KMAX).scales()
+    s = a.scales()
+    assert s["vmax"] == 2.0
+    assert s["vmax_diff"] == pytest.approx(free["vmax_diff"])
+    assert s["vmax_swap"] == pytest.approx(free["vmax_swap"])
+    assert s["ylim"] == pytest.approx(free["ylim"])
+
+
+def test_swap_scale_is_below_the_field_scale_and_falls_with_kmax():
+    """swap panels are low-passed, so reusing --vmax for them washes them out — worse
+    at small kmax, where more energy is cut. This is why vmax_swap exists."""
+    gt, pred = _field(17), _field(18)
+    wide = FieldDiagAnimator(gt, pred, kmax=7).scales()
+    narrow = FieldDiagAnimator(gt, pred, kmax=2).scales()
+    assert wide["vmax_swap"] < wide["vmax"]
+    assert narrow["vmax_swap"] < wide["vmax_swap"]
