@@ -11,7 +11,10 @@ The amplitude/phase swap reuses the spectral identity F = |F| * (F/|F|): replaci
 PRED's amplitude with GT's (keeping PRED's phase) isolates positional error; the
 mirror isolates magnitude error. Measured in the same Fourier coordinates as the
 planned per-mode phase loss. CLI at the bottom builds GT/PRED from a run_id via
-setup.py (vanilla or coarse-conditioned FNO checkpoints).
+setup.py (vanilla or coarse-conditioned FNO checkpoints); --data-path swaps in another
+Re's trajectories for a cross-Re render, and --vmax/--vmax-diff/--vmax-swap/--ylim pin
+the four panel scales that otherwise follow each trajectory's own energy. Every run
+prints its own scales in flag form, so pinning a second run to the first is a copy-paste.
 """
 import matplotlib
 matplotlib.use("Agg")
@@ -32,9 +35,15 @@ class FieldDiagAnimator:
     gt, pred: real fields (S, S, T), identical shape (one trajectory).
     kmax: Chebyshev band cutoff k = max(|kx|,|ky|) for the spectral-swap GIF.
     clip_percentile: robust symmetric color limit (diverging cmap about 0).
+    vmax, vmax_diff, vmax_swap, ylim: pin the four panel scales (error fields, error
+      residual, swap panels, spectrum y-axis) instead of deriving each from this
+      trajectory. Two runs are only comparable when both are pinned to the same
+      values — see scales(). vmax_swap is kmax-specific, the other three are not.
     """
 
-    def __init__(self, gt, pred, kmax: int = 7, clip_percentile: float = 99.0):
+    def __init__(self, gt, pred, kmax: int = 7, clip_percentile: float = 99.0,
+                 vmax: "float | None" = None, vmax_diff: "float | None" = None,
+                 vmax_swap: "float | None" = None, ylim: "tuple | None" = None):
         gt, pred = _to_numpy(gt), _to_numpy(pred)
         if gt.shape != pred.shape or gt.ndim != 3:
             raise ValueError(f"gt/pred must match and be (S,S,T); got {gt.shape}, {pred.shape}")
@@ -42,7 +51,10 @@ class FieldDiagAnimator:
         self.S, _, self.T = gt.shape
         self.kmax = kmax
         self.clip = clip_percentile
+        self.vmax, self.vmax_diff, self.vmax_swap = vmax, vmax_diff, vmax_swap
+        self.ylim = tuple(ylim) if ylim is not None else None
         self._mask = self._cheb_mask(self.S, kmax)
+        self._spec_cache = None
 
     @staticmethod
     def _cheb_mask(S: int, kmax: int) -> np.ndarray:
@@ -68,9 +80,47 @@ class FieldDiagAnimator:
         pred_amp_gt_phase = np.fft.ifft2(m * ap * unit_g, axes=(0, 1)).real
         return gt_amp_pred_phase, pred_amp_gt_phase
 
-    def _sym_vmax(self, *arrs) -> float:
+    def _sym_vmax(self, *arrs, pinned: "float | None" = None) -> float:
+        if pinned is not None:
+            return float(pinned)
         v = max(np.percentile(np.abs(a), self.clip) for a in arrs)
         return float(v) if v > 0 else 1.0
+
+    def _swap_panels(self):
+        """Returns the three low-passed panels swap_gif draws, in draw order."""
+        gt_amp_pred_phase, pred_amp_gt_phase = self.amp_phase_swap()
+        return [self._lowpass(self.gt), gt_amp_pred_phase, pred_amp_gt_phase]
+
+    def _spectra(self):
+        """Returns (k, gt_specs, pred_specs) radial spectra per frame, computed once."""
+        if self._spec_cache is None:
+            k, _ = self._radial_spectrum(self.gt[:, :, 0])
+            gt_specs = np.stack([self._radial_spectrum(self.gt[:, :, t])[1]
+                                 for t in range(self.T)])
+            pred_specs = np.stack([self._radial_spectrum(self.pred[:, :, t])[1]
+                                   for t in range(self.T)])
+            self._spec_cache = (k, gt_specs, pred_specs)
+        return self._spec_cache
+
+    def _auto_ylim(self) -> tuple:
+        _, gt_specs, pred_specs = self._spectra()
+        vals = np.concatenate([gt_specs.ravel(), pred_specs.ravel()])
+        pos = vals[vals > 0]
+        return (float(pos.min() * 0.3), float(pos.max() * 3.0))
+
+    def scales(self) -> dict:
+        """Returns every panel scale in use, keyed by the kwarg that pins it.
+
+        Returns:
+          {"vmax", "vmax_diff", "vmax_swap", "ylim"} — the error GIF's field and
+          residual limits, the swap GIF's shared limit, and the spectrum GIF's
+          y-range. Splat back into another FieldDiagAnimator to render a second
+          run on this run's scales. vmax_swap is only valid at the same kmax.
+        """
+        return {"vmax": self._sym_vmax(self.gt, self.pred, pinned=self.vmax),
+                "vmax_diff": self._sym_vmax(self.gt - self.pred, pinned=self.vmax_diff),
+                "vmax_swap": self._sym_vmax(*self._swap_panels(), pinned=self.vmax_swap),
+                "ylim": self.ylim or self._auto_ylim()}
 
     def _animate(self, path, panels, titles, vmaxes, *, fps=10, stride=1,
                  dpi=100, cmap="RdBu_r", colorbar=True):
@@ -104,21 +154,20 @@ class FieldDiagAnimator:
         """GT | PRED | (GT - PRED). GT/PRED share a color scale; the residual gets its
         own (amplified) scale so its structure is visible."""
         diff = self.gt - self.pred
-        field_v = self._sym_vmax(self.gt, self.pred)
+        field_v = self._sym_vmax(self.gt, self.pred, pinned=self.vmax)
         panels = [self.gt, self.pred, diff]
         titles = ["GT", "PRED", "GT - PRED"]
         return self._animate(path, panels, titles,
-                             [field_v, field_v, self._sym_vmax(diff)], **kw)
+                             [field_v, field_v,
+                              self._sym_vmax(diff, pinned=self.vmax_diff)], **kw)
 
     def swap_gif(self, path, **kw):
         """GT | GT-amp & PRED-phase (wrong WHERE) | PRED-amp & GT-phase (wrong HOW MUCH),
         all low-passed to k<=kmax and sharing one color scale for comparability."""
-        gt_amp_pred_phase, pred_amp_gt_phase = self.amp_phase_swap()
-        gt_low = self._lowpass(self.gt)
-        panels = [gt_low, gt_amp_pred_phase, pred_amp_gt_phase]
+        panels = self._swap_panels()
         titles = [f"GT  (k<={self.kmax})", "GT amp + PRED phase\n(wrong WHERE)",
                   "PRED amp + GT phase\n(wrong HOW MUCH)"]
-        v = self._sym_vmax(*panels)
+        v = self._sym_vmax(*panels, pinned=self.vmax_swap)
         return self._animate(path, panels, titles, [v, v, v], **kw)
 
     @staticmethod
@@ -146,22 +195,17 @@ class FieldDiagAnimator:
         Reference slope: k⁻¹ (= k²·E(k) with E(k)~k⁻³, 2D enstrophy-cascade inertial range).
         Anchored to GT time-mean at k=4 (above the KF forcing scale k_f≈4).
         Vertical dashed line marks the FNO representable-band cutoff n_modes.
-        Y-axis fixed over T so energy pile-up / dissipation are directly visible.
+        Y-axis fixed over T so energy pile-up / dissipation are directly visible, and
+        pinnable via the constructor's ylim so two runs share one window.
         """
-        k, _ = self._radial_spectrum(self.gt[:, :, 0])
-        gt_specs   = np.stack([self._radial_spectrum(self.gt[:, :, t])[1]   for t in range(self.T)])
-        pred_specs = np.stack([self._radial_spectrum(self.pred[:, :, t])[1] for t in range(self.T)])
+        k, gt_specs, pred_specs = self._spectra()
 
         # k^-1 reference anchored to GT time-mean at k=4 (vorticity: Z(k) ~ k⁻¹)
         gt_mean = gt_specs.mean(0)
         anchor_idx = min(3, len(k) - 1)   # k=4 is index 3 (bins start at 1)
         ref = gt_mean[anchor_idx] * (k / k[anchor_idx]) ** (-1)
 
-        # fixed y-limits across all frames
-        all_vals = np.concatenate([gt_specs.ravel(), pred_specs.ravel()])
-        pos = all_vals[all_vals > 0]
-        y_lo = pos.min() * 0.3
-        y_hi = pos.max() * 3.0
+        y_lo, y_hi = self.ylim or self._auto_ylim()
 
         frames = list(range(0, self.T, stride))
         fig, ax = plt.subplots(figsize=(6, 5))
@@ -214,10 +258,30 @@ def _cli():
     p.add_argument("--out", default="msc/tta/outputs/figs")
     p.add_argument("--tag", default=None)
     p.add_argument("--device", default=None)
+    p.add_argument("--data-path", default=None,
+                   help="GT trajectories to render against; defaults to the run's own. "
+                        "Point at another Re's file for a cross-Re (OOD) render.")
+    p.add_argument("--coarse-path", default=None,
+                   help="Matching coarse file; only for coarse-conditioned runs.")
+    p.add_argument("--vmax", type=float, default=None,
+                   help="Pin the error GIF's field-panel color limit. Required to compare "
+                        "two renders: unpinned, each derives its own and the scale moves.")
+    p.add_argument("--vmax-diff", type=float, default=None,
+                   help="Pin the error GIF's GT-PRED residual-panel color limit.")
+    p.add_argument("--vmax-swap", type=float, default=None,
+                   help="Pin the swap GIF's shared color limit. Its panels are low-passed "
+                        "to kmax, so this is a different scale from --vmax and is only "
+                        "transferable between renders at the same --kmax.")
+    p.add_argument("--ylim", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                   help="Pin the spectrum GIF's y-range.")
     args = p.parse_args()
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, cfg = setup.load_model(args.run_id, device)
+    if args.data_path:
+        cfg["data"]["data_path"] = args.data_path
+    if args.coarse_path:
+        cfg["data"]["coarse_path"] = args.coarse_path
     dataset = setup.build_dataset(cfg, "test")
 
     sample = dataset[args.traj]
@@ -233,8 +297,15 @@ def _cli():
     pred = _to_numpy(pred)
 
     tag = args.tag or f"{args.run_id}_traj{args.traj}"
-    paths = FieldDiagAnimator(gt, pred, kmax=args.kmax).render_all(
-        args.out, tag=tag, stride=args.stride, fps=args.fps)
+    animator = FieldDiagAnimator(gt, pred, kmax=args.kmax, vmax=args.vmax,
+                                 vmax_diff=args.vmax_diff, vmax_swap=args.vmax_swap,
+                                 ylim=args.ylim)
+    s = animator.scales()
+    print(f"data: {cfg['data']['data_path']}")
+    print(f"scales (pass these to a second run at --kmax {args.kmax} to share them):\n"
+          f"  --vmax {s['vmax']:.6g} --vmax-diff {s['vmax_diff']:.6g} "
+          f"--vmax-swap {s['vmax_swap']:.6g} --ylim {s['ylim'][0]:.6g} {s['ylim'][1]:.6g}")
+    paths = animator.render_all(args.out, tag=tag, stride=args.stride, fps=args.fps)
     print("wrote:", *paths, sep="\n  ")
 
 
