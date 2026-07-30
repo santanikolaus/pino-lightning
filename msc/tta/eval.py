@@ -358,6 +358,39 @@ def amp_curve(pred_pt: np.ndarray,
     return np.sqrt(pp / (gp + 1e-30))
 
 
+def resid_rms(res_pt: np.ndarray,
+              bands: slice = slice(None),
+              frames: slice = slice(None)) -> float:
+    """Computes the physics-residual RMS in physical units over a band/frame window.
+
+    band_power_t uses an unnormalised FFT, so its shell sums carry a factor S**2 over
+    the physical sum of squares (Parseval); dividing by S**4 undoes that and the
+    per-grid-point average in one step, leaving the residual in the units every term
+    of the vorticity equation shares. Selecting a shell subset returns that subset's
+    contribution to the mean square, and contributions from disjoint bands ADD — the
+    one property none of the ratio metrics has, so any coarser grouping is recoverable
+    from a finer one by summing squares.
+
+    Divide by the forcing RMS (4/sqrt(2) for f = -4cos(4y)) to recover the
+    dimensionless convention the training loss uses, lp.rel(Du, forcing).
+
+    Args:
+      res_pt: (N, n_bands, T_res) residual power, as returned by forward_bands.
+      bands: band slice to pool over (default: all bands).
+      frames: frame slice to pool over (default: all frames).
+
+    Returns:
+      Scalar residual RMS, in the same units as every term of the PDE.
+    """
+    n_bands = res_pt.shape[1]
+    if n_bands < 2:
+        raise ValueError("resid_rms recovers the grid size as S = 2*(n_bands-1), which "
+                         f"needs at least 2 shells; got n_bands={n_bands}")
+    sel = res_pt[:, bands, frames]
+    S = 2 * (n_bands - 1)
+    return float(np.sqrt(sel.sum() / (sel.shape[0] * sel.shape[-1] * S**4)))
+
+
 def time_to_threshold(curve: np.ndarray,
                       thresh: float,
                       mode: str = "first_cross") -> "int | np.ndarray":
