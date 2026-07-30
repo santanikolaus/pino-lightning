@@ -71,18 +71,23 @@ def test_resid_rms_window_extent_independent_for_constant_residual():
     assert one_frame == pytest.approx(full, rel=1e-12)
 
 
-def test_resid_rms_shell_subset_ignores_power_outside_it():
-    n_bands = 5
-    S = 2 * (n_bands - 1)
-    res_pt = np.zeros((1, n_bands, 2))
-    res_pt[:, 3, :] = 8.0
+def test_resid_rms_shell_subset_matches_independently_constructed_single_shell_field():
+    """A pure cos(2*pi*3*i/S) field varying along one spatial axis puts every
+    Fourier coefficient at shell index max(|kx|,|ky|)=3 (k=3 is neither DC nor
+    Nyquist on S=8, so there is no leakage or aliasing). Its physical RMS is
+    exactly A/sqrt(2), known from cos^2 averaging to 0.5 over a whole number of
+    periods -- independent of resid_rms's own S**4 expression."""
+    S, T, A = 8, 3, 2.0
+    n_bands = S // 2 + 1
+    i = np.arange(S)
+    field = (A * np.cos(2 * np.pi * 3 * i / S))[:, None, None] * np.ones((S, S, T))
+    phys_rms = float(np.sqrt(np.mean(field**2)))
 
-    assert resid_rms(res_pt, bands=slice(0, 3)) == pytest.approx(0.0, abs=1e-12)
-    assert resid_rms(res_pt, bands=slice(4, 5)) == pytest.approx(0.0, abs=1e-12)
+    res_pt = _band_power_of(field, n_bands=n_bands)
 
-    got = resid_rms(res_pt, bands=slice(3, 4))
-    expected = np.sqrt((8.0 * 2) / (1 * 2 * S**4))
-    assert got == pytest.approx(expected, rel=1e-12)
+    assert resid_rms(res_pt, bands=slice(0, 3)) == pytest.approx(0.0, abs=1e-9)
+    assert resid_rms(res_pt, bands=slice(4, 5)) == pytest.approx(0.0, abs=1e-9)
+    assert resid_rms(res_pt, bands=slice(3, 4)) == pytest.approx(phys_rms, rel=1e-9)
 
 
 def test_resid_rms_raises_when_fewer_than_two_shells():
@@ -91,13 +96,65 @@ def test_resid_rms_raises_when_fewer_than_two_shells():
 
 
 # ---------------------------------------------------------------------------
+# resid_rms(resid_minus_forcing(...)): closed-form PDE residual, beyond the
+# Parseval round-trip above. A field varying along one spatial axis only (the
+# axis the KF forcing itself varies along) has zero self-advection by a basic
+# fact of 2D incompressible flow (u_x depends on that axis only, w's gradient
+# along the other axis is zero) -- independent of this code. Held constant in
+# time, the centred wt term is also exactly zero, so Du reduces to
+# -nu*laplacian(w), and laplacian(A*cos(4y)) is analytically -16*A*cos(4y).
+# The amplitude that cancels the solver's own f=-4cos(4y) is the Kolmogorov
+# laminar base state (an exact solution: residual should vanish); any other
+# amplitude gives a fully closed-form nonzero residual to check resid_rms
+# against.
+# ---------------------------------------------------------------------------
+
+def _shear_field(S: int, T: int, A: float, m: int = 4) -> torch.Tensor:
+    """Builds a (1, S, S, T) field A*cos(m*2*pi*y/S), constant along x and time."""
+    y = torch.arange(S, dtype=torch.float64)
+    w0 = A * torch.cos(m * 2 * np.pi * y / S)
+    return w0.reshape(1, 1, S, 1).repeat(1, S, 1, T)
+
+
+def test_resid_rms_of_matched_laminar_base_state_is_near_zero():
+    S, T, nu, t_interval = 16, 5, 1.0 / 173.0, 0.37
+    A = -4.0 / (16 * nu)
+    w = _shear_field(S, T, A)
+
+    res = resid_minus_forcing(w, nu, t_interval)
+    kinf = cheb_bins(S, torch.device("cpu"))
+    res_pt = band_power_t(res, kinf, S // 2 + 1)[None]
+
+    assert resid_rms(res_pt) == pytest.approx(0.0, abs=1e-4)
+
+
+def test_resid_rms_matches_closed_form_1d_shear_residual():
+    S, T, nu, t_interval, A = 16, 5, 1.0 / 173.0, 0.37, 2.3
+    w = _shear_field(S, T, A)
+
+    res = resid_minus_forcing(w, nu, t_interval)
+    kinf = cheb_bins(S, torch.device("cpu"))
+    res_pt = band_power_t(res, kinf, S // 2 + 1)[None]
+
+    coef = 16 * nu * A + 4.0
+    expected_phys_rms = abs(coef) / np.sqrt(2)
+    assert resid_rms(res_pt) == pytest.approx(expected_phys_rms, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
 # resid_ratio: same pooling convention as rel_l2/amp_ratio (sum then ratio).
 # ---------------------------------------------------------------------------
 
 def test_resid_ratio_scalar_pools_sums_before_dividing():
-    res_pt = np.full((1, 2, 3), 2.0)
-    den_pt = np.full((1, 2, 3), 8.0)
-    assert resid_ratio(res_pt, den_pt) == pytest.approx(0.5, rel=1e-12)
+    """Band values differ (1.0 vs 9.0) so pooled-sum and mean-of-per-band-ratio
+    give different numbers -- a constant array cannot tell those two apart."""
+    res_pt = np.array([[[1.0], [9.0]]])
+    den_pt = np.array([[[1.0], [4.0]]])
+    pooled = np.sqrt((1.0 + 9.0) / (1.0 + 4.0))
+    mean_of_ratios = np.mean([np.sqrt(1.0 / 1.0), np.sqrt(9.0 / 4.0)])
+    val = resid_ratio(res_pt, den_pt)
+    assert val == pytest.approx(pooled, rel=1e-12)
+    assert val != pytest.approx(mean_of_ratios, rel=1e-6)
 
 
 def test_resid_ratio_per_frame_keeps_frame_axis():
