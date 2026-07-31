@@ -20,6 +20,7 @@ SHELLS = "shells"
 SHELLS_NODC = "shells1"
 PHYS = "phys"
 FRAMES = "frames"          # tbins sentinel: one column per field frame, 0..T_eff-1
+AGGR = "aggr"              # tbins sentinel: no explicit window, only the aggregate column
 F_RMS = 4.0 / 2.0**0.5
 STENCIL_NOTE = ("res_gt is the centred stencil's own truncation error, not physics, and grows "
                 "with k and t; where the ratio approaches 1 the violation is at that floor and "
@@ -77,6 +78,25 @@ def _resolve_bands(default, override: "str | None", n_bands: int):
     if default is None:
         return None
     return _parse_groups(default)
+
+
+def _resolve_tbins(tb: str, T_eff: int) -> list:
+    """Resolves a report's frame windows from its tbins spec.
+
+    Args:
+      tb: "lo-hi,..." string, the FRAMES sentinel for one column per field frame,
+        or the AGGR sentinel for no explicit window.
+      T_eff: dataset frame count, used to expand the FRAMES sentinel.
+
+    Returns:
+      List of (lo, hi) inclusive frame windows; empty for AGGR, leaving
+      band_time_table's trailing all-frame aggregate as the only column.
+    """
+    if tb == FRAMES:
+        return [(t, t) for t in range(T_eff)]
+    if tb == AGGR:
+        return []
+    return _parse_groups(tb)
 
 
 def _resid_window(lo: int, hi: int, t_res: int) -> "tuple[int, int] | None":
@@ -143,7 +163,7 @@ def horizon_rows(curve, bands: list, T: int, thresholds: list) -> list:
 def band_time_table(cell, bands: list, time_bins: list, banner: "str | None" = None) -> None:
     """Prints one band x time-window table: header, rule, a row per band group.
 
-    The shared layout behind the error/amp/physics tables; only the cell text varies.
+    The shared layout behind the error/amp/decomp/physics tables; only the cell text varies.
     The last column always aggregates over every frame.
 
     Args:
@@ -211,29 +231,42 @@ def print_amp(cache, *, bands, time_bins, **_):
                            "x window (1 = GT energy, <1 deficit/blur, >1 excess)")
 
 
-def print_decomp(cache, *, bands, **_):
+def print_decomp(cache, *, bands, time_bins, **_):
     """Prints the amplitude/phase decomposition rel_l2^2 = (1-rho^2)+(gamma-rho)^2.
 
-    Aggregated over all frames per band group.
+    One band x time-window table per quantity. The three are pooled the same way
+    (sum first, then ratio), so the identity is exact in every cell, whatever the
+    band group and frame window — the split is read per cell, never across cells.
+    The default is a single all-frame aggregate column.
 
     Args:
       cache: holds "bands" = forward_bands output.
       bands: (lo, hi) band groups (rows); defaults per-shell from k1 (k0/DC
         excluded: its gamma is a ratio of ~1e-10 zero-mean noise floors). USED.
-      time_bins / thresholds / T_eff / late: not consumed by this report.
+      time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column;
+        defaults to the aggr column alone. USED.
+      thresholds / T_eff / late: not consumed by this report.
     """
     g = cache["bands"]
     pred_pt, gt_pt, err_pt = g["pred_pt"], g["gt_pt"], g["err_pt"]
-    print("\ndecomposition (aggr): rel_l2^2 = (1 - rho^2) + (gamma - rho)^2")
-    dec_header = f"{'k-band':<12}" + "".join(f"{c:>12}" for c in ("rel_l2", "rho", "gamma"))
-    print(dec_header)
-    print("-" * len(dec_header))
-    for k_lo, k_hi in bands:
-        b = slice(k_lo, k_hi + 1)
-        r = ev.rel_l2(err_pt, gt_pt, bands=b)
-        rho = ev.corr_pooled(pred_pt, gt_pt, err_pt, bands=b)
-        gm = ev.amp_ratio(pred_pt, gt_pt, bands=b)
-        print(f"{f'k{k_lo}-{k_hi}':<12}{r:>12.4f}{rho:>12.4f}{gm:>12.4f}")
+
+    def make_cell(metric):
+        def cell(b, win):
+            f = slice(None) if win is None else slice(win[0], win[1] + 1)
+            return f"{metric(b, f):>12.4f}"
+        return cell
+
+    band_time_table(
+        make_cell(lambda b, f: ev.rel_l2(err_pt, gt_pt, bands=b, frames=f)),
+        bands, time_bins,
+        banner="\ndecomposition, exact per cell: rel_l2^2 = (1 - rho^2) + (gamma - rho)^2"
+               "\n\nrel_l2")
+    band_time_table(
+        make_cell(lambda b, f: ev.corr_pooled(pred_pt, gt_pt, err_pt, bands=b, frames=f)),
+        bands, time_bins, banner="\nrho = pooled correlation (phase term)")
+    band_time_table(
+        make_cell(lambda b, f: ev.amp_ratio(pred_pt, gt_pt, bands=b, frames=f)),
+        bands, time_bins, banner="\ngamma = sqrt(E_pred/E_gt) (amplitude term)")
 
 
 def print_w1(cache, *, T_eff, late, **_):
@@ -448,7 +481,7 @@ def print_physics(cache, *, bands, time_bins, regime, **_):
 REPORTS = {
     "error":   dict(fwd="bands",  bands="0-7,8-16,17-32,33-64", tbins="1-8,57-64", fn=print_error),
     "amp":     dict(fwd="bands",  bands="0-7,8-16,17-32,33-64", tbins="1-8,57-64", fn=print_amp),
-    "decomp":  dict(fwd="bands",  bands=SHELLS_NODC,                               fn=print_decomp),
+    "decomp":  dict(fwd="bands",  bands=SHELLS_NODC, tbins=AGGR,                   fn=print_decomp),
     "horizon": dict(fwd="bands",  bands=SHELLS, thresholds=(0.9, 0.8),             fn=print_horizon),
     "blur":    dict(fwd="bands",  bands=SHELLS_NODC, thresholds=(0.9, 0.8),        fn=print_blur),
     "physics": dict(fwd="bands",  bands=PHYS, tbins=FRAMES,                        fn=print_physics),
@@ -467,9 +500,9 @@ def main():
                     help="override band groups for the selected reports; else each "
                          "report's banked default.")
     ap.add_argument("--time-bins", default=None,
-                    help="override frame windows for error/amp/physics as inclusive "
-                         f"field-frame indices, or '{FRAMES}' for one column per frame; "
-                         "else each report's default.")
+                    help="override frame windows for error/amp/decomp/physics as inclusive "
+                         f"field-frame indices, '{FRAMES}' for one column per frame, or "
+                         f"'{AGGR}' for the all-frame column alone; else each report's default.")
     ap.add_argument("--thresholds", default=None,
                     help="override horizon/blur thresholds, e.g. '0.9,0.8'; shared by "
                          "both so the corr and gamma horizons stay comparable.")
@@ -537,8 +570,7 @@ def main():
             continue
         spec = REPORTS[r]
         bands = _resolve_bands(spec.get("bands"), args.bands, n_bands)
-        tb = args.time_bins or spec.get("tbins") or "0-64"
-        tbins = ([(t, t) for t in range(T_eff)] if tb == FRAMES else _parse_groups(tb))
+        tbins = _resolve_tbins(args.time_bins or spec.get("tbins") or "0-64", T_eff)
         thr = _parse_floats(args.thresholds) if args.thresholds else spec.get("thresholds")
         spec["fn"](cache, T_eff=T_eff, bands=bands, time_bins=tbins,
                    thresholds=thr, late=args.late, regime=regime)

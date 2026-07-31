@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 import torch
 
+from msc.tta import eval as ev
 from msc.tta import report
 from msc.tta.setup import Regime
 
@@ -242,6 +243,53 @@ def test_print_horizon_and_print_blur_read_distinct_curves(capsys):
     assert "3.0 [3.0,3.0] cens 2/2" in blur_row
 
 
+def test_decomp_default_stays_time_pooled(monkeypatch, capsys):
+    """decomp gained band x time resolution, but its registry default must still
+    print one all-frame column per quantity, holding the numbers it printed when
+    it could not slice frames at all. Driven through main() so the registry's
+    tbins default and the dispatcher path are pinned too, not just the printer."""
+    bc = _fake_bands_cache()
+    g = bc["bands"]
+    monkeypatch.setattr(report.ev, "forward_bands",
+                        lambda model, dataset, device, **kw: g)
+    monkeypatch.setattr(report.setup, "load_model",
+                        lambda run_id, device: (None, _fake_cfg()))
+    monkeypatch.setattr(report.setup, "build_dataset",
+                        lambda cfg, split: _FakeDataset())
+    monkeypatch.setattr("sys.argv", ["report.py", "--run-id", "fake", "--reports", "decomp"])
+
+    report.main()
+
+    out = capsys.readouterr().out
+    for k in (1, 2):
+        b = slice(k, k + 1)
+        pooled = [ev.rel_l2(g["err_pt"], g["gt_pt"], bands=b),
+                  ev.corr_pooled(g["pred_pt"], g["gt_pt"], g["err_pt"], bands=b),
+                  ev.amp_ratio(g["pred_pt"], g["gt_pt"], bands=b)]
+        rows = [l.split() for l in out.splitlines() if l.startswith(f"k{k}-{k}")]
+        assert rows == [[f"k{k}-{k}", f"{v:.4f}"] for v in pooled]
+
+
+def test_decomp_frame_windows_reach_the_metric_calls(capsys):
+    """Two disjoint windows over hand-built power arrays whose pred energy and
+    error both jump at frame 2: rho and gamma must differ per window and differ
+    again from the aggregate, which a printer that swallowed `frames` could not
+    produce. Values are the pooled definitions, e.g. gamma_late = sqrt(8/2) = 2."""
+    pred_pt = np.array([[[1.0, 1.0, 4.0, 4.0]]])
+    gt_pt = np.ones((1, 1, 4))
+    err_pt = np.array([[[0.0, 0.0, 2.0, 2.0]]])
+    cache = {"bands": {"pred_pt": pred_pt, "gt_pt": gt_pt, "err_pt": err_pt}}
+
+    report.print_decomp(cache, bands=[(0, 0)], time_bins=[(0, 1), (2, 3)])
+
+    out = capsys.readouterr().out
+    rel_row, rho_row, gamma_row = [l.split() for l in out.splitlines() if l.startswith("k0-0")]
+    assert "rel_l2^2 = (1 - rho^2) + (gamma - rho)^2" in out
+    assert rel_row == ["k0-0", "0.0000", "1.4142", "1.0000"]
+    assert rho_row == ["k0-0", "1.0000", "0.7500", "0.7906"]
+    assert gamma_row == ["k0-0", "1.0000", "2.0000", "1.5811"]
+
+
 def test_printers_run_without_crashing(capsys):
     """Executes each printer body once on tiny fake cache arrays — the gating
     tests stub the printers, so this is the only coverage of the bodies."""
@@ -251,7 +299,7 @@ def test_printers_run_without_crashing(capsys):
     tbins = [(0, 1), (3, 4)]
     report.print_error(bc, bands=bands, time_bins=tbins)
     report.print_amp(bc, bands=bands, time_bins=tbins)
-    report.print_decomp(bc, bands=bands)
+    report.print_decomp(bc, bands=bands, time_bins=tbins)
     report.print_horizon(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
     report.print_blur(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
     report.print_physics(bc, bands=bands, time_bins=tbins, regime=Regime(100, 100))
