@@ -21,6 +21,10 @@ SHELLS_NODC = "shells1"
 PHYS = "phys"
 FRAMES = "frames"          # tbins sentinel: one column per field frame, 0..T_eff-1
 AGGR = "aggr"              # tbins sentinel: no explicit window, only the aggregate column
+BANDS_L2 = "1-4,5-7,8-16,17-32,33-64"
+# k1-4 forced + energy-containing, k5-7 represented but freely cascading, split there
+# because pooling is energy-weighted: merged k0-7 reports its halves' 40/5-frame rho<0.95
+# horizons as 27. k0 dropped (DC of a zero-mean field). k8 up: outside n_modes=[8,8,8].
 F_RMS = 4.0 / 2.0**0.5
 STENCIL_NOTE = ("res_gt is the centred stencil's own truncation error, not physics, and grows "
                 "with k and t; where the ratio approaches 1 the violation is at that floor and "
@@ -241,8 +245,9 @@ def print_decomp(cache, *, bands, time_bins, **_):
 
     Args:
       cache: holds "bands" = forward_bands output.
-      bands: (lo, hi) band groups (rows); defaults per-shell from k1 (k0/DC
-        excluded: its gamma is a ratio of ~1e-10 zero-mean noise floors). USED.
+      bands: (lo, hi) band groups (rows); defaults to BANDS_L2. Pass "shells1"
+        for the per-shell view (k0/DC excluded: its gamma is a ratio of ~1e-10
+        zero-mean noise floors). USED.
       time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column;
         defaults to the aggr column alone. USED.
       thresholds / T_eff / late: not consumed by this report.
@@ -479,9 +484,9 @@ def print_physics(cache, *, bands, time_bins, regime, **_):
 
 
 REPORTS = {
-    "error":   dict(fwd="bands",  bands="0-7,8-16,17-32,33-64", tbins="1-8,57-64", fn=print_error),
-    "amp":     dict(fwd="bands",  bands="0-7,8-16,17-32,33-64", tbins="1-8,57-64", fn=print_amp),
-    "decomp":  dict(fwd="bands",  bands=SHELLS_NODC, tbins=AGGR,                   fn=print_decomp),
+    "error":   dict(fwd="bands",  bands=BANDS_L2, tbins="1-8,57-64",               fn=print_error),
+    "amp":     dict(fwd="bands",  bands=BANDS_L2, tbins="1-8,57-64",               fn=print_amp),
+    "decomp":  dict(fwd="bands",  bands=BANDS_L2, tbins=AGGR,                      fn=print_decomp),
     "horizon": dict(fwd="bands",  bands=SHELLS, thresholds=(0.9, 0.8),             fn=print_horizon),
     "blur":    dict(fwd="bands",  bands=SHELLS_NODC, thresholds=(0.9, 0.8),        fn=print_blur),
     "physics": dict(fwd="bands",  bands=PHYS, tbins=FRAMES,                        fn=print_physics),
