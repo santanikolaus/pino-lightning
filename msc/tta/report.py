@@ -22,6 +22,10 @@ PHYS = "phys"
 FRAMES = "frames"          # tbins sentinel: one column per field frame, 0..T_eff-1
 AGGR = "aggr"              # tbins sentinel: no explicit window, only the aggregate column
 BANDS_L2 = "1-4,5-7,8-16,17-32,33-64"
+TBINS_L2 = ("0-0,1-1,2-2,3-3,4-4,6-6,8-8,12-12,16-16,24-24,32-32,40-40,48-48,56-56")
+# single frames on a widening ladder: the phase horizon is short and the amplitude
+# headroom is spent by ~t8, so early lead times need one column each; an early/late
+# pair averages the cutoff away.
 # k1-4 forced + energy-containing, k5-7 represented but freely cascading, split there
 # because pooling is energy-weighted: merged k0-7 reports its halves' 40/5-frame rho<0.95
 # horizons as 27. k0 dropped (DC of a zero-mean field). k8 up: outside n_modes=[8,8,8].
@@ -484,9 +488,9 @@ def print_physics(cache, *, bands, time_bins, regime, **_):
 
 
 REPORTS = {
-    "error":   dict(fwd="bands",  bands=BANDS_L2, tbins="1-8,57-64",               fn=print_error),
-    "amp":     dict(fwd="bands",  bands=BANDS_L2, tbins="1-8,57-64",               fn=print_amp),
-    "decomp":  dict(fwd="bands",  bands=BANDS_L2, tbins=AGGR,                      fn=print_decomp),
+    "error":   dict(fwd="bands",  bands=BANDS_L2, tbins=TBINS_L2,                  fn=print_error),
+    "amp":     dict(fwd="bands",  bands=BANDS_L2, tbins=TBINS_L2,                  fn=print_amp),
+    "decomp":  dict(fwd="bands",  bands=BANDS_L2, tbins=TBINS_L2,                  fn=print_decomp),
     "horizon": dict(fwd="bands",  bands=SHELLS, thresholds=(0.9, 0.8),             fn=print_horizon),
     "blur":    dict(fwd="bands",  bands=SHELLS_NODC, thresholds=(0.9, 0.8),        fn=print_blur),
     "physics": dict(fwd="bands",  bands=PHYS, tbins=FRAMES,                        fn=print_physics),

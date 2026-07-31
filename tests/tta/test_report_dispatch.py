@@ -244,11 +244,11 @@ def test_print_horizon_and_print_blur_read_distinct_curves(capsys):
 
 
 def test_decomp_default_stays_time_pooled(monkeypatch, capsys):
-    """decomp gained band x time resolution, but its registry default must still
-    print one all-frame column per quantity, holding the numbers it printed when
-    it could not slice frames at all. Driven through main() so the registry's
-    tbins default and the dispatcher path are pinned too, not just the printer."""
-    bc = _fake_bands_cache(n_bands=65)
+    """Whatever frame ladder the registry defaults to, the trailing aggregate column
+    must still hold the all-frame pooled value each quantity had before decomp could
+    slice frames. Driven through main() so the registry defaults and the dispatcher
+    path are pinned too, not just the printer."""
+    bc = _fake_bands_cache(n_bands=65, T=65)
     g = bc["bands"]
     monkeypatch.setattr(report.ev, "forward_bands",
                         lambda model, dataset, device, **kw: g)
@@ -261,13 +261,15 @@ def test_decomp_default_stays_time_pooled(monkeypatch, capsys):
     report.main()
 
     out = capsys.readouterr().out
+    n_cols = len(report._parse_groups(report.TBINS_L2)) + 1
     for lo, hi in ((1, 4), (5, 7)):
         b = slice(lo, hi + 1)
         pooled = [ev.rel_l2(g["err_pt"], g["gt_pt"], bands=b),
                   ev.corr_pooled(g["pred_pt"], g["gt_pt"], g["err_pt"], bands=b),
                   ev.amp_ratio(g["pred_pt"], g["gt_pt"], bands=b)]
         rows = [l.split() for l in out.splitlines() if l.startswith(f"k{lo}-{hi}")]
-        assert rows == [[f"k{lo}-{hi}", f"{v:.4f}"] for v in pooled]
+        assert [len(r) for r in rows] == [1 + n_cols] * 3
+        assert [r[-1] for r in rows] == [f"{v:.4f}" for v in pooled]
 
 
 def test_decomp_frame_windows_reach_the_metric_calls(capsys):
