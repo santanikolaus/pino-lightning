@@ -3,7 +3,7 @@
 Each report (error / amp / decomp / w1 / cov / horizon / blur / physics) is a self-describing entry
 in REPORTS: the forward it consumes, its banked-default slicing (from
 msc/tta/docs/tta-thesis.md), and its printer. --reports selects a subset;
---bands/--time-bins/--thresholds/--late override the defaults for the selected
+--bands/--time-bins/--thresholds override the defaults for the selected
 set, else each report falls back to its own default. Forwards run only when a
 selected report needs them.
 """
@@ -134,6 +134,29 @@ def _band_time_header(time_bins: list) -> str:
             + f"{'aggr':>12}")
 
 
+def time_table(rows: list, time_bins: list, banner: "str | None" = None) -> None:
+    """Prints one named-series x time-window table, with a trailing all-frame column.
+
+    The band-free counterpart of band_time_table, for the field metrics: W1 and
+    covRMSE have no band axis, so the rows are the metric and its GT-vs-GT floor.
+
+    Args:
+      rows: (label, fn) pairs; fn takes a frame slice and returns the cell value.
+      time_bins: list of (lo, hi) inclusive frame windows, one column each.
+      banner: optional line printed above the table.
+    """
+    if banner:
+        print(banner)
+    header = (f"{'series':<14}"
+              + "".join(f"{f't{lo}' if lo == hi else f't{lo}-{hi}':>12}" for lo, hi in time_bins)
+              + f"{'aggr':>12}")
+    print(header)
+    print("-" * len(header))
+    wins = [slice(lo, hi + 1) for lo, hi in time_bins] + [slice(None)]
+    for label, fn in rows:
+        print(f"{label:<14}" + "".join(f"{fn(w):>12.4f}" for w in wins))
+
+
 def horizon_rows(curve, bands: list, T: int, thresholds: list) -> list:
     """Builds per-band horizon table rows from any per-sample curve.
 
@@ -201,7 +224,7 @@ def print_error(cache, *, bands, time_bins, **_):
       cache: holds "bands" = forward_bands output.
       bands: (lo, hi) band groups (rows). USED.
       time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
-      thresholds / T_eff / late: not consumed by this report.
+      thresholds / T_eff: not consumed by this report.
     """
     g = cache["bands"]
     err_pt, gt_pt = g["err_pt"], g["gt_pt"]
@@ -224,7 +247,7 @@ def print_amp(cache, *, bands, time_bins, **_):
       cache: holds "bands" = forward_bands output.
       bands: (lo, hi) band groups (rows). USED.
       time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
-      thresholds / T_eff / late: not consumed by this report.
+      thresholds / T_eff: not consumed by this report.
     """
     g = cache["bands"]
     pred_pt, gt_pt = g["pred_pt"], g["gt_pt"]
@@ -253,7 +276,7 @@ def print_decomp(cache, *, bands, time_bins, **_):
         zero-mean noise floors). USED.
       time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column;
         defaults to the aggr column alone. USED.
-      thresholds / T_eff / late: not consumed by this report.
+      thresholds / T_eff: not consumed by this report.
     """
     g = cache["bands"]
     pred_pt, gt_pt, err_pt = g["pred_pt"], g["gt_pt"], g["err_pt"]
@@ -277,48 +300,51 @@ def print_decomp(cache, *, bands, time_bins, **_):
         bands, time_bins, banner="\ngamma = sqrt(E_pred/E_gt) (amplitude term)")
 
 
-def print_w1(cache, *, T_eff, late, **_):
-    """Prints the W1 value-distribution table (all-frames + trailing-late window).
+def _field_rows(metric, cache, label: str):
+    """Builds the (metric, GT-vs-GT floor) row pair for a field metric.
 
     Args:
+      metric: callable(pred, gt, frames=slice) -> float.
       cache: holds "fields" = (pred_f, gt_f) from forward_fields.
-      T_eff: dataset frame count; the late window is its last `late` frames. USED.
-      late: trailing-window length (CLI --late). USED.
-      bands / time_bins / thresholds: not consumed by this report.
+      label: row name for the metric itself, so two field tables stay
+        distinguishable when copied out together.
+
+    Returns:
+      Two (label, fn) pairs for time_table; the floor splits the GT set in half,
+      so it is the finite-sample noise level at half the sample count per side.
     """
     pred_f, gt_f = cache["fields"]
     n = pred_f.shape[0]
-    win = slice(max(0, T_eff - late), None)
-    floor_all = ev.w1_values(gt_f[:n // 2], gt_f[n // 2:])
-    floor_late = ev.w1_values(gt_f[:n // 2], gt_f[n // 2:], frames=win)
-    print("\nW1(vorticity values) /std(gt); GT-vs-GT floor per window "
-          "(companion column, not a paper Table-1 reproduction)")
-    print(f"{'window':<14}{'W1':>12}{'floor':>12}")
-    print(f"{'all frames':<14}{ev.w1_values(pred_f, gt_f):>12.4f}{floor_all:>12.4f}")
-    print(f"{f'late (last{late})':<14}{ev.w1_values(pred_f, gt_f, frames=win):>12.4f}"
-          f"{floor_late:>12.4f}")
+    return [(label, lambda f: metric(pred_f, gt_f, frames=f)),
+            ("GT-GT floor", lambda f: metric(gt_f[:n // 2], gt_f[n // 2:], frames=f))]
 
 
-def print_cov(cache, *, T_eff, late, **_):
-    """Prints the covRMSE anisotropy table (all-frames + trailing-late window).
+def print_w1(cache, *, time_bins, **_):
+    """Prints the W1 value-distribution table over the frame windows.
 
     Args:
       cache: holds "fields" = (pred_f, gt_f) from forward_fields.
-      T_eff: dataset frame count; the late window is its last `late` frames. USED.
-      late: trailing-window length (CLI --late). USED.
-      bands / time_bins / thresholds: not consumed by this report.
+      time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
+      bands / thresholds / T_eff: not consumed by this report.
     """
-    pred_f, gt_f = cache["fields"]
-    n = pred_f.shape[0]
-    win = slice(max(0, T_eff - late), None)
-    floor_all = ev.cov_rmse(gt_f[:n // 2], gt_f[n // 2:])
-    floor_late = ev.cov_rmse(gt_f[:n // 2], gt_f[n // 2:], frames=win)
-    print("\ncovRMSE(fixed-x-slice cov along forced y) relative Frobenius; GT-vs-GT "
-          "floor per window (companion column, not a paper Table-1 reproduction)")
-    print(f"{'window':<14}{'covRMSE':>12}{'floor':>12}")
-    print(f"{'all frames':<14}{ev.cov_rmse(pred_f, gt_f):>12.4f}{floor_all:>12.4f}")
-    print(f"{f'late (last{late})':<14}{ev.cov_rmse(pred_f, gt_f, frames=win):>12.4f}"
-          f"{floor_late:>12.4f}")
+    time_table(_field_rows(ev.w1_values, cache, "W1"), time_bins,
+               banner="\nW1(vorticity values) /std(gt); pooled over pixels, blind to "
+                      "arrangement. W1 is convex, so the aggr column is a lower bound on "
+                      "the per-frame values, not their mean")
+
+
+def print_cov(cache, *, time_bins, **_):
+    """Prints the covRMSE anisotropy table over the frame windows.
+
+    Args:
+      cache: holds "fields" = (pred_f, gt_f) from forward_fields.
+      time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
+      bands / thresholds / T_eff: not consumed by this report.
+    """
+    time_table(_field_rows(ev.cov_rmse, cache, "covRMSE"), time_bins,
+               banner="\ncovRMSE(fixed-x-slice cov along forced y) relative Frobenius. A "
+                      "single-frame column estimates a SxS covariance from N*S rows, so "
+                      "read it only where the floor moved less than the value")
 
 
 def print_horizon(cache, *, bands, thresholds, T_eff, **_):
@@ -329,7 +355,7 @@ def print_horizon(cache, *, bands, thresholds, T_eff, **_):
       bands: (lo, hi) band groups (rows); defaults per-shell. USED.
       thresholds: correlation thresholds, one column pair each. USED.
       T_eff: window length; censoring value for never-decorrelated samples. USED.
-      time_bins / late: not consumed by this report.
+      time_bins: not consumed by this report.
     """
     g = cache["bands"]
     pred_pt, gt_pt, err_pt = g["pred_pt"], g["gt_pt"], g["err_pt"]
@@ -358,7 +384,7 @@ def print_blur(cache, *, bands, thresholds, T_eff, **_):
         USED.
       thresholds: amplitude-ratio thresholds, one column pair each. USED.
       T_eff: window length; censoring value for samples that never drop. USED.
-      time_bins / late: not consumed by this report.
+      time_bins: not consumed by this report.
     """
     g = cache["bands"]
     pred_pt, gt_pt = g["pred_pt"], g["gt_pt"]
@@ -443,7 +469,7 @@ def print_physics(cache, *, bands, time_bins, regime, **_):
       bands: (lo, hi) band groups (rows); defaults to the PHYS set. USED.
       time_bins: (lo, hi) field-frame windows (columns), plus a full-range aggr. USED.
       regime: the run's Reynolds pair; picks which residual array each table reads. USED.
-      thresholds / T_eff / late: not consumed by this report.
+      thresholds / T_eff: not consumed by this report.
     """
     g = cache["bands"]
     res_pred, res_gt = g["pde_res_pred_pt"], g["pde_res_gt_pt"]
@@ -493,8 +519,8 @@ REPORTS = {
     "horizon": dict(fwd="bands",  bands=SHELLS, thresholds=(0.9, 0.8),             fn=print_horizon),
     "blur":    dict(fwd="bands",  bands=SHELLS_NODC, thresholds=(0.9, 0.8),        fn=print_blur),
     "physics": dict(fwd="bands",  bands=PHYS, tbins=FRAMES,                        fn=print_physics),
-    "w1":      dict(fwd="fields",                                                  fn=print_w1),
-    "cov":     dict(fwd="fields",                                                  fn=print_cov),
+    "w1":      dict(fwd="fields", tbins=TBINS_L2,                                  fn=print_w1),
+    "cov":     dict(fwd="fields", tbins=TBINS_L2,                                  fn=print_cov),
 }
 ORDER = ["error", "amp", "decomp", "w1", "cov", "horizon", "blur", "physics"]
 
@@ -508,14 +534,12 @@ def main():
                     help="override band groups for the selected reports; else each "
                          "report's banked default.")
     ap.add_argument("--time-bins", default=None,
-                    help="override frame windows for error/amp/decomp/physics as inclusive "
+                    help="override frame windows for error/amp/decomp/w1/cov/physics as inclusive "
                          f"field-frame indices, '{FRAMES}' for one column per frame, or "
                          f"'{AGGR}' for the all-frame column alone; else each report's default.")
     ap.add_argument("--thresholds", default=None,
                     help="override horizon/blur thresholds, e.g. '0.9,0.8'; shared by "
                          "both so the corr and gamma horizons stay comparable.")
-    ap.add_argument("--late", type=int, default=8,
-                    help="trailing-window length (frames) for the w1/cov late row.")
     ap.add_argument("--op-re", type=int, default=None,
                     help="Re for the operator's own residual; defaults to the run's training Re.")
     ap.add_argument("--test-re", type=int, default=None,
@@ -581,7 +605,7 @@ def main():
         tbins = _resolve_tbins(args.time_bins or spec.get("tbins") or "0-64", T_eff)
         thr = _parse_floats(args.thresholds) if args.thresholds else spec.get("thresholds")
         spec["fn"](cache, T_eff=T_eff, bands=bands, time_bins=tbins,
-                   thresholds=thr, late=args.late, regime=regime)
+                   thresholds=thr, regime=regime)
 
 
 if __name__ == "__main__":

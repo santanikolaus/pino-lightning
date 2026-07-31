@@ -305,7 +305,26 @@ def test_printers_run_without_crashing(capsys):
     report.print_horizon(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
     report.print_blur(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
     report.print_physics(bc, bands=bands, time_bins=tbins, regime=Regime(100, 100))
-    report.print_w1(fc, T_eff=5, late=2)
-    report.print_cov(fc, T_eff=5, late=2)
+    report.print_w1(fc, time_bins=tbins)
+    report.print_cov(fc, time_bins=tbins)
     assert capsys.readouterr().out
+
+
+def test_w1_columns_are_per_window_and_aggr_is_strictly_below_them(capsys):
+    """Pred is shifted +2 on frame 0 and -2 on frame 1, so each frame is a pure
+    translation (W1 = 2) while the pooled pred straddles GT symmetrically (W1 = 1).
+    W1 is convex: pooling can only shrink it. A printer that ignored `frames`
+    would print one identical number in all three columns."""
+    gt = np.tile(np.array([[-1.0, 1.0], [-1.0, 1.0]])[None, :, :, None], (2, 1, 1, 2))
+    pred = gt.copy()
+    pred[..., 0] += 2.0
+    pred[..., 1] -= 2.0
+
+    report.print_w1({"fields": (pred, gt)}, time_bins=[(0, 0), (1, 1)])
+
+    out = capsys.readouterr().out
+    value = [l.split() for l in out.splitlines() if l.startswith("W1 ")][0]
+    floor = [l.split() for l in out.splitlines() if l.startswith("GT-GT")][0]
+    assert value[1:] == ["2.0000", "2.0000", "1.0000"]
+    assert floor[-3:] == ["0.0000"] * 3
 
