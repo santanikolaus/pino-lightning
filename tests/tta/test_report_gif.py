@@ -116,6 +116,19 @@ def test_render_all_writes_gifs(tmp_path):
         assert os.path.getsize(p) > 0
 
 
+def test_render_all_forwards_n_modes_to_the_spectrum_marker(tmp_path, monkeypatch):
+    """The marker is the FNO's representable cutoff; defaulting it to 8 for an
+    n_modes=32 run annotates the one panel that reads mode budget with the wrong k."""
+    seen = {}
+    a = FieldDiagAnimator(_field(8), _field(9), kmax=KMAX)
+    monkeypatch.setattr(a, "error_gif", lambda p, **kw: p)
+    monkeypatch.setattr(a, "swap_gif", lambda p, **kw: p)
+    monkeypatch.setattr(a, "spectrum_gif",
+                        lambda p, **kw: seen.update(kw) or p)
+    a.render_all(str(tmp_path), tag="t", n_modes=32)
+    assert seen["n_modes"] == 32
+
+
 # ---------------------------------------------------------------------------
 # 9. radial spectrum: shape, positivity, Parseval (k=0 excluded)
 # ---------------------------------------------------------------------------

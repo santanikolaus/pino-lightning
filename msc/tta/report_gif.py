@@ -232,13 +232,24 @@ class FieldDiagAnimator:
         plt.close(fig)
         return path
 
-    def render_all(self, outdir, tag="diag", **kw):
-        """Write all three GIFs into outdir; returns (error, swap, spectrum) paths."""
+    def render_all(self, outdir, tag="diag", n_modes: int = 8, **kw):
+        """Writes all three GIFs into outdir.
+
+        Args:
+          outdir: directory to create and write into.
+          tag: filename prefix for the three GIFs.
+          n_modes: the operator's spatial mode budget, marked on the spectrum. Pass
+            the run's own — the default is only right for an n_modes=8 checkpoint.
+          **kw: forwarded to the individual GIF writers (fps, stride, dpi, ...).
+
+        Returns:
+          (error, swap, spectrum) paths.
+        """
         import os
         os.makedirs(outdir, exist_ok=True)
         e = self.error_gif(os.path.join(outdir, f"{tag}_error.gif"), **kw)
         s = self.swap_gif(os.path.join(outdir, f"{tag}_swap.gif"), **kw)
-        sp = self.spectrum_gif(os.path.join(outdir, f"{tag}_spectrum.gif"),
+        sp = self.spectrum_gif(os.path.join(outdir, f"{tag}_spectrum.gif"), n_modes=n_modes,
                                fps=kw.get("fps", 10), stride=kw.get("stride", 1))
         return e, s, sp
 
@@ -305,7 +316,8 @@ def _cli():
     print(f"scales (pass these to a second run at --kmax {args.kmax} to share them):\n"
           f"  --vmax {s['vmax']:.6g} --vmax-diff {s['vmax_diff']:.6g} "
           f"--vmax-swap {s['vmax_swap']:.6g} --ylim {s['ylim'][0]:.6g} {s['ylim'][1]:.6g}")
-    paths = animator.render_all(args.out, tag=tag, stride=args.stride, fps=args.fps)
+    paths = animator.render_all(args.out, tag=tag, n_modes=cfg["model"]["n_modes"][0],
+                                stride=args.stride, fps=args.fps)
     print("wrote:", *paths, sep="\n  ")
 
 
