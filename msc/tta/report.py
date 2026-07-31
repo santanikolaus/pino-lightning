@@ -22,10 +22,9 @@ PHYS = "phys"
 FRAMES = "frames"          # tbins sentinel: one column per field frame, 0..T_eff-1
 AGGR = "aggr"              # tbins sentinel: no explicit window, only the aggregate column
 BANDS_L2 = "1-4,5-7,8-16,17-32,33-64"
-TBINS_L2 = ("0-0,1-1,2-2,3-3,4-4,6-6,8-8,12-12,16-16,24-24,32-32,40-40,48-48,56-56")
-# single frames on a widening ladder: the phase horizon is short and the amplitude
-# headroom is spent by ~t8, so early lead times need one column each; an early/late
-# pair averages the cutoff away.
+TBINS_L2 = "0-0,1-1,2-2,4-4,8-8,12-12,16-16,24-24,48-48,64-64"
+# single frames on a widening ladder, densest where every rho<0.9 crossing lands
+# (t1-t12) and ending on the last frame: an early/late pair averages the cutoff away.
 # k1-4 forced + energy-containing, k5-7 represented but freely cascading, split there
 # because pooling is energy-weighted: merged k0-7 reports its halves' 40/5-frame rho<0.95
 # horizons as 27. k0 dropped (DC of a zero-mean field). k8 up: outside n_modes=[8,8,8].
