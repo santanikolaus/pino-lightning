@@ -62,8 +62,8 @@ def test_fields_only_report_calls_fields_not_bands(recorder, monkeypatch, report
     assert len(recorder["bands"]) == 0
 
 
-@pytest.mark.parametrize("report_name", ["error", "horizon", "blur"],
-                         ids=["error", "horizon", "blur"])
+@pytest.mark.parametrize("report_name", ["decomp", "horizon", "blur"],
+                         ids=["decomp", "horizon", "blur"])
 def test_bands_only_report_calls_bands_not_fields(recorder, monkeypatch, report_name):
     """Mirror of the fields-only case: a bands-only report must not trigger the
     fields forward."""
@@ -78,10 +78,10 @@ def test_bands_only_report_calls_bands_not_fields(recorder, monkeypatch, report_
     "argv,expected",
     [
         (["--reports", "physics"], True),
-        (["--reports", "error"], False),
-        (["--reports", "error", "--save-npz", "x.npz"], True),
+        (["--reports", "decomp"], False),
+        (["--reports", "decomp", "--save-npz", "x.npz"], True),
     ],
-    ids=["physics_needs_them", "error_alone_skips_them", "npz_forces_them"],
+    ids=["physics_needs_them", "decomp_alone_skips_them", "npz_forces_them"],
 )
 def test_residual_passes_are_skipped_only_when_nothing_will_read_them(
         recorder, monkeypatch, tmp_path, argv, expected):
@@ -97,7 +97,7 @@ def test_residual_passes_are_skipped_only_when_nothing_will_read_them(
 
 def test_mixed_reports_call_both_forwards_exactly_once(recorder, monkeypatch):
     monkeypatch.setattr("sys.argv", ["report.py", "--run-id", "fake",
-                                     "--reports", "w1,error"])
+                                     "--reports", "w1,decomp"])
     report.main()
     assert len(recorder["bands"]) == 1
     assert len(recorder["fields"]) == 1
@@ -299,8 +299,6 @@ def test_printers_run_without_crashing(capsys):
     fc = _fake_fields_cache()
     bands = [(0, 0), (1, 2)]
     tbins = [(0, 1), (3, 4)]
-    report.print_error(bc, bands=bands, time_bins=tbins)
-    report.print_amp(bc, bands=bands, time_bins=tbins)
     report.print_decomp(bc, bands=bands, time_bins=tbins)
     report.print_horizon(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
     report.print_blur(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)

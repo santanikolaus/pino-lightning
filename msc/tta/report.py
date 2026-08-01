@@ -1,6 +1,6 @@
 """Per-report band/field eval tables for one checkpoint — binds setup.py + eval.py.
 
-Each report (error / amp / decomp / w1 / cov / horizon / blur / physics) is a self-describing entry
+Each report (decomp / w1 / cov / horizon / blur / physics) is a self-describing entry
 in REPORTS: the forward it consumes, its banked-default slicing (from
 msc/tta/docs/tta-thesis.md), and its printer. --reports selects a subset;
 --bands/--time-bins/--thresholds override the defaults for the selected
@@ -193,7 +193,7 @@ def horizon_rows(curve, bands: list, T: int, thresholds: list) -> list:
 def band_time_table(cell, bands: list, time_bins: list, banner: "str | None" = None) -> None:
     """Prints one band x time-window table: header, rule, a row per band group.
 
-    The shared layout behind the error/amp/decomp/physics tables; only the cell text varies.
+    The shared layout behind the decomp/physics tables; only the cell text varies.
     The last column always aggregates over every frame.
 
     Args:
@@ -217,57 +217,14 @@ def band_time_table(cell, bands: list, time_bins: list, banner: "str | None" = N
         print(row + cell(b, None))
 
 
-def print_error(cache, *, bands, time_bins, **_):
-    """Prints the band x time-window pooled relative-L2 error table.
-
-    Args:
-      cache: holds "bands" = forward_bands output.
-      bands: (lo, hi) band groups (rows). USED.
-      time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
-      thresholds / T_eff: not consumed by this report.
-    """
-    g = cache["bands"]
-    err_pt, gt_pt = g["err_pt"], g["gt_pt"]
-
-    def cell(b, win):
-        f = slice(None) if win is None else slice(win[0], win[1] + 1)
-        return f"{ev.rel_l2(err_pt, gt_pt, bands=b, frames=f):>12.4f}"
-
-    band_time_table(cell, bands, time_bins)
-
-
-def print_amp(cache, *, bands, time_bins, **_):
-    """Prints the amplitude-ratio gamma table (band x time-window).
-
-    gamma = sqrt(E_pred/E_gt): 1 = GT energy, <1 deficit/blur, >1 excess. The
-    coarse-split band default is a chosen view; the journal also reports gamma
-    per-shell (2026-07-10 cont.2) — override --bands "0-0,1-1,..." for that.
-
-    Args:
-      cache: holds "bands" = forward_bands output.
-      bands: (lo, hi) band groups (rows). USED.
-      time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
-      thresholds / T_eff: not consumed by this report.
-    """
-    g = cache["bands"]
-    pred_pt, gt_pt = g["pred_pt"], g["gt_pt"]
-
-    def cell(b, win):
-        f = slice(None) if win is None else slice(win[0], win[1] + 1)
-        return f"{ev.amp_ratio(pred_pt, gt_pt, bands=b, frames=f):>12.4f}"
-
-    band_time_table(cell, bands, time_bins,
-                    banner="\namplitude ratio gamma = sqrt(E_pred/E_gt), pooled per band "
-                           "x window (1 = GT energy, <1 deficit/blur, >1 excess)")
-
-
 def print_decomp(cache, *, bands, time_bins, **_):
     """Prints the amplitude/phase decomposition rel_l2^2 = (1-rho^2)+(gamma-rho)^2.
 
-    One band x time-window table per quantity. The three are pooled the same way
-    (sum first, then ratio), so the identity is exact in every cell, whatever the
-    band group and frame window — the split is read per cell, never across cells.
-    The default is a single all-frame aggregate column.
+    One band x time-window table per quantity, and the sole view of rel_l2 and
+    gamma: the three are pooled the same way (sum first, then ratio), so the
+    identity is exact in every cell, whatever the band group and frame window.
+    Reading a leg from a separately-sliced report would let a mismatch hide
+    inside the identity. The split is read per cell, never across cells.
 
     Args:
       cache: holds "bands" = forward_bands output.
@@ -275,7 +232,7 @@ def print_decomp(cache, *, bands, time_bins, **_):
         for the per-shell view (k0/DC excluded: its gamma is a ratio of ~1e-10
         zero-mean noise floors). USED.
       time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column;
-        defaults to the aggr column alone. USED.
+        defaults to TBINS_L2. USED.
       thresholds / T_eff: not consumed by this report.
     """
     g = cache["bands"]
@@ -342,6 +299,9 @@ def print_cov(cache, *, time_bins, **_):
       time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
       bands / thresholds / T_eff: not consumed by this report.
     """
+    # TODO floor mixes trajectories, so it reads realisation spread, not noise — split
+    # within one trajectory instead. Low priority: covRMSE tracks |1-gamma^2| at corr
+    # 0.997, so it is probably gamma in disguise. Measure that before fixing the floor.
     time_table(_field_rows(ev.cov_rmse, cache, "covRMSE"), time_bins,
                banner="\ncovRMSE(fixed-x-slice cov along forced y) relative Frobenius. A "
                       "single-frame column estimates a SxS covariance from N*S rows, so "
@@ -514,8 +474,6 @@ def print_physics(cache, *, bands, time_bins, regime, **_):
 
 
 REPORTS = {
-    "error":   dict(fwd="bands",  bands=BANDS_L2, tbins=TBINS_L2,                  fn=print_error),
-    "amp":     dict(fwd="bands",  bands=BANDS_L2, tbins=TBINS_L2,                  fn=print_amp),
     "decomp":  dict(fwd="bands",  bands=BANDS_L2, tbins=TBINS_L2,                  fn=print_decomp),
     "horizon": dict(fwd="bands",  bands=SHELLS, thresholds=(0.9, 0.8),             fn=print_horizon),
     "blur":    dict(fwd="bands",  bands=SHELLS_NODC, thresholds=(0.9, 0.8),        fn=print_blur),
@@ -523,7 +481,7 @@ REPORTS = {
     "w1":      dict(fwd="fields", tbins=TBINS_L2,                                  fn=print_w1),
     "cov":     dict(fwd="fields", tbins=TBINS_L2,                                  fn=print_cov),
 }
-ORDER = ["error", "amp", "decomp", "w1", "cov", "horizon", "blur", "physics"]
+ORDER = ["decomp", "w1", "cov", "horizon", "blur", "physics"]
 
 
 def main():
@@ -535,7 +493,7 @@ def main():
                     help="override band groups for the selected reports; else each "
                          "report's banked default.")
     ap.add_argument("--time-bins", default=None,
-                    help="override frame windows for error/amp/decomp/w1/cov/physics as inclusive "
+                    help="override frame windows for decomp/w1/cov/physics as inclusive "
                          f"field-frame indices, '{FRAMES}' for one column per frame, or "
                          f"'{AGGR}' for the all-frame column alone; else each report's default.")
     ap.add_argument("--thresholds", default=None,
