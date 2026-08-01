@@ -1,0 +1,28 @@
+# @package _global_
+# UNet3D + spatial spectral mixer on Re=100 — architecture contrast to kf_pino_re100_pretrain
+# (75prctl5), and the source model for the Re100->Re500 cross row. Model block only;
+# everything else inherits from configs/train_kf.yaml, identical to kf_unet_re500_pretrain
+# except data_path and loss.re.
+
+defaults:
+  - override /model: unet_kf
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re100_T128_res128_part0.npy
+
+model:
+  base_channels: 64
+  depth: 3
+  grad_checkpoint: false  # unet_kf defaults true; 128² fits un-checkpointed and is ~25% faster
+  temporal_mixer: spatial
+  temporal_mixer_modes: 8
+  spatial_mixer_hidden: 64
+
+loss:
+  re: 100
+
+save_final_ckpt: true
+
+logger:
+  wandb:
+    name: unet-re100-pretrain

@@ -329,8 +329,9 @@ def print_w1(cache, *, time_bins, **_):
     """
     time_table(_field_rows(ev.w1_values, cache, "W1"), time_bins,
                banner="\nW1(vorticity values) /std(gt); pooled over pixels, blind to "
-                      "arrangement. W1 is convex, so the aggr column is a lower bound on "
-                      "the per-frame values, not their mean")
+                      "arrangement. aggr pools every frame into one distribution, so it is "
+                      "not the mean of the columns. The floor pairs GT halves from DIFFERENT "
+                      "trajectories, so a model tracking its own can score below it early")
 
 
 def print_cov(cache, *, time_bins, **_):

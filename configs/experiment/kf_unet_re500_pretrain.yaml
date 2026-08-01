@@ -1,0 +1,29 @@
+# @package _global_
+# UNet3D + spatial spectral mixer on Re=500 — architecture contrast to kf_pino_re500_pretrain
+# (nrow6j9l). Only the model block differs: data file, 240/30 split, fp32, per-epoch
+# validation, loss weights, schedule and the msc-base project all inherit from
+# configs/train_kf.yaml, so any diff against the FNO baseline is architecture.
+# 24.5M params vs the FNO's 21.1M (+16%) — declared asymmetry, not tuned away.
+
+defaults:
+  - override /model: unet_kf
+
+data:
+  data_path: /system/user/studentwork/wehofer/data/ns/NS_fine_Re500_T128_res128_part0.npy
+
+model:
+  base_channels: 64
+  depth: 3
+  grad_checkpoint: false  # unet_kf defaults true; 128² fits un-checkpointed and is ~25% faster
+  temporal_mixer: spatial
+  temporal_mixer_modes: 8
+  spatial_mixer_hidden: 64
+
+loss:
+  re: 500
+
+save_final_ckpt: true
+
+logger:
+  wandb:
+    name: unet-re500-pretrain
