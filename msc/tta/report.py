@@ -277,27 +277,35 @@ def _field_rows(metric, cache, label: str):
 
 
 def print_w1(cache, *, time_bins, **_):
-    """Prints the W1 value-distribution table over the frame windows.
+    """Prints the per-trajectory W1 value-distribution table over the frame windows.
 
-    Four rows: W1 and its GT-GT floor, then the same pair after rescaling the
-    prediction to GT's width. The two metrics share a scale, so the gap between
-    them is the width term gamma already reports and the lower pair is what only
-    a distribution metric can see.
+    Three rows, each a mean over trajectories: W1, W1 after matching the
+    prediction's width to GT's, and the lag null. Paired -- every prediction is
+    scored against its own GT -- so unlike the pooled form these numbers are not
+    comparable to anything banked before 2026-08-01.
 
     Args:
       cache: holds "fields" = (pred_f, gt_f) from forward_fields.
       time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
       bands / thresholds / T_eff: not consumed by this report.
     """
-    time_table(_field_rows(ev.w1_values, cache, "W1")
-               + _field_rows(ev.w1_width_corrected, cache, "W1 width-corr"), time_bins,
-               banner="\nW1(vorticity values) /std(gt); pooled over pixels, blind to "
-                      "arrangement. aggr pools every frame into one distribution, so it is "
-                      "not the mean of the columns. Each floor pairs GT halves from DIFFERENT "
-                      "trajectories, so a model tracking its own can score below it early. "
-                      "width-corr rescales pred to GT's width first: what is left is the "
-                      "distribution mismatch gamma cannot express, and W1 minus it is the "
-                      "width term gamma already reports")
+    pred_f, gt_f = cache["fields"]
+    rows = [("W1", lambda f: np.nanmean(ev.w1_curve(pred_f, gt_f, frames=f))),
+            ("W1 width-corr",
+             lambda f: np.nanmean(ev.w1_curve(pred_f, gt_f, frames=f,
+                                              metric=ev.w1_width_corrected))),
+            ("lag-32 null", lambda f: np.nanmean(ev.w1_lag_floor(gt_f, frames=f)))]
+    time_table(rows, time_bins,
+               banner="\nW1(vorticity values) /std(gt), per trajectory then averaged; pooled "
+                      "over pixels, blind to arrangement. W1 is convex, so the pooled form is "
+                      "<= these means -- do not quote them against each other. width-corr "
+                      "rescales pred to GT's width first: what is left is the distribution "
+                      "mismatch gamma cannot express, and W1 minus it is the width term gamma "
+                      "already reports. The null is the same window of the SAME trajectory 32 "
+                      "frames away: two draws from one distribution at equal pixel count, so "
+                      "it carries no chain-to-chain spread. It is nan at aggr, where the window "
+                      "is all 65 frames and no disjoint shift of it exists -- so the column "
+                      "everyone quotes has a signal and NO null; read the frame columns")
 
 
 def print_cov(cache, *, time_bins, **_):
