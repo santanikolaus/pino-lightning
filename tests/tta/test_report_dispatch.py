@@ -322,7 +322,7 @@ def test_w1_columns_are_per_window_and_aggr_is_strictly_below_them(capsys):
 
     out = capsys.readouterr().out
     value = [l.split() for l in out.splitlines() if l.startswith("W1 ")][0]
-    floor = [l.split() for l in out.splitlines() if l.startswith("GT-GT")][0]
+    null = [l.split() for l in out.splitlines() if l.startswith("lag-32")][0]
     assert value[1:] == ["2.0000", "2.0000", "1.0000"]
-    assert floor[-3:] == ["0.0000"] * 3
+    assert null[-3:] == ["nan"] * 3
 

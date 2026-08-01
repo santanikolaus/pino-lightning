@@ -15,12 +15,31 @@ degenerate and returns a finite nonzero value, the exact scale-invariance in
 pred that replaces the retired ratio form's gamma-dependent blowup, frames=
 slicing, and that any zero-variance prediction (all-zero or a nonzero
 constant collapse) returns nan rather than a crash or 0.
+
+w1_curve: covers the property that justifies its existence over the pooled
+w1_values -- a correct pairing reads ~0 while a permuted pairing reads large,
+in the SAME test where pooled w1_values is shown to give the identical answer
+for both (permuting trajectories cannot change a flattened multiset); the
+convexity inequality pooled <= mean(curve), strict for heterogeneous
+trajectories and an exact tie for identical ones; elementwise agreement with
+the per-trajectory Gaussian closed form (not just the mean, which a
+slot-shuffling bug could still pass); that metric=w1_width_corrected is
+actually applied, not silently ignored; and that frames= reaches the
+per-trajectory call under a fixture where both the window and the trajectory
+identity independently change the answer.
+
+w1_lag_floor: covers output shape, the forward/backward fallback (a window
+near the end of T that would overrun forwards must fall back to backwards and
+stay finite), the all-nan case when no disjoint shift fits, and that it reads
+as a null (small, same-trajectory-vs-itself) rather than a realisation-spread
+measurement (large, across different trajectories) on a fixture where both
+are computable from the same data.
 CPU-only, synthetic numpy data only.
 """
 import numpy as np
 import pytest
 
-from msc.tta.eval import w1_values, w1_width_corrected
+from msc.tta.eval import w1_curve, w1_lag_floor, w1_values, w1_width_corrected
 
 
 def test_w1_values_is_permutation_invariant_over_space():
@@ -418,3 +437,315 @@ def test_w1_width_corrected_frames_slice_restricts_to_selected_window():
 
     assert v_early < 0.05
     assert v_late - v_early > 0.1
+
+
+def _unnorm(pred, gt, frames=slice(None)):
+    """Unnormalized w1_values, curried for use as a w1_curve metric.
+
+    Args:
+      pred: (1, S, S, T) predicted vorticity slice for one trajectory.
+      gt: (1, S, S, T) ground-truth vorticity slice, same shape.
+      frames: frame slice to pool over (default: all frames).
+
+    Returns:
+      Scalar unnormalized Wasserstein-1 distance.
+    """
+    return w1_values(pred, gt, frames=frames, normalize=False)
+
+
+def test_w1_curve_pairing_is_the_property_pooled_cannot_see():
+    """Correct vs permuted pairing: the curve tells them apart, pooled w1_values cannot.
+
+    N trajectories at well-separated widths; pred_i is drawn INDEPENDENTLY of
+    gt_i at the SAME std (not a copy -- a copy would make the correct-pairing
+    leg trivially exactly 0, and the pooled equality below would then hold
+    only at the degenerate floor). (a) pred_i paired with gt_i (matched std)
+    reads a small nonzero curve. (b) pred permuted one step along axis 0
+    (pred_i now paired with gt_{i+1 mod N}, mismatched std) reads much larger.
+    In the SAME test, pooled w1_values(pred, gt) must give the IDENTICAL
+    NONZERO number for (a) and (b): rolling pred's trajectory axis reorders
+    which block sits where but changes none of pred's values, so the
+    flattened multiset -- and hence the pooled distance -- is unchanged.
+    Observed over 6 seeds: curve_correct mean always < 0.11, curve_permuted
+    mean always > 0.8, pooled(a)==pooled(b) exactly every time.
+    """
+    N, S, T = 5, 12, 8
+    stds = [0.4, 0.8, 1.3, 2.0, 3.0]
+    rng = np.random.default_rng(0)
+    gt = np.stack([rng.normal(0.0, s, size=(S, S, T)) for s in stds])
+    pred = np.stack([rng.normal(0.0, s, size=(S, S, T)) for s in stds])
+
+    pred_permuted = np.roll(pred, shift=-1, axis=0)
+
+    curve_correct = w1_curve(pred, gt, metric=_unnorm)
+    curve_permuted = w1_curve(pred_permuted, gt, metric=_unnorm)
+    pooled_correct = w1_values(pred, gt, normalize=False)
+    pooled_permuted = w1_values(pred_permuted, gt, normalize=False)
+
+    assert curve_correct.mean() < 0.2
+    assert curve_permuted.mean() > 0.5
+    assert pooled_correct > 0.01
+    assert pooled_correct == pytest.approx(pooled_permuted, abs=1e-9)
+
+
+def test_w1_curve_convexity_against_pooled_w1_values():
+    """Pooled w1_values must be <= mean(w1_curve), strictly for heterogeneous trajectories.
+
+    W1 is jointly convex, so pooling loses information monotonically: the
+    pooled distance between the two N*S*S*T-element mixtures is never larger
+    than the average of the N per-trajectory distances. Uses the unnormalized
+    metric throughout (_unnorm) so both sides of the inequality are on the
+    same scale -- with the default normalize=True, pooled divides by the
+    GLOBAL gt std while each curve entry divides by its OWN trajectory's std,
+    which is a different quantity on each side and not the statement the
+    convexity theorem makes (checked empirically below: the ordering still
+    happens to hold under default normalization on this fixture, but that is
+    a secondary observation, not evidence of the theorem). Built with both GT
+    width and pred/GT ratio varying sharply across trajectories so the gap is
+    material, not a float tie (observed margin >0.15 over 8 seeds at this
+    construction, asserted at >0.15). The boundary case -- every trajectory
+    an exact copy of one fixed pair -- collapses the inequality to an exact
+    tie (replication cannot change a multiset's shape), asserted at 1e-9.
+    """
+    N, S, T = 6, 14, 8
+    gt_stds = [0.3, 0.6, 1.0, 1.5, 2.2, 3.2]
+    pred_ratios = [0.4, 0.6, 0.9, 1.3, 0.5, 1.8]
+    rng = np.random.default_rng(0)
+    gt = np.stack([rng.normal(0.0, s, size=(S, S, T)) for s in gt_stds])
+    pred = np.stack([rng.normal(0.0, s * r, size=(S, S, T))
+                     for s, r in zip(gt_stds, pred_ratios)])
+
+    pooled = w1_values(pred, gt, normalize=False)
+    curve = w1_curve(pred, gt, metric=_unnorm)
+
+    assert curve.mean() - pooled > 0.15
+    assert w1_values(pred, gt) < w1_curve(pred, gt).mean()
+
+    rng2 = np.random.default_rng(1)
+    gt1 = rng2.normal(0.0, 1.0, size=(S, S, T))
+    pred1 = rng2.normal(0.0, 0.9, size=(S, S, T))
+    gt_tied = np.stack([gt1] * N)
+    pred_tied = np.stack([pred1] * N)
+
+    pooled_tied = w1_values(pred_tied, gt_tied, normalize=False)
+    curve_tied = w1_curve(pred_tied, gt_tied, metric=_unnorm)
+
+    assert pooled_tied == pytest.approx(curve_tied.mean(), abs=1e-9)
+
+
+def test_w1_curve_matches_per_trajectory_gaussian_closed_form_elementwise():
+    """Each curve entry must match its OWN trajectory's closed-form W1, not just the mean.
+
+    Five trajectories with independently drawn (not rescaled) gt_i ~ N(0,
+    sigma_i^2) and pred_i ~ N(0, (gamma_i*sigma_i)^2), sigma_i and gamma_i
+    both varying by trajectory. w1_curve (default metric, normalize=True)
+    must match sqrt(2/pi)*|1-gamma_i| entrywise -- the same closed form as
+    w1_values, since normalizing by std(gt_i) cancels sigma_i and leaves only
+    the ratio. Checked entrywise, not just on the mean: a bug that shuffled
+    which gamma_i lands in which output slot would still pass a mean-only
+    check but fails here, and would also survive an entrywise check if two
+    closed-form values happened to collide -- gammas are chosen so
+    |1-gamma_i| are pairwise distinct with the smallest gap (0.08, between
+    gamma=0.5 and 0.7) still more than double the tolerance. Tolerance (0.03)
+    from the observed max entrywise error over 10 seeds at this
+    per-trajectory sample size (S*S*T ~= 1.6e4): 0.0155.
+    """
+    N, S, T = 5, 32, 16
+    gammas = [0.3, 0.5, 0.7, 0.85, 0.95]
+    sigmas = [0.5, 1.0, 1.5, 2.0, 2.5]
+    rng = np.random.default_rng(0)
+    gt = np.stack([rng.normal(0.0, s, size=(S, S, T)) for s in sigmas])
+    pred = np.stack([rng.normal(0.0, s * g, size=(S, S, T))
+                     for s, g in zip(sigmas, gammas)])
+
+    curve = w1_curve(pred, gt)
+    closed_form = np.array([np.sqrt(2.0 / np.pi) * abs(1.0 - g) for g in gammas])
+    assert np.diff(np.sort(closed_form)).min() > 0.06
+
+    np.testing.assert_allclose(curve, closed_form, atol=0.03)
+
+
+def test_w1_curve_metric_argument_is_actually_applied():
+    """Passing metric=w1_width_corrected must change the curve, not be silently ignored.
+
+    A large, uniform width mismatch (gamma ~= 0.3 for every trajectory) makes
+    w1_values (location+scale+shape) and w1_width_corrected (shape only,
+    after dividing out the width) read very differently: w1_values stays
+    near the width-driven distance (~0.55) while w1_width_corrected collapses
+    toward the same-shape floor (~0.03-0.06), observed gap >0.4 per
+    trajectory. If the metric argument were ignored, the two calls below
+    would return identical arrays.
+    """
+    N, S, T = 4, 16, 8
+    rng = np.random.default_rng(7)
+    gt = rng.normal(0.0, 1.0, size=(N, S, S, T))
+    pred = rng.normal(0.0, 0.3, size=(N, S, S, T))
+
+    curve_default = w1_curve(pred, gt)
+    curve_wc = w1_curve(pred, gt, metric=w1_width_corrected)
+
+    assert np.all(curve_default - curve_wc > 0.3)
+
+
+def test_w1_curve_frames_reaches_the_per_trajectory_call():
+    """frames= must slice within each trajectory's own call, not just at the pooled level.
+
+    gt has a distinct std per trajectory (0.6, 1.0, 1.5, 2.2) so a pairing
+    bug (comparing pred_i against gt_j) is visible in BOTH windows below, not
+    just a slicing bug: with every trajectory the same distribution this
+    fixture would only catch pred-slot shuffles. Early window: width ratio
+    also varies by trajectory (0.3, 0.7, 1.3, 2.0), checked entrywise against
+    the per-trajectory closed form (sigma_i cancels under normalize=True, so
+    the closed form is unaffected by the added sigma spread). Late window:
+    every trajectory gets the same +5.0 absolute offset, which normalizes to
+    a DIFFERENT relative size per trajectory (larger sigma -> smaller
+    normalized offset) -- asserted strictly decreasing in trajectory (hence
+    sigma) order, observed ~8.3, ~5.0, ~3.3, ~2.3 over 6 seeds, so this
+    window is sensitive to trajectory identity in its own right, not just
+    larger-and-uniform.
+    """
+    N, S, T = 4, 16, 10
+    half = T // 2
+    ratios = [0.3, 0.7, 1.3, 2.0]
+    sigmas = [0.6, 1.0, 1.5, 2.2]
+    rng = np.random.default_rng(3)
+    gt = np.stack([rng.normal(0.0, s, size=(S, S, T)) for s in sigmas])
+    pred = np.empty((N, S, S, T))
+    for i, r in enumerate(ratios):
+        pred[i, ..., :half] = r * gt[i, ..., :half]
+        pred[i, ..., half:] = gt[i, ..., half:] + 5.0
+
+    curve_early = w1_curve(pred, gt, frames=slice(0, half))
+    curve_late = w1_curve(pred, gt, frames=slice(half, None))
+    closed_early = np.array([np.sqrt(2.0 / np.pi) * abs(1.0 - r) for r in ratios])
+
+    np.testing.assert_allclose(curve_early, closed_early, atol=0.05)
+    assert np.all(curve_late > 2.0)
+    assert np.all(np.diff(curve_late) < 0.0)
+
+
+def test_w1_lag_floor_shape_is_one_entry_per_trajectory():
+    """Output shape must be (N,), independent of S and T.
+
+    frames=slice(0, 10) with lag=5 on T=30 is chosen so a forward shift
+    fits (idx.max()+lag=14 < 30): this exercises the real per-trajectory
+    list comprehension, not the all-nan fallback (a window covering the
+    whole trajectory, as a default frames= would, hits the nan branch at
+    this T/lag and would give shape (N,) for the wrong reason).
+    """
+    N, S, T = 5, 10, 30
+    rng = np.random.default_rng(0)
+    gt = rng.normal(0.0, 1.0, size=(N, S, S, T))
+
+    floor = w1_lag_floor(gt, frames=slice(0, 10), lag=10)
+
+    assert floor.shape == (N,)
+    assert not np.isnan(floor).any()
+
+
+def test_w1_lag_floor_falls_back_to_backward_shift_near_the_end_of_t():
+    """A window near the end of T, where the forward lag would overrun, must use the backward pair.
+
+    frames selects frames 40-49 of T=50 with lag=10: idx.max()+lag=59
+    overruns T (forward doesn't fit), but idx.min()-lag=30 >= 0 (backward
+    fits), landing on the disjoint block 30-39. Frames 30-39 are drawn at
+    std=2.0 and 40-49 at std=1.0 (frames 0-29 are unused filler); w1_values
+    normalizes by the SECOND argument's std, which is the backward
+    (30-39, std=2.0) window here, so the exact expected value is
+    sqrt(2/pi)*|1-2|/2 ~= 0.399. A bug that fell through to shift=0 (no-op,
+    window against itself) would read exactly 0.0 and is caught by the lower
+    bound; a bug that used the (out-of-range) forward target 50-59 instead
+    would raise an IndexError rather than silently returning a wrong number,
+    so this test would surface it as a hard failure either way. Tolerance
+    (0.05) from the observed max deviation over 8 seeds: 0.0199.
+    """
+    N, S, T = 3, 16, 50
+    rng = np.random.default_rng(1)
+    gt = np.empty((N, S, S, T))
+    gt[..., :30] = rng.normal(0.0, 1.5, size=(N, S, S, 30))
+    gt[..., 30:40] = rng.normal(0.0, 2.0, size=(N, S, S, 10))
+    gt[..., 40:50] = rng.normal(0.0, 1.0, size=(N, S, S, 10))
+
+    floor = w1_lag_floor(gt, frames=slice(40, 50), lag=10)
+
+    expected = np.sqrt(2.0 / np.pi) * abs(1.0 - 2.0) / 2.0
+    assert np.all(floor > 0.01)
+    np.testing.assert_allclose(floor, expected, atol=0.05)
+
+
+def test_w1_lag_floor_all_nan_when_no_disjoint_shift_fits():
+    """A window wider than T - lag in both directions must return all-nan, not raise or 0.
+
+    T=2 with the default lag=32: neither a forward nor a backward shift of
+    32 frames fits inside a 2-frame trajectory, so every entry must be nan.
+    """
+    N, S, T = 4, 8, 2
+    rng = np.random.default_rng(2)
+    gt = rng.normal(0.0, 1.0, size=(N, S, S, T))
+
+    floor = w1_lag_floor(gt)
+
+    assert np.isnan(floor).all()
+    assert floor.shape == (N,)
+
+
+def test_w1_lag_floor_rejects_an_in_bounds_but_overlapping_shift():
+    """A lag shorter than the window is nan, even though the shift is in-bounds.
+
+    Bounds are not disjointness. frames=slice(0, 20) on T=40 shifts forward
+    in-bounds for both lag=8 (window 8-27, sharing 12 of the original 20
+    frames) and lag=20 (window 20-39, sharing none). The overlapping case
+    would return a finite number that is biased LOW -- literally-identical
+    frames on both sides of the comparison pull them together, and a caller
+    reading it as a clean null would underestimate the detection floor. It
+    was measured at mean ~0.02 against ~0.036 for the disjoint lag on the
+    same data, robust over 10 seeds, before the guard was added. Only the
+    width check rejects it; every bounds test in this file passes either way.
+    """
+    N, S, T = 6, 24, 40
+    rng = np.random.default_rng(0)
+    gt = rng.normal(0.0, 1.0, size=(N, S, S, T))
+
+    floor_overlap = w1_lag_floor(gt, frames=slice(0, 20), lag=8)
+    floor_disjoint = w1_lag_floor(gt, frames=slice(0, 20), lag=20)
+
+    assert np.isnan(floor_overlap).all()
+    assert np.isfinite(floor_disjoint).all()
+
+
+def test_w1_lag_floor_is_a_null_not_a_realisation_spread_measurement():
+    """The lag floor (same trajectory, shifted) must read far below an across-trajectory comparison.
+
+    Four trajectories, each internally stationary (iid draws at every frame,
+    no drift) but at markedly different widths from each other (sigma 0.5,
+    1.0, 1.8, 2.5). w1_lag_floor compares trajectory i against itself at a
+    lag -- two draws from the SAME distribution -- and must read small.
+    Comparing trajectory i's window against a DIFFERENT trajectory's window
+    on the same data (built by hand with w1_values, not part of the function
+    under test) must read much larger, since that pair draws from different
+    distributions. This is what makes the floor a null: if it just measured
+    generic sample spread, it would not separate from the cross-trajectory
+    case. lag=20 with a 20-frame window on T=40 makes the shifted window
+    exactly disjoint from the original (frames 0-19 vs 20-39, no shared
+    frame) -- a smaller lag (e.g. 8, overlapping 12 of 20 frames) would deflate
+    the floor by including literally-identical samples on both sides, which
+    would not be a fair reading of the null. Thresholds (floor < 0.05, cross
+    > 0.15) from 6 seeds at this construction: floor max observed 0.036,
+    cross min observed 0.212.
+    """
+    N, S, T = 4, 16, 40
+    lag = 20
+    sigmas = [0.5, 1.0, 1.8, 2.5]
+    rng = np.random.default_rng(0)
+    gt = np.stack([rng.normal(0.0, s, size=(S, S, T)) for s in sigmas])
+
+    floor = w1_lag_floor(gt, frames=slice(0, 20), lag=lag)
+
+    idx = np.arange(T)[slice(0, 20)]
+    cross = np.array([
+        w1_values(gt[i:i + 1][..., idx], gt[(i + 1) % N:(i + 1) % N + 1][..., idx])
+        for i in range(N)
+    ])
+
+    assert floor.max() < 0.05
+    assert cross.min() > 0.15

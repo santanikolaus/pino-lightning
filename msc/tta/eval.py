@@ -696,6 +696,76 @@ def w1_width_corrected(pred, gt, frames: slice = slice(None)) -> float:
     return w1_values(a / g, b) if g > 0 else float("nan")
 
 
+def w1_curve(pred, gt, frames: slice = slice(None), metric=w1_values) -> np.ndarray:
+    """Per-trajectory W1: each prediction against its OWN ground truth.
+
+    The paired counterpart to the pooled w1_values, standing to it as corr_curve
+    stands to corr_pooled. Pooling mixes every trajectory into one histogram, so
+    it answers whether the ENSEMBLE has the right value distribution -- the
+    invariant-measure question -- and cannot tell a correct pairing from a
+    permuted one. This asks whether sample i's prediction matches sample i, which
+    is the question a per-sample adaptation has to answer. W1 is jointly convex,
+    so the pooled value is <= the mean of this curve: the two are never
+    interchangeable in a quote.
+
+    Args:
+      pred: (N, S, S, T) predicted vorticity, torch tensor or array.
+      gt: (N, S, S, T) ground-truth vorticity, same shape.
+      frames: frame slice to pool over within each trajectory (default: all).
+      metric: the per-pair scalar to apply; w1_values, or w1_width_corrected for
+        the width-matched curve.
+
+    Returns:
+      (N,) array of per-trajectory distances, each in ITS OWN trajectory's
+      std(gt) units -- so a mean over the array averages ratios with different
+      denominators, unlike the pooled form's single global normalisation. Chosen
+      deliberately: the question is how wrong each prediction is relative to the
+      truth it was asked to match. It matters most where chains are
+      heterogeneous, which at Re500 is what drove the across-trajectory floor to
+      0.0585 against Re100's 0.0190.
+    """
+    p, g = np.asarray(pred), np.asarray(gt)
+    return np.array([metric(p[i:i + 1], g[i:i + 1], frames=frames) for i in range(p.shape[0])])
+
+
+def w1_lag_floor(gt, frames: slice = slice(None), lag: int = 32) -> np.ndarray:
+    """Per-trajectory W1 null: the same window against itself `lag` frames away.
+
+    Two decorrelated snapshots of ONE trajectory are two draws from the same
+    stationary distribution at the same pixel count as the signal, so this is the
+    detection limit for a window that size. It replaces an across-trajectory
+    floor, which also carries chain-to-chain spread and is therefore not a null.
+    Measured on Re100 GT it reads 0.040-0.045 per frame against 0.049-0.054 for
+    the across-trajectory version: most of the floor is one 128^2 snapshot being
+    a small sample of the value distribution, not realisation spread.
+
+    A within-frame spatial split is NOT usable here: half a KF domain holds only
+    a few coherent structures, and its halves read 0.52 -- ten times the pooled
+    floor rather than below it.
+
+    Args:
+      gt: (N, S, S, T) ground-truth vorticity, torch tensor or array.
+      frames: frame slice defining the window (default: all).
+      lag: frame separation, taken forwards or backwards, whichever fits.
+
+    Returns:
+      (N,) array of per-trajectory nulls; all-nan when no shift of the window is
+      both in-bounds and disjoint from it.
+    """
+    g = np.asarray(gt)
+    idx = np.arange(g.shape[-1])[frames]
+    if lag < idx.max() - idx.min() + 1:
+        return np.full(g.shape[0], np.nan)
+    if idx.max() + lag < g.shape[-1]:
+        shift = lag
+    elif idx.min() - lag >= 0:
+        shift = -lag
+    else:
+        return np.full(g.shape[0], np.nan)
+    return np.array([w1_values(g[i:i + 1][..., idx], g[i:i + 1][..., idx + shift])
+                     for i in range(g.shape[0])])
+
+
 def cov_rmse(pred, gt, feat_axis: int = 2,
              frames: slice = slice(None)) -> float:
     """Relative Frobenius RMSE of the fixed-x-slice covariance (DySLIM Eq. 24-25).
