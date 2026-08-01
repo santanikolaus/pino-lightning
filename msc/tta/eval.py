@@ -664,6 +664,38 @@ def w1_values(pred, gt, frames: slice = slice(None),
     return float(w / (b.std() + 1e-30)) if normalize else float(w)
 
 
+def w1_width_corrected(pred, gt, frames: slice = slice(None)) -> float:
+    """W1 after rescaling the prediction to GT's width: what survives matching variance.
+
+    Divides pred by its own std ratio before calling w1_values, so the width
+    mismatch amp_ratio already reports is removed and what remains is the
+    distribution difference at matched variance -- the part gamma cannot express.
+    0 means the predicted value distribution IS GT's, narrowed. Read against the
+    GT-GT floor, and against w1_values on the same window: their gap is the width
+    term. It pools location, skew and tail weight into one number and cannot say
+    which of them moved, so it does not isolate intermittency.
+
+    Preferred over dividing W1 by the pure-width-change W1: that denominator is
+    proportional to |1-gamma| and vanishes as the prediction's width comes right,
+    inflating a fixed shape defect from 1.08 (gamma 0.5) to 4.79 (gamma 0.97).
+    This form is flat across the same sweep, so it is comparable down a frame
+    ladder along which gamma drifts.
+
+    Args:
+      pred: (N, S, S, T) predicted vorticity, torch tensor or array.
+      gt: (N, S, S, T) ground-truth vorticity, same shape.
+      frames: frame slice to pool over (default: all frames).
+
+    Returns:
+      W1 between the width-matched prediction and GT, in std(gt) units; nan for
+      an all-zero prediction, which has no width to match.
+    """
+    a = np.asarray(pred)[..., frames]
+    b = np.asarray(gt)[..., frames]
+    g = float(a.std() / (b.std() + 1e-30))
+    return w1_values(a / g, b) if g > 0 else float("nan")
+
+
 def cov_rmse(pred, gt, feat_axis: int = 2,
              frames: slice = slice(None)) -> float:
     """Relative Frobenius RMSE of the fixed-x-slice covariance (DySLIM Eq. 24-25).

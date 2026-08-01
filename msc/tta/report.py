@@ -279,16 +279,25 @@ def _field_rows(metric, cache, label: str):
 def print_w1(cache, *, time_bins, **_):
     """Prints the W1 value-distribution table over the frame windows.
 
+    Four rows: W1 and its GT-GT floor, then the same pair after rescaling the
+    prediction to GT's width. The two metrics share a scale, so the gap between
+    them is the width term gamma already reports and the lower pair is what only
+    a distribution metric can see.
+
     Args:
       cache: holds "fields" = (pred_f, gt_f) from forward_fields.
       time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
       bands / thresholds / T_eff: not consumed by this report.
     """
-    time_table(_field_rows(ev.w1_values, cache, "W1"), time_bins,
+    time_table(_field_rows(ev.w1_values, cache, "W1")
+               + _field_rows(ev.w1_width_corrected, cache, "W1 width-corr"), time_bins,
                banner="\nW1(vorticity values) /std(gt); pooled over pixels, blind to "
                       "arrangement. aggr pools every frame into one distribution, so it is "
-                      "not the mean of the columns. The floor pairs GT halves from DIFFERENT "
-                      "trajectories, so a model tracking its own can score below it early")
+                      "not the mean of the columns. Each floor pairs GT halves from DIFFERENT "
+                      "trajectories, so a model tracking its own can score below it early. "
+                      "width-corr rescales pred to GT's width first: what is left is the "
+                      "distribution mismatch gamma cannot express, and W1 minus it is the "
+                      "width term gamma already reports")
 
 
 def print_cov(cache, *, time_bins, **_):
