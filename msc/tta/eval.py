@@ -728,20 +728,26 @@ def w1_curve(pred, gt, frames: slice = slice(None), metric=w1_values) -> np.ndar
     return np.array([metric(p[i:i + 1], g[i:i + 1], frames=frames) for i in range(p.shape[0])])
 
 
-def w1_lag_floor(gt, frames: slice = slice(None), lag: int = 32) -> np.ndarray:
-    """Per-trajectory W1 null: the same window against itself `lag` frames away.
+def w1_lag_drift(gt, frames: slice = slice(None), lag: int = 32) -> np.ndarray:
+    """How far one trajectory's own value distribution drifts over `lag` frames.
 
-    Two decorrelated snapshots of ONE trajectory are two draws from the same
-    stationary distribution at the same pixel count as the signal, so this is the
-    detection limit for a window that size. It replaces an across-trajectory
-    floor, which also carries chain-to-chain spread and is therefore not a null.
-    Measured on Re100 GT it reads 0.040-0.045 per frame against 0.049-0.054 for
-    the across-trajectory version: most of the floor is one 128^2 snapshot being
-    a small sample of the value distribution, not realisation spread.
+    A yardstick, NOT a detection floor. w1_curve compares two fully-observed
+    fields, every pixel of each, so it has no sampling noise to clear: a perfect
+    prediction scores exactly 0 and any nonzero value is model error. This row
+    exists to give that error a scale with a physical name -- "the model's
+    distributional error is twice the flow's own 32-frame drift" is readable,
+    "it clears the floor" would be meaningless here.
 
-    A within-frame spatial split is NOT usable here: half a KF domain holds only
-    a few coherent structures, and its halves read 0.52 -- ten times the pooled
-    floor rather than below it.
+    It cannot be calibrated to independence. Swept on GT the value climbs
+    monotonically with lag (Re100 t8: 0.0037 at lag 2 to 0.0569 at lag 48) and
+    never plateaus inside the 65-frame window, so `lag` is a stated convention
+    (half the window) rather than a tuned parameter. Two DIFFERENT chains at one
+    frame read 0.21, four times the lag-48 value: each chain carries a persistent
+    energy level that this within-chain comparison holds fixed, which is the
+    realisation spread the pairing exists to exclude.
+
+    A within-frame spatial split is not usable: half a KF domain holds only a few
+    coherent structures, and its halves read 0.52.
 
     Args:
       gt: (N, S, S, T) ground-truth vorticity, torch tensor or array.
@@ -749,8 +755,8 @@ def w1_lag_floor(gt, frames: slice = slice(None), lag: int = 32) -> np.ndarray:
       lag: frame separation, taken forwards or backwards, whichever fits.
 
     Returns:
-      (N,) array of per-trajectory nulls; all-nan when no shift of the window is
-      both in-bounds and disjoint from it.
+      (N,) array of per-trajectory drift values; all-nan when no shift of the
+      window is both in-bounds and disjoint from it.
     """
     g = np.asarray(gt)
     idx = np.arange(g.shape[-1])[frames]

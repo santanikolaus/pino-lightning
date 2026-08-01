@@ -294,18 +294,19 @@ def print_w1(cache, *, time_bins, **_):
             ("W1 width-corr",
              lambda f: np.nanmean(ev.w1_curve(pred_f, gt_f, frames=f,
                                               metric=ev.w1_width_corrected))),
-            ("lag-32 null", lambda f: np.nanmean(ev.w1_lag_floor(gt_f, frames=f)))]
+            ("flow drift 32f", lambda f: np.nanmean(ev.w1_lag_drift(gt_f, frames=f)))]
     time_table(rows, time_bins,
                banner="\nW1(vorticity values) /std(gt), per trajectory then averaged; pooled "
                       "over pixels, blind to arrangement. W1 is convex, so the pooled form is "
                       "<= these means -- do not quote them against each other. width-corr "
                       "rescales pred to GT's width first: what is left is the distribution "
                       "mismatch gamma cannot express, and W1 minus it is the width term gamma "
-                      "already reports. The null is the same window of the SAME trajectory 32 "
-                      "frames away: two draws from one distribution at equal pixel count, so "
-                      "it carries no chain-to-chain spread. It is nan at aggr, where the window "
-                      "is all 65 frames and no disjoint shift of it exists -- so the column "
-                      "everyone quotes has a signal and NO null; read the frame columns")
+                      "already reports. PERFECT IS 0 for both: the comparison is paired and "
+                      "every pixel is observed, so there is no sampling floor to clear. The "
+                      "last row is not a floor either -- it is how far the SAME trajectory's "
+                      "own distribution drifts over 32 frames, a yardstick to size the error "
+                      "against ('twice the flow's own drift'). nan at aggr, where the window "
+                      "is all 65 frames and no disjoint shift of it exists")
 
 
 def print_cov(cache, *, time_bins, **_):
@@ -316,9 +317,12 @@ def print_cov(cache, *, time_bins, **_):
       time_bins: (lo, hi) frame windows (columns) plus a full-frame aggr column. USED.
       bands / thresholds / T_eff: not consumed by this report.
     """
-    # TODO floor mixes trajectories, so it reads realisation spread, not noise — split
-    # within one trajectory instead. Low priority: covRMSE tracks |1-gamma^2| at corr
-    # 0.997, so it is probably gamma in disguise. Measure that before fixing the floor.
+    # TODO give cov what w1 got on 2026-08-01: pair it per trajectory, and drop the
+    # GT-halves floor (it mixes trajectories, so it reads realisation spread, and a
+    # paired metric has no sampling floor anyway — perfect is 0). Then normalise the
+    # covariance before comparing, since ||Cp-Cg||/||Cg|| collapses to |1-gamma^2| for
+    # Cp = gamma^2*Cg, which is why it tracks gamma at corr 0.997. What survives is the
+    # y-anisotropy, the one axis rho/gamma/W1 all miss.
     time_table(_field_rows(ev.cov_rmse, cache, "covRMSE"), time_bins,
                banner="\ncovRMSE(fixed-x-slice cov along forced y) relative Frobenius. A "
                       "single-frame column estimates a SxS covariance from N*S rows, so "
@@ -444,7 +448,9 @@ def print_physics(cache, *, bands, time_bins, regime, **_):
 
     Args:
       cache: holds "bands" = forward_bands output, computed with residuals=True.
-      bands: (lo, hi) band groups (rows); defaults to the PHYS set. USED.
+      bands: (lo, hi) band groups (rows); defaults to BANDS_L2, matching decomp so
+        the residual and the L2 split are read side by side. Pass "phys" for the
+        per-shell k0-9 set. USED.
       time_bins: (lo, hi) field-frame windows (columns), plus a full-range aggr. USED.
       regime: the run's Reynolds pair; picks which residual array each table reads. USED.
       thresholds / T_eff: not consumed by this report.
@@ -494,7 +500,7 @@ REPORTS = {
     "decomp":  dict(fwd="bands",  bands=BANDS_L2, tbins=TBINS_L2,                  fn=print_decomp),
     "horizon": dict(fwd="bands",  bands=SHELLS, thresholds=(0.9, 0.8),             fn=print_horizon),
     "blur":    dict(fwd="bands",  bands=SHELLS_NODC, thresholds=(0.9, 0.8),        fn=print_blur),
-    "physics": dict(fwd="bands",  bands=PHYS, tbins=FRAMES,                        fn=print_physics),
+    "physics": dict(fwd="bands",  bands=BANDS_L2, tbins=TBINS_L2,                  fn=print_physics),
     "w1":      dict(fwd="fields", tbins=TBINS_L2,                                  fn=print_w1),
     "cov":     dict(fwd="fields", tbins=TBINS_L2,                                  fn=print_cov),
 }

@@ -28,7 +28,7 @@ actually applied, not silently ignored; and that frames= reaches the
 per-trajectory call under a fixture where both the window and the trajectory
 identity independently change the answer.
 
-w1_lag_floor: covers output shape, the forward/backward fallback (a window
+w1_lag_drift: covers output shape, the forward/backward fallback (a window
 near the end of T that would overrun forwards must fall back to backwards and
 stay finite), the all-nan case when no disjoint shift fits, and that it reads
 as a null (small, same-trajectory-vs-itself) rather than a realisation-spread
@@ -39,7 +39,7 @@ CPU-only, synthetic numpy data only.
 import numpy as np
 import pytest
 
-from msc.tta.eval import w1_curve, w1_lag_floor, w1_values, w1_width_corrected
+from msc.tta.eval import w1_curve, w1_lag_drift, w1_values, w1_width_corrected
 
 
 def test_w1_values_is_permutation_invariant_over_space():
@@ -624,7 +624,7 @@ def test_w1_curve_frames_reaches_the_per_trajectory_call():
     assert np.all(np.diff(curve_late) < 0.0)
 
 
-def test_w1_lag_floor_shape_is_one_entry_per_trajectory():
+def test_w1_lag_drift_shape_is_one_entry_per_trajectory():
     """Output shape must be (N,), independent of S and T.
 
     frames=slice(0, 10) with lag=5 on T=30 is chosen so a forward shift
@@ -637,13 +637,13 @@ def test_w1_lag_floor_shape_is_one_entry_per_trajectory():
     rng = np.random.default_rng(0)
     gt = rng.normal(0.0, 1.0, size=(N, S, S, T))
 
-    floor = w1_lag_floor(gt, frames=slice(0, 10), lag=10)
+    floor = w1_lag_drift(gt, frames=slice(0, 10), lag=10)
 
     assert floor.shape == (N,)
     assert not np.isnan(floor).any()
 
 
-def test_w1_lag_floor_falls_back_to_backward_shift_near_the_end_of_t():
+def test_w1_lag_drift_falls_back_to_backward_shift_near_the_end_of_t():
     """A window near the end of T, where the forward lag would overrun, must use the backward pair.
 
     frames selects frames 40-49 of T=50 with lag=10: idx.max()+lag=59
@@ -666,14 +666,14 @@ def test_w1_lag_floor_falls_back_to_backward_shift_near_the_end_of_t():
     gt[..., 30:40] = rng.normal(0.0, 2.0, size=(N, S, S, 10))
     gt[..., 40:50] = rng.normal(0.0, 1.0, size=(N, S, S, 10))
 
-    floor = w1_lag_floor(gt, frames=slice(40, 50), lag=10)
+    floor = w1_lag_drift(gt, frames=slice(40, 50), lag=10)
 
     expected = np.sqrt(2.0 / np.pi) * abs(1.0 - 2.0) / 2.0
     assert np.all(floor > 0.01)
     np.testing.assert_allclose(floor, expected, atol=0.05)
 
 
-def test_w1_lag_floor_all_nan_when_no_disjoint_shift_fits():
+def test_w1_lag_drift_all_nan_when_no_disjoint_shift_fits():
     """A window wider than T - lag in both directions must return all-nan, not raise or 0.
 
     T=2 with the default lag=32: neither a forward nor a backward shift of
@@ -683,13 +683,13 @@ def test_w1_lag_floor_all_nan_when_no_disjoint_shift_fits():
     rng = np.random.default_rng(2)
     gt = rng.normal(0.0, 1.0, size=(N, S, S, T))
 
-    floor = w1_lag_floor(gt)
+    floor = w1_lag_drift(gt)
 
     assert np.isnan(floor).all()
     assert floor.shape == (N,)
 
 
-def test_w1_lag_floor_rejects_an_in_bounds_but_overlapping_shift():
+def test_w1_lag_drift_rejects_an_in_bounds_but_overlapping_shift():
     """A lag shorter than the window is nan, even though the shift is in-bounds.
 
     Bounds are not disjointness. frames=slice(0, 20) on T=40 shifts forward
@@ -706,19 +706,19 @@ def test_w1_lag_floor_rejects_an_in_bounds_but_overlapping_shift():
     rng = np.random.default_rng(0)
     gt = rng.normal(0.0, 1.0, size=(N, S, S, T))
 
-    floor_overlap = w1_lag_floor(gt, frames=slice(0, 20), lag=8)
-    floor_disjoint = w1_lag_floor(gt, frames=slice(0, 20), lag=20)
+    floor_overlap = w1_lag_drift(gt, frames=slice(0, 20), lag=8)
+    floor_disjoint = w1_lag_drift(gt, frames=slice(0, 20), lag=20)
 
     assert np.isnan(floor_overlap).all()
     assert np.isfinite(floor_disjoint).all()
 
 
-def test_w1_lag_floor_is_a_null_not_a_realisation_spread_measurement():
+def test_w1_lag_drift_is_a_null_not_a_realisation_spread_measurement():
     """The lag floor (same trajectory, shifted) must read far below an across-trajectory comparison.
 
     Four trajectories, each internally stationary (iid draws at every frame,
     no drift) but at markedly different widths from each other (sigma 0.5,
-    1.0, 1.8, 2.5). w1_lag_floor compares trajectory i against itself at a
+    1.0, 1.8, 2.5). w1_lag_drift compares trajectory i against itself at a
     lag -- two draws from the SAME distribution -- and must read small.
     Comparing trajectory i's window against a DIFFERENT trajectory's window
     on the same data (built by hand with w1_values, not part of the function
@@ -739,7 +739,7 @@ def test_w1_lag_floor_is_a_null_not_a_realisation_spread_measurement():
     rng = np.random.default_rng(0)
     gt = np.stack([rng.normal(0.0, s, size=(S, S, T)) for s in sigmas])
 
-    floor = w1_lag_floor(gt, frames=slice(0, 20), lag=lag)
+    floor = w1_lag_drift(gt, frames=slice(0, 20), lag=lag)
 
     idx = np.arange(T)[slice(0, 20)]
     cross = np.array([
