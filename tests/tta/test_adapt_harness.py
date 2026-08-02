@@ -1,116 +1,93 @@
-import torch
 import pytest
+import torch
+from omegaconf import MissingMandatoryValue, OmegaConf
 
 from msc.tta import adapt
 
 
-def _write(tmp_path, name, body):
-    p = tmp_path / name
-    p.write_text(body)
-    return str(p)
+def test_load_config_base_defaults():
+    cfg = adapt.load_config([])
+    assert cfg.objective.name == "physics"
+    assert cfg.locus.name == "full"
+    assert cfg.stop.name == "fixed"
+    assert cfg.steps == 200
+    assert cfg.target_re == 500
 
 
-VALID_RUN = "ckpt: abc123\n"
-VALID_BUDGET = "pool_n: 4\nsteps: 2\nlr: 0.01\nic_weight: 0.5\n"
+def test_load_config_missing_ckpt_raises_on_access():
+    """ckpt is mandatory (???); base compose defers the error to access."""
+    cfg = adapt.load_config([])
+    with pytest.raises(MissingMandatoryValue):
+        _ = cfg.ckpt
 
 
-def test_load_config_merges_run_and_budget_layers(tmp_path):
-    run = _write(tmp_path, "run.yaml", VALID_RUN)
-    budget = _write(tmp_path, "budget.yaml",
-                     "pool_n: 4\nsteps: 2\nlr: 0.01\nic_weight: 0.5\nseed: 0\n")
-    cfg = adapt.load_config(run, budget)
-    assert cfg == {
-        "ckpt": "abc123",
-        "adapt": {"pool_n": 4, "steps": 2, "lr": 0.01, "ic_weight": 0.5, "seed": 0},
-    }
+def test_load_config_experiment_overrides_and_sets_ckpt():
+    cfg = adapt.load_config(["experiment=smoke"])
+    assert cfg.ckpt == "75prctl5"
+    assert cfg.steps == 50
 
 
-def test_load_config_rejects_unknown_key_in_run_layer(tmp_path):
-    run = _write(tmp_path, "run.yaml", "ckpt: abc123\nstpes: 100\n")
-    budget = _write(tmp_path, "budget.yaml", VALID_BUDGET)
-    with pytest.raises(ValueError, match="unknown run config keys"):
-        adapt.load_config(run, budget)
+def test_load_config_group_swap_brings_pool_n():
+    cfg = adapt.load_config(["experiment=smoke", "objective=spectral"])
+    assert cfg.objective.name == "spectral"
+    assert cfg.objective.pool_n == 8
 
 
-def test_load_config_rejects_unknown_key_in_budget_layer(tmp_path):
-    run = _write(tmp_path, "run.yaml", VALID_RUN)
-    budget = _write(tmp_path, "budget.yaml", VALID_BUDGET + "stpes: 1\n")
-    with pytest.raises(ValueError, match="unknown budget keys"):
-        adapt.load_config(run, budget)
+def test_load_config_cli_override_of_undeclared_key_raises():
+    """A `key=val` override (no +) on an undeclared key fails loud at compose."""
+    from hydra.errors import ConfigCompositionException
+    with pytest.raises(ConfigCompositionException):
+        adapt.load_config(["experiment=smoke", "stpes=99"])
 
 
-@pytest.mark.parametrize("run_body,budget_body,match", [
-    pytest.param(VALID_RUN + "pool_n: 4\n", VALID_BUDGET, "unknown run config keys",
-                 id="pool_n-in-run-layer"),
-    pytest.param(VALID_RUN, VALID_BUDGET + "ckpt: xyz\n", "unknown budget keys",
-                 id="ckpt-in-budget-layer"),
-])
-def test_load_config_rejects_key_in_wrong_layer(tmp_path, run_body, budget_body, match):
-    run = _write(tmp_path, "run.yaml", run_body)
-    budget = _write(tmp_path, "budget.yaml", budget_body)
-    with pytest.raises(ValueError, match=match):
-        adapt.load_config(run, budget)
-
-
-@pytest.mark.parametrize("run_body,budget_body,match", [
-    pytest.param("# no ckpt here\n", VALID_BUDGET, "missing run config keys",
-                 id="run-missing-ckpt"),
-    pytest.param(VALID_RUN, "pool_n: 4\nsteps: 2\nlr: 0.01\nseed: 0\n",
-                 "missing budget keys", id="budget-missing-ic_weight"),
-])
-def test_load_config_rejects_missing_required_key(tmp_path, run_body, budget_body, match):
-    run = _write(tmp_path, "run.yaml", run_body)
-    budget = _write(tmp_path, "budget.yaml", budget_body)
-    with pytest.raises(ValueError, match=match):
-        adapt.load_config(run, budget)
-
-
-def test_load_config_comment_only_budget_handled_as_empty_not_typeerror(tmp_path):
-    run = _write(tmp_path, "run.yaml", VALID_RUN)
-    budget = _write(tmp_path, "budget.yaml", "# nothing configured\n")
-    with pytest.raises(ValueError, match="missing budget keys"):
-        adapt.load_config(run, budget)
-
-
-VALID_ADAPT_CFG = {"pool_n": 4, "steps": 2, "lr": 0.01, "ic_weight": 0.5}
+def _cfg(overrides):
+    return OmegaConf.create(overrides)
 
 
 def test_describe_formats_without_model_load():
-    """describe() renders from an injected module + fake cfg — no wandb, no disk."""
+    """describe() renders from a fake cfg + model — no wandb, no disk."""
     model = torch.nn.Linear(3, 1)
+    cfg = _cfg({"ckpt": "abc123", "target_re": 500, "steps": 200, "lr": 1e-4,
+                "objective": {"name": "physics", "ic_weight": 5.0},
+                "locus": {"name": "full"}})
     train_cfg = {"model": {"model_arch": "fno"},
                  "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2},
                  "loss": {"re": 100}}
-    out = adapt.describe({"ckpt": "abc123", "adapt": VALID_ADAPT_CFG}, model, train_cfg)
+    out = adapt.describe(cfg, model, train_cfg)
     assert "abc123" in out
     assert "Linear (fno)" in out
+    assert "objective   : physics" in out
     assert "n_context   : 1" in out  # absent in train_cfg -> defaults to 1
 
 
-def test_describe_reports_given_n_context():
+def test_describe_reports_pool_for_spectral_objective():
     model = torch.nn.Linear(3, 1)
-    train_cfg = {"model": {"model_arch": "unet2d"},
+    cfg = _cfg({"ckpt": "z", "target_re": 500, "steps": 200, "lr": 1e-4,
+                "objective": {"name": "spectral", "pool_n": 8},
+                "locus": {"name": "full"}})
+    train_cfg = {"model": {"model_arch": "unet"},
                  "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2,
                           "n_context": 10},
                  "loss": {"re": 100}}
-    out = adapt.describe({"ckpt": "z", "adapt": VALID_ADAPT_CFG}, model, train_cfg)
+    out = adapt.describe(cfg, model, train_cfg)
+    assert "objective   : spectral" in out
+    assert "pool        : 8 samples" in out
     assert "n_context   : 10" in out
 
 
 def test_retarget_swaps_reynolds_token_preserves_other_tokens():
-    result = adapt.retarget("/data/Re100_res128_part0.npy", 100)
-    assert result == "/data/Re500_res128_part0.npy"
+    assert adapt.retarget("/data/Re100_res128_part0.npy", 100, 500) == \
+        "/data/Re500_res128_part0.npy"
 
 
 def test_retarget_does_not_collide_with_longer_reynolds_number():
-    path = "/data/Re1000_res128_part0.npy"
     with pytest.raises(ValueError, match="Re100_"):
-        adapt.retarget(path, 100)
+        adapt.retarget("/data/Re1000_res128_part0.npy", 100, 500)
 
 
 def test_retarget_missing_token_raises():
     with pytest.raises(ValueError, match="Re100_"):
-        adapt.retarget("/data/Re200_res128_part0.npy", 100)
+        adapt.retarget("/data/Re200_res128_part0.npy", 100, 500)
 
 
 class _StubDataset:
@@ -137,30 +114,30 @@ def train_cfg():
 
 def test_carve_pool_n_exceeds_train_raises(monkeypatch, train_cfg):
     monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len=3))
-    cfg = {"adapt": {"pool_n": 4}}
+    cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
     with pytest.raises(ValueError, match="pool_n"):
         adapt.carve(cfg, train_cfg)
 
 
-def test_carve_builds_pool_of_requested_size_and_retargets_config(monkeypatch, train_cfg):
+def test_carve_builds_pool_and_retargets_config(monkeypatch, train_cfg):
     monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len=100))
-    cfg = {"adapt": {"pool_n": 4}}
-    pool, heldout, target_cfg = adapt.carve(cfg, train_cfg)
+    cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
+    pool, _, target_cfg = adapt.carve(cfg, train_cfg)
     assert len(pool) == 4
     assert target_cfg["data"]["data_path"] == "/data/Re500_res128_part0.npy"
 
 
+def test_carve_physics_objective_defaults_pool_to_one(monkeypatch, train_cfg):
+    """Mode 1 (physics) carries no pool_n; carve falls back to a 1-sample pool."""
+    monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len=100))
+    cfg = _cfg({"target_re": 500, "objective": {"name": "physics", "ic_weight": 5.0}})
+    pool, _, _ = adapt.carve(cfg, train_cfg)
+    assert len(pool) == 1
+
+
 def test_carve_does_not_mutate_original_train_cfg(monkeypatch, train_cfg):
     monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len=100))
-    cfg = {"adapt": {"pool_n": 4}}
+    cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
     _, _, target_cfg = adapt.carve(cfg, train_cfg)
     assert train_cfg["data"]["data_path"] == "/data/Re100_res128_part0.npy"
     assert target_cfg["data"]["data_path"] == "/data/Re500_res128_part0.npy"
-
-
-def test_carve_retargets_coarse_path_when_present(monkeypatch, train_cfg):
-    train_cfg["data"]["coarse_path"] = "/data/Re100_res32_part0.npy"
-    monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len=100))
-    cfg = {"adapt": {"pool_n": 4}}
-    _, _, target_cfg = adapt.carve(cfg, train_cfg)
-    assert target_cfg["data"]["coarse_path"] == "/data/Re500_res32_part0.npy"

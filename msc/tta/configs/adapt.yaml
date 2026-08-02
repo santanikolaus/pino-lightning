@@ -1,6 +1,13 @@
-pool_n: 8          # target-Re trajectories to adapt on (the data budget)
-steps: 200         # total gradient steps (the compute budget)
-lr: 1.0e-4         # Adam LR (<< 1e-3 pretrain)
-ic_weight: 5.0     # IC-anchor strength; pde_weight pinned 1.0, data_weight fixed 0
-seed: 0            # reproducibility
-probe_every: 25    # telemetry cadence (write-only GT probe)
+defaults:
+  - objective: physics
+  - locus: full
+  - stop: fixed
+  - _self_
+  - experiment: null
+
+ckpt: ???
+target_re: 500
+steps: 200
+lr: 1.0e-4
+probe_every: null
+out_dir: outputs

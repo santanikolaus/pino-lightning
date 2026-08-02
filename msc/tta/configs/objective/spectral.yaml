@@ -1,0 +1,4 @@
+name: spectral
+pool_n: 8
+match: spectrum
+bands: null
