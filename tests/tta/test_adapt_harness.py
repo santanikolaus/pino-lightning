@@ -2,7 +2,7 @@ import pytest
 import torch
 from omegaconf import MissingMandatoryValue, OmegaConf
 
-from msc.tta import adapt
+from msc.tta import adapt, setup
 
 
 def test_load_config_base_defaults():
@@ -75,19 +75,13 @@ def test_describe_reports_pool_for_spectral_objective():
     assert "n_context   : 10" in out
 
 
-def test_retarget_swaps_reynolds_token_preserves_other_tokens():
-    assert adapt.retarget("/data/Re100_res128_part0.npy", 100, 500) == \
-        "/data/Re500_res128_part0.npy"
+def test_data_path_for_re_resolves_known_reynolds():
+    assert setup.data_path_for_re(500).endswith("NS_fine_Re500_T128_res128_part0.npy")
 
 
-def test_retarget_does_not_collide_with_longer_reynolds_number():
-    with pytest.raises(ValueError, match="Re100_"):
-        adapt.retarget("/data/Re1000_res128_part0.npy", 100, 500)
-
-
-def test_retarget_missing_token_raises():
-    with pytest.raises(ValueError, match="Re100_"):
-        adapt.retarget("/data/Re200_res128_part0.npy", 100, 500)
+def test_data_path_for_re_unknown_reynolds_raises():
+    with pytest.raises(KeyError, match="kf_re"):
+        setup.data_path_for_re(999)
 
 
 class _StubDataset:
@@ -104,6 +98,11 @@ def _stub_build_dataset(train_len, test_len=5):
     return _build
 
 
+def _stub_setup(monkeypatch, train_len, target_path="/data/Re500_res128_part0.npy"):
+    monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len))
+    monkeypatch.setattr(adapt.setup, "data_path_for_re", lambda re: target_path)
+
+
 @pytest.fixture
 def train_cfg():
     return {
@@ -113,14 +112,14 @@ def train_cfg():
 
 
 def test_carve_pool_n_exceeds_train_raises(monkeypatch, train_cfg):
-    monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len=3))
+    _stub_setup(monkeypatch, train_len=3)
     cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
     with pytest.raises(ValueError, match="pool_n"):
         adapt.carve(cfg, train_cfg)
 
 
-def test_carve_builds_pool_and_retargets_config(monkeypatch, train_cfg):
-    monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len=100))
+def test_carve_builds_pool_and_sets_target_path(monkeypatch, train_cfg):
+    _stub_setup(monkeypatch, train_len=100)
     cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
     pool, _, target_cfg = adapt.carve(cfg, train_cfg)
     assert len(pool) == 4
@@ -129,14 +128,14 @@ def test_carve_builds_pool_and_retargets_config(monkeypatch, train_cfg):
 
 def test_carve_physics_objective_defaults_pool_to_one(monkeypatch, train_cfg):
     """Mode 1 (physics) carries no pool_n; carve falls back to a 1-sample pool."""
-    monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len=100))
+    _stub_setup(monkeypatch, train_len=100)
     cfg = _cfg({"target_re": 500, "objective": {"name": "physics", "ic_weight": 5.0}})
     pool, _, _ = adapt.carve(cfg, train_cfg)
     assert len(pool) == 1
 
 
 def test_carve_does_not_mutate_original_train_cfg(monkeypatch, train_cfg):
-    monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len=100))
+    _stub_setup(monkeypatch, train_len=100)
     cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
     _, _, target_cfg = adapt.carve(cfg, train_cfg)
     assert train_cfg["data"]["data_path"] == "/data/Re100_res128_part0.npy"

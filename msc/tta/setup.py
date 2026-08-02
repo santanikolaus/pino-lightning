@@ -53,9 +53,10 @@ class Regime:
         """Renders the one-line regime statement printed once per run."""
         if not self.cross:
             return f"physics regime: NATIVE, Re{self.op_re} both sides"
-        return (f"physics regime: CROSS, operator Re{self.op_re} vs data Re{self.test_re}; "
-                f"the residual is scored against the data's equation (Re{self.test_re}) "
-                f"unless a table says otherwise")
+        return (
+            f"physics regime: CROSS, operator Re{self.op_re} vs data Re{self.test_re}; "
+            f"the residual is scored against the data's equation (Re{self.test_re}) "
+            f"unless a table says otherwise")
 
 
 def path_re(path: str) -> "int | None":
@@ -73,18 +74,35 @@ def path_re(path: str) -> "int | None":
     return int(m.group(1)) if m else None
 
 
+def data_path_for_re(re: int) -> str:
+    """Resolves the res128 KF ground-truth file for a Reynolds number.
+
+    Args:
+      re: the Reynolds number; must have a kf_re entry in paths.yaml.
+
+    Returns:
+      Absolute path to that Reynolds number's res128 data file.
+    """
+    data = _PATHS["data"]
+    try:
+        fname = data["kf_re"][re]
+    except KeyError:
+        raise KeyError(
+            f"no kf_re entry for Re={re} in paths.yaml; add its res128 file")
+    return str(Path(data["ns"]) / fname)
+
+
+def wandb_tta_target() -> dict:
+    """Returns the entity and project a TTA adaptation run logs to."""
+    w = _PATHS["wandb"]
+    return {"entity": w["entity"], "project": w["project_tta"]}
+
+
 def resolve_regime(cfg: dict,
                    op_re: "int | None" = None,
                    test_re: "int | None" = None,
                    announce: bool = True) -> Regime:
     """Resolves both Reynolds numbers from CLI overrides, falling back to the training Re.
-
-    The only place that fallback lives and the only place the banner is printed, so a
-    run cannot pick a viscosity without surfacing which regime it is in. Because
-    --data-path and --test-re are independent flags, test_re is additionally checked
-    against the Reynolds token in the data path actually loaded: pointing at Re500 data
-    and forgetting --test-re would otherwise score it against the Re100 equation under a
-    confident NATIVE banner.
 
     Args:
       cfg: resolved training config; cfg["loss"]["re"] is the per-side default and
@@ -102,9 +120,10 @@ def resolve_regime(cfg: dict,
         print(regime.banner())
         found = path_re(cfg.get("data", {}).get("data_path", ""))
         if found is not None and found != regime.test_re:
-            print(f"  WARNING: data path says Re{found} but test_re={regime.test_re}; "
-                  f"the residual is being scored against the wrong equation unless you "
-                  f"meant this")
+            print(
+                f"  WARNING: data path says Re{found} but test_re={regime.test_re}; "
+                f"the residual is being scored against the wrong equation unless you "
+                f"meant this")
     return regime
 
 

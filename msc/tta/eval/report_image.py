@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from . import eval as ev
-from . import setup
+from .. import setup
 
 
 def main():

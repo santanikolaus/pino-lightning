@@ -4,12 +4,13 @@ import copy
 from pathlib import Path
 
 import torch
+import wandb
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import Subset
 
-from . import setup
+from .. import setup
 
 CONFIG_DIR = Path(__file__).parent / "configs"
 
@@ -48,35 +49,8 @@ def build(cfg: DictConfig, device: torch.device):
     return setup.load_model(cfg.ckpt, device)
 
 
-def retarget(path: str, op_re: int, target_re: int) -> str:
-    """Swaps the Reynolds token in a data path for the adaptation target's.
-
-    The KF filenames differ only in that token, so the swap preserves
-    resolution, pipeline and part. The token is matched with its trailing
-    underscore, or "Re100" would also match "Re1000".
-
-    Args:
-      path: a data path carrying the operator's own Reynolds token.
-      op_re: the operator's training Reynolds number.
-      target_re: the adaptation target's Reynolds number.
-
-    Returns:
-      The same path pointing at the target-Re file; unchanged when the operator
-      is already at target_re (the in-distribution control).
-    """
-    token = f"Re{op_re}_"
-    if token not in path:
-        raise ValueError(
-            f"no '{token}' in {path} — cannot derive the target-Re path")
-    return path.replace(token, f"Re{target_re}_")
-
-
 def carve(cfg: DictConfig, train_cfg: dict) -> tuple:
     """Builds the adapt pool and the held-out eval set on the target-Re data.
-
-    Both come from the target-Re file, and the split is inherited from
-    msc/configs/configs.yaml — held-out is the locked test window, the pool is
-    taken from train, so the two are disjoint by construction.
 
     Args:
       cfg: resolved client config, as returned by load_config().
@@ -86,10 +60,8 @@ def carve(cfg: DictConfig, train_cfg: dict) -> tuple:
       A tuple (pool, heldout, target_cfg): the adapt pool Subset, the held-out
       dataset, and the training config retargeted to the target-Re data.
     """
-    op_re = train_cfg["loss"]["re"]
     target_cfg = copy.deepcopy(train_cfg)
-    data = target_cfg["data"]
-    data["data_path"] = retarget(data["data_path"], op_re, cfg.target_re)
+    target_cfg["data"]["data_path"] = setup.data_path_for_re(cfg.target_re)
 
     heldout = setup.build_dataset(target_cfg, "test")
     train = setup.build_dataset(target_cfg, "train")
@@ -121,7 +93,7 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: dict) -> str:
         f"device      : {next(model.parameters()).device}",
         f"source_re   : {op_re}",
         f"target_re   : {cfg.target_re}",
-        f"target_path : {retarget(data['data_path'], op_re, cfg.target_re)}",
+        f"target_path : {setup.data_path_for_re(cfg.target_re)}",
         f"sub_t       : {data['sub_t']}",
         f"n_context   : {data.get('n_context', 1)}",
         f"objective   : {cfg.objective.name}",
@@ -133,17 +105,20 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: dict) -> str:
 
 
 def main(overrides: list) -> None:
-    """Runs the harness: compose config, load the operator, print the plan.
+    """Runs the harness: compose config, open a wandb run, load the operator, print the plan.
 
     Args:
-      overrides: hydra override tokens, e.g. ["+experiment=smoke"].
+      overrides: hydra override tokens, e.g. ["experiment=smoke"].
     """
     cfg = load_config(overrides)
+    run = wandb.init(config=OmegaConf.to_container(cfg, resolve=True),
+                     **setup.wandb_tta_target())
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, train_cfg = build(cfg, device)
     print(describe(cfg, model, train_cfg))
     pool, heldout, _ = carve(cfg, train_cfg)
     print(f"carved      : pool={len(pool)}  heldout={len(heldout)}")
+    run.finish()
 
 
 if __name__ == "__main__":

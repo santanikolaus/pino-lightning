@@ -248,7 +248,7 @@ def main():
     _run_gate("scale-stripped", bags[100], bags[500], strip=True, bw=bw_strip)
 
     if args.run_id:
-        from . import setup
+        from .. import setup
         eval_key = f"ns_re{args.eval_re}"
         model, cfg = setup.load_model(args.run_id, device)
         cfg["data"]["data_path"] = _data_path(eval_key)
