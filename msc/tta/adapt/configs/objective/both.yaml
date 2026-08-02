@@ -1,0 +1,6 @@
+name: both
+ic_weight: 5.0
+pool_n: 8
+match: spectrum
+bands: null
+mix: 0.5

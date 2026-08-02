@@ -20,30 +20,64 @@ projects:
 wandb:
   entity: megafuchs-johannes-kepler-universit-t-linz
   project: msc-base
+  project_tta: msc-tta
   # checkpoint pattern: <projects.pino_lightning>/msc-base/<run_id>/checkpoints/best.ckpt
+  # project_tta: separate project for TTA-in-OOD adaptation runs (not the pretrains)
 
 pretrain_checkpoints:
   # W&B project: megafuchs-johannes-kepler-universit-t-linz/msc-base/<id>
   # pattern: .../pino-lightning/msc-base/<id>/checkpoints/best.ckpt
-  re100:  msc-base/75prctl5/checkpoints/best.ckpt   # val_l2=0.313  epoch=26
-  re500:  msc-base/nrow6j9l/checkpoints/best.ckpt   # val_l2=0.460  epoch=21
+  re100:  msc-base/75prctl5/checkpoints/best.ckpt   # val_l2=0.3074 epoch=52
+  re500:  msc-base/nrow6j9l/checkpoints/best.ckpt   # val_l2=0.4350 epoch=62
   re300:  msc-base/<id>/checkpoints/best.ckpt        # not yet run
   re1000: msc-base/<id>/checkpoints/best.ckpt        # not yet run
+
+unet_checkpoints:
+  # UNet3D + bottleneck spatial spectral mixer (24.5M params vs FNO 21.1M); architecture
+  # contrast to pretrain_checkpoints above. configs/experiment/kf_unet_re{100,500}_pretrain.yaml
+  # differ from the FNO pretrains in the model block only — same data/split/loss/opt/precision.
+  # save_final_ckpt=true (top-level flag, src/train_kf.py) writes final.ckpt post-fit beside
+  # best.ckpt. Only these runs have it; the FNO and coarse checkpoints above are best-only.
+  # The 150ep pair is epoch-matched to the FNOs; the 300ep pair (max_epochs=300,
+  # opt.milestones=[50,100,150,200]) is converged — the FNOs plateau by ep100, the UNet does not.
+  re100:      msc-base/3z5bxjzp/checkpoints/best.ckpt  # 300ep, running since 2026-08-02
+  re500:      msc-base/qr6rs0jb/checkpoints/best.ckpt  # 300ep, val_l2=0.3445 epoch=237 (running, provisional)
+  re100_150e: msc-base/wobwri1s/checkpoints/best.ckpt  # 150ep, val_l2=0.1507 epoch=148 (still descending)
+  re500_150e: msc-base/1526c1cp/checkpoints/best.ckpt  # 150ep, val_l2=0.3776 epoch=149 (still descending)
+
+unet_final_checkpoints:
+  # Final-epoch weights, for the best-vs-last comparison. Verified 2026-08-02 by sha1 over the
+  # full state_dict: re500_150e final == best bit-for-bit (its best already fell on the last
+  # epoch, so that arm is a null experiment); re100_150e genuinely differs (best ep148 vs
+  # final ep150, val_l2 0.1507 vs 0.1511). The stored "epoch" field on final.ckpt is the
+  # post-fit counter (150), one past the last trained epoch.
+  re100:      msc-base/3z5bxjzp/checkpoints/final.ckpt  # written at fit end, not yet present
+  re500:      msc-base/qr6rs0jb/checkpoints/final.ckpt  # written at fit end, not yet present
+  re100_150e: msc-base/wobwri1s/checkpoints/final.ckpt  # differs from best (sha1 3668e982 vs 3f5401ce)
+  re500_150e: msc-base/1526c1cp/checkpoints/final.ckpt  # identical to best (sha1 a03249d0 both)
 
 coarse_checkpoints:
   # W&B project: megafuchs-johannes-kepler-universit-t-linz/msc-base/<id>
   # pattern: .../pino-lightning/msc-base/<id>/checkpoints/best.ckpt
-  re100_s8:  msc-base/g32z0ipc/checkpoints/best.ckpt  # val_l2=0.308
-  re100_s12: msc-base/qb6m7ux7/checkpoints/best.ckpt  # val_l2=0.273
-  re100_s14: msc-base/8140mmty/checkpoints/best.ckpt  # val_l2=0.242
-  re100_s16: msc-base/mjzrrn6o/checkpoints/best.ckpt  # val_l2=0.215
-  re500_s8:  msc-base/7xdpq52f/checkpoints/best.ckpt  # val_l2=0.445
-  re500_s12: msc-base/ec0p1swo/checkpoints/best.ckpt  # val_l2=0.377
-  re500_s14: msc-base/xg0vq2lz/checkpoints/best.ckpt  # val_l2=0.342
-  re500_s16: msc-base/b7damqem/checkpoints/best.ckpt  # val_l2=0.334 @ ep25 (training); f7onun8s diverged (0.421) — excluded
+  # val_l2/epoch = monitored minimum (best.ckpt), refetched 2026-07-29; see note above.
+  re100_s8:  msc-base/g32z0ipc/checkpoints/best.ckpt  # val_l2=0.3044 epoch=59
+  re100_s12: msc-base/qb6m7ux7/checkpoints/best.ckpt  # val_l2=0.2699 epoch=54
+  re100_s14: msc-base/8140mmty/checkpoints/best.ckpt  # val_l2=0.2386 epoch=54
+  re100_s16: msc-base/mjzrrn6o/checkpoints/best.ckpt  # val_l2=0.2086 epoch=54
+  re500_s8:  msc-base/7xdpq52f/checkpoints/best.ckpt  # val_l2=0.4394 epoch=44
+  re500_s12: msc-base/ec0p1swo/checkpoints/best.ckpt  # val_l2=0.3734 epoch=79
+  re500_s14: msc-base/xg0vq2lz/checkpoints/best.ckpt  # val_l2=0.3386 epoch=84
+  re500_s16: msc-base/b7damqem/checkpoints/best.ckpt  # val_l2=0.3096 epoch=89
 
 data:
   ns: /system/user/studentwork/wehofer/data/ns
+
+  kf_re:
+    # active KF ground truth, res128, keyed by Reynolds (TTA + pino/unet base).
+    # the only axis that varies in the current scope; add a Reynolds here once its
+    # res128 file exists. filenames relative to `ns` above.
+    100: NS_fine_Re100_T128_res128_part0.npy
+    500: NS_fine_Re500_T128_res128_part0.npy
 
   ns_files:
     # correlated continuous chains; original 128² dataset
@@ -54,8 +88,6 @@ data:
 
   ns_re500:
     # uncorrelated by design; 300 independent chains
-    res512: re500_res512
-    # 300 native 512² chains, each (129,512,512); NOT KFDataset-readable; use scripts/res512_gate
     res256: NS_fine_Re500_T128_res256_part0.npy
     # FFT-crop downsample of res512; (300,129,256,256); KFDataset-readable
     res128: NS_fine_Re500_T128_res128_part0.npy
@@ -76,10 +108,6 @@ data:
     # (300,129,256,256); KFDataset-readable
     res128: NS_fine_Re100_T128_res128_part0.npy
     # spectral FFT-crop downsample of res256; (300,129,128,128); KFDataset-readable
-    coarse_solver24: NS_fine_Re100_T128_res128_coarse_solver24_part0.npy
-    # STALE — sourced from the old correlated ns_files.re100 (pre-independent-chain
-    # redo), confirmed via code review 2026-07-02. Do not use; superseded by the
-    # coarse_solver{8,12,14,16} entries below, all sourced from res128 above.
     coarse_solver8:  NS_fine_Re100_T128_res128_coarse_solver8_part0.npy
     coarse_solver12: NS_fine_Re100_T128_res128_coarse_solver12_part0.npy
     coarse_solver14: NS_fine_Re100_T128_res128_coarse_solver14_part0.npy

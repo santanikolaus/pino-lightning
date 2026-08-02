@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import torch
 
-from msc.tta import report
+from msc.tta.eval import report
 from msc.tta.setup import Regime
 from msc.tta.eval import (band_power_t, cheb_bins, resid_minus_forcing, resid_ratio,
                           resid_rms)

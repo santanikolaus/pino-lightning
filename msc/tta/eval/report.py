@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from . import eval as ev
-from . import setup
+from .. import setup
 
 SHELLS = "shells"
 SHELLS_NODC = "shells1"

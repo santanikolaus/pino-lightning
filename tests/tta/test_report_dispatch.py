@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from msc.tta import eval as ev
-from msc.tta import report
+from msc.tta.eval import report
 from msc.tta.setup import Regime
 
 

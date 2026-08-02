@@ -258,7 +258,7 @@ def _cli():
     import argparse
     import torch
     from src.models.kf_fno import kf_forward
-    from . import setup
+    from .. import setup
 
     p = argparse.ArgumentParser(description="Render GT-vs-PRED diagnostic GIFs for one trajectory.")
     p.add_argument("--run-id", required=True)

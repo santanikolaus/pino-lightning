@@ -1,0 +1,13 @@
+defaults:
+  - objective: physics
+  - locus: full
+  - stop: fixed
+  - _self_
+  - experiment: null
+
+ckpt: ???
+target_re: 500
+steps: 200
+lr: 1.0e-4
+probe_every: null
+out_dir: outputs
