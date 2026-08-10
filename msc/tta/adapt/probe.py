@@ -1,26 +1,28 @@
 """Write-only held-out probe: measures the adapting operator, never feeds the optimizer."""
 import torch
-from omegaconf import DictConfig
+
+from .. import setup
+from ..eval import eval as ev
 
 
-def probe(model: torch.nn.Module, dataset, cfg: DictConfig) -> dict:
-    """Measures the current operator on a dataset for adaptation telemetry.
-
-    Write-only: GT is read for measurement only — it never reaches the
-    optimizer or the stop rule, so the recorded trajectory cannot leak into the
-    adaptation. The scoring equation's viscosity is taken from cfg.target_re
-    (the single source), never a hand-passed nu.
+def probe(model: torch.nn.Module, dataset, target_cfg: dict, regime: setup.Regime, device: torch.device) -> dict:
+    """Runs a write-only forward_bands pass for adaptation telemetry.
 
     Args:
       model: the operator under adaptation, in eval mode.
       dataset: KFDataset-like, yielding per-sample {"x": ic, "y": gt}.
-      cfg: resolved client config; cfg.target_re fixes the scoring equation.
+      target_cfg: train_cfg retargeted to the target-Re data, as returned by
+        build_splits() — source of every forward_bands kwarg.
+      regime: the run's op_re/test_re pair, built by the caller from the
+        adapt config (never from a live wandb fetch).
+      device: torch device to run the forward pass on.
 
     Returns:
-      Per-sample metrics as {name: (N,) array} — arrays, not scalars, so pool
-      (transductive) and held-out (inductive) keep their distributions. The
-      metric key-set is deferred to the loop wiring (Step C).
+      forward_bands' raw dict, unreduced: pred_pt/gt_pt/err_pt and the three
+      pde_res_* arrays, each per-sample.
     """
-    raise NotImplementedError(
-        "probe-eval seam: wire eval.py primitives + NSVorticity.residual over "
-        "the held-out forward; metric key-set fixed at Step C")
+    return ev.forward_bands(
+        model, dataset, device, regime=regime, time_scale=target_cfg["data"]["time_scale"],
+        temporal_pad=target_cfg["data"]["temporal_pad"], pad_mode=target_cfg["data"]["pad_mode"],
+        t_interval=target_cfg["loss"]["t_interval"],
+    )

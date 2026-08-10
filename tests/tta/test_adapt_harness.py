@@ -92,14 +92,14 @@ class _StubDataset:
         return self._length
 
 
-def _stub_build_dataset(train_len, test_len=5):
+def _stub_build_dataset(train_len, val_len=5):
     def _build(cfg, split_name):
-        return _StubDataset(test_len if split_name == "test" else train_len)
+        return _StubDataset(val_len if split_name == "val" else train_len)
     return _build
 
 
-def _stub_setup(monkeypatch, train_len, target_path="/data/Re500_res128_part0.npy"):
-    monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len))
+def _stub_setup(monkeypatch, train_len, val_len=5, target_path="/data/Re500_res128_part0.npy"):
+    monkeypatch.setattr(adapt.setup, "build_dataset", _stub_build_dataset(train_len, val_len))
     monkeypatch.setattr(adapt.setup, "data_path_for_re", lambda re: target_path)
 
 
@@ -111,32 +111,40 @@ def train_cfg():
     }
 
 
-def test_carve_pool_n_exceeds_train_raises(monkeypatch, train_cfg):
+def test_build_splits_pool_n_exceeds_train_raises(monkeypatch, train_cfg):
     _stub_setup(monkeypatch, train_len=3)
     cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
     with pytest.raises(ValueError, match="pool_n"):
-        adapt.carve(cfg, train_cfg)
+        adapt.build_splits(cfg, train_cfg)
 
 
-def test_carve_builds_pool_and_sets_target_path(monkeypatch, train_cfg):
+def test_build_splits_builds_pool_and_sets_target_path(monkeypatch, train_cfg):
     _stub_setup(monkeypatch, train_len=100)
     cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
-    pool, _, target_cfg = adapt.carve(cfg, train_cfg)
+    pool, _, target_cfg = adapt.build_splits(cfg, train_cfg)
     assert len(pool) == 4
     assert target_cfg["data"]["data_path"] == "/data/Re500_res128_part0.npy"
 
 
-def test_carve_physics_objective_defaults_pool_to_one(monkeypatch, train_cfg):
-    """Mode 1 (physics) carries no pool_n; carve falls back to a 1-sample pool."""
+def test_build_splits_physics_objective_defaults_pool_to_one(monkeypatch, train_cfg):
+    """Mode 1 (physics) carries no pool_n; build_splits falls back to a 1-sample pool."""
     _stub_setup(monkeypatch, train_len=100)
     cfg = _cfg({"target_re": 500, "objective": {"name": "physics", "ic_weight": 5.0}})
-    pool, _, _ = adapt.carve(cfg, train_cfg)
+    pool, _, _ = adapt.build_splits(cfg, train_cfg)
     assert len(pool) == 1
 
 
-def test_carve_does_not_mutate_original_train_cfg(monkeypatch, train_cfg):
+def test_build_splits_does_not_mutate_original_train_cfg(monkeypatch, train_cfg):
     _stub_setup(monkeypatch, train_len=100)
     cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
-    _, _, target_cfg = adapt.carve(cfg, train_cfg)
+    _, _, target_cfg = adapt.build_splits(cfg, train_cfg)
     assert train_cfg["data"]["data_path"] == "/data/Re100_res128_part0.npy"
     assert target_cfg["data"]["data_path"] == "/data/Re500_res128_part0.npy"
+
+
+def test_build_splits_heldout_reads_val_not_test(monkeypatch, train_cfg):
+    """heldout must read val [240:270] — test is the single locked read, not probe fodder."""
+    _stub_setup(monkeypatch, train_len=100, val_len=7)
+    cfg = _cfg({"target_re": 500, "objective": {"name": "physics", "ic_weight": 5.0}})
+    _, heldout, _ = adapt.build_splits(cfg, train_cfg)
+    assert len(heldout) == 7
