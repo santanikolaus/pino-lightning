@@ -145,6 +145,11 @@ def resolve(run_id: str) -> dict:
     with hydra.initialize_config_dir(config_dir=str(ROOT / "configs"),
                                      version_base=None):
         cfg = hydra.compose(config_name="train_kf", overrides=overrides)
+    # TODO: return cfg (DictConfig) instead of to_container()'s plain dict, so every
+    # consumer gets attribute access (target_cfg.data.time_scale) instead of bracket
+    # chains. Deferred: report.py/mmd_gate.py/report_gif/report_image/legacy + the
+    # npz metadata path all currently assume a plain dict here -- a deliberate,
+    # cross-file change, not a drive-by fix.
     return OmegaConf.to_container(cfg, resolve=True)
 
 

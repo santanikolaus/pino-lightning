@@ -47,22 +47,23 @@ def _cfg(overrides):
 def test_describe_formats_without_model_load():
     """describe() renders from a fake cfg + model — no wandb, no disk."""
     model = torch.nn.Linear(3, 1)
-    cfg = _cfg({"ckpt": "abc123", "target_re": 500, "steps": 200, "lr": 1e-4,
+    cfg = _cfg({"ckpt": "abc123", "target_re": 500, "op_re": 100, "steps": 200, "lr": 1e-4,
                 "objective": {"name": "physics", "ic_weight": 5.0},
                 "locus": {"name": "full"}})
     train_cfg = {"model": {"model_arch": "fno"},
                  "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2},
-                 "loss": {"re": 100}}
+                 "loss": {"re": 999}}  # deliberately wrong: source_re must read cfg.op_re, not this
     out = adapt.describe(cfg, model, train_cfg)
     assert "abc123" in out
     assert "Linear (fno)" in out
     assert "objective   : physics" in out
     assert "n_context   : 1" in out  # absent in train_cfg -> defaults to 1
+    assert "source_re   : 100" in out
 
 
 def test_describe_reports_pool_for_spectral_objective():
     model = torch.nn.Linear(3, 1)
-    cfg = _cfg({"ckpt": "z", "target_re": 500, "steps": 200, "lr": 1e-4,
+    cfg = _cfg({"ckpt": "z", "target_re": 500, "op_re": 100, "steps": 200, "lr": 1e-4,
                 "objective": {"name": "spectral", "pool_n": 8},
                 "locus": {"name": "full"}})
     train_cfg = {"model": {"model_arch": "unet"},
