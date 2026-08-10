@@ -1,4 +1,4 @@
-"""TTA adaptation client. Harness stage: wandb-id -> load operator -> carve target-Re data."""
+"""TTA adaptation client. Harness stage: wandb-id -> load operator -> build_splits target-Re data."""
 import argparse
 import copy
 from pathlib import Path
@@ -49,8 +49,14 @@ def build(cfg: DictConfig, device: torch.device):
     return setup.load_model(cfg.ckpt, device)
 
 
-def carve(cfg: DictConfig, train_cfg: dict) -> tuple:
-    """Builds the adapt pool and the held-out eval set on the target-Re data.
+def build_splits(cfg: DictConfig, train_cfg: dict) -> tuple:
+    """Builds the adapt pool and the held-out probe set on the target-Re data.
+
+    heldout reads the val split ([240:270]), not test: probe fires every
+    probe_every steps across a whole ladder of objective/locus/lr cells, and a
+    human watches those curves to pick a config — that is model selection, the
+    job §3 assigns to val. test ([270:300]) is reserved for the one locked read
+    at the end of the ladder, on the config picked from val.
 
     Args:
       cfg: resolved client config, as returned by load_config().
@@ -63,7 +69,7 @@ def carve(cfg: DictConfig, train_cfg: dict) -> tuple:
     target_cfg = copy.deepcopy(train_cfg)
     target_cfg["data"]["data_path"] = setup.data_path_for_re(cfg.target_re)
 
-    heldout = setup.build_dataset(target_cfg, "test")
+    heldout = setup.build_dataset(target_cfg, "val")
     train = setup.build_dataset(target_cfg, "train")
     pool_n = cfg.objective.get("pool_n", 1)
     if pool_n > len(train):
@@ -99,7 +105,7 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: dict) -> str:
         f"objective   : {cfg.objective.name}",
         f"locus       : {cfg.locus.name}",
         f"pool        : {cfg.objective.get('pool_n', 1)} samples (train split)",
-        f"heldout     : {setup.SPLIT['test']['n']} samples (test split)",
+        f"heldout     : {setup.SPLIT['val']['n']} samples (val split)",
         f"budget      : {cfg.steps} steps @ lr={cfg.lr}",
     ])
 
@@ -116,7 +122,7 @@ def main(overrides: list) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, train_cfg = build(cfg, device)
     print(describe(cfg, model, train_cfg))
-    pool, heldout, _ = carve(cfg, train_cfg)
+    pool, heldout, _ = build_splits(cfg, train_cfg)
     print(f"carved      : pool={len(pool)}  heldout={len(heldout)}")
     run.finish()
 
