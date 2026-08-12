@@ -2,7 +2,7 @@ from msc.tta.adapt import probe
 from msc.tta.setup import Regime
 
 
-def test_probe_dispatches_target_cfg_kwargs_and_returns_stub_untouched(monkeypatch):
+def test_measure_dispatches_target_cfg_kwargs_and_returns_stub_untouched(monkeypatch):
     target_cfg = {
         "data": {"time_scale": 2.0, "temporal_pad": 4, "pad_mode": "periodic"},
         "loss": {"t_interval": 0.5},
@@ -21,7 +21,7 @@ def test_probe_dispatches_target_cfg_kwargs_and_returns_stub_untouched(monkeypat
 
     monkeypatch.setattr(probe.ev, "forward_bands", _stub_forward_bands)
 
-    out = probe.probe(model, dataset, target_cfg, regime, device)
+    out = probe.measure(model, dataset, target_cfg, regime, device)
 
     assert out is sentinel
     assert len(calls) == 1

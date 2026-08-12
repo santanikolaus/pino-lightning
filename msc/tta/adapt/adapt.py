@@ -1,4 +1,3 @@
-"""TTA adaptation client. Harness stage: wandb-id -> load operator -> build_splits target-Re data."""
 import argparse
 import copy
 from pathlib import Path
@@ -30,8 +29,7 @@ def load_config(overrides: list) -> DictConfig:
     """
     if GlobalHydra.instance().is_initialized():
         GlobalHydra.instance().clear()
-    with initialize_config_dir(config_dir=str(CONFIG_DIR.resolve()),
-                               version_base=None):
+    with initialize_config_dir(config_dir=str(CONFIG_DIR.resolve()), version_base=None):
         return compose(config_name="adapt", overrides=overrides)
 
 
@@ -73,8 +71,9 @@ def build_splits(cfg: DictConfig, train_cfg: dict) -> tuple:
     train = setup.build_dataset(target_cfg, "train")
     pool_n = cfg.objective.get("pool_n", 1)
     if pool_n > len(train):
-        raise ValueError(
-            f"pool_n={pool_n} exceeds the train split ({len(train)})")
+        raise ValueError(f"pool_n={pool_n} exceeds the train split ({len(train)})")
+    # NOTE: pool is chains [0:pool_n); a one-off re-run with [10:10+pool_n) would
+    # check whether this fixed window biases adaptation measurements.
     return Subset(train, range(pool_n)), heldout, target_cfg
 
 
@@ -90,24 +89,19 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: dict) -> str:
       A human-readable multi-line summary of what an adaptation run would use.
     """
     data = train_cfg["data"]
-    op_re = train_cfg["loss"]["re"]
     n_params = sum(p.numel() for p in model.parameters())
-    return "\n".join([
-        f"run_id      : {cfg.ckpt}",
-        f"model       : {type(model).__name__} ({train_cfg['model']['model_arch']})",
-        f"n_params    : {n_params:,}",
-        f"device      : {next(model.parameters()).device}",
-        f"source_re   : {op_re}",
-        f"target_re   : {cfg.target_re}",
-        f"target_path : {setup.data_path_for_re(cfg.target_re)}",
-        f"sub_t       : {data['sub_t']}",
-        f"n_context   : {data.get('n_context', 1)}",
-        f"objective   : {cfg.objective.name}",
-        f"locus       : {cfg.locus.name}",
-        f"pool        : {cfg.objective.get('pool_n', 1)} samples (train split)",
-        f"heldout     : {setup.SPLIT['val']['n']} samples (val split)",
-        f"budget      : {cfg.steps} steps @ lr={cfg.lr}",
-    ])
+    return "\n".join(
+        [
+            f"run_id      : {cfg.ckpt}", f"model       : {type(model).__name__} ({train_cfg['model']['model_arch']})",
+            f"n_params    : {n_params:,}", f"device      : {next(model.parameters()).device}",
+            f"source_re   : {cfg.op_re}", f"target_re   : {cfg.target_re}",
+            f"target_path : {setup.data_path_for_re(cfg.target_re)}", f"sub_t       : {data['sub_t']}",
+            f"n_context   : {data.get('n_context', 1)}", f"objective   : {cfg.objective.name}",
+            f"locus       : {cfg.locus.name}", f"pool        : {cfg.objective.get('pool_n', 1)} samples (train split)",
+            f"heldout     : {setup.SPLIT['val']['n']} samples (val split)",
+            f"budget      : {cfg.steps} steps @ lr={cfg.lr}",
+        ]
+    )
 
 
 def main(overrides: list) -> None:
@@ -117,8 +111,7 @@ def main(overrides: list) -> None:
       overrides: hydra override tokens, e.g. ["experiment=smoke"].
     """
     cfg = load_config(overrides)
-    run = wandb.init(config=OmegaConf.to_container(cfg, resolve=True),
-                     **setup.wandb_tta_target())
+    run = wandb.init(config=OmegaConf.to_container(cfg, resolve=True), **setup.wandb_tta_target())
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, train_cfg = build(cfg, device)
     print(describe(cfg, model, train_cfg))
@@ -128,11 +121,7 @@ def main(overrides: list) -> None:
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="TTA adaptation client (harness stage)")
-    ap.add_argument(
-        "overrides",
-        nargs="*",
-        help="hydra override tokens, e.g. experiment=smoke steps=100")
+    ap = argparse.ArgumentParser(description="TTA adaptation client (harness stage)")
+    ap.add_argument("overrides", nargs="*", help="hydra override tokens, e.g. experiment=smoke steps=100")
     args = ap.parse_args()
     main(args.overrides)
