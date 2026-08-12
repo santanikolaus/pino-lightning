@@ -5,10 +5,11 @@ defaults:
   - _self_
   - experiment: null
 
+exp: base  # ladder rung, set by the experiment yaml; groups runs in wandb
 ckpt: ???
 target_re: 500
 op_re: 100  # operator's training Re, fixed here so the probe's regime is legible from checked-in config, not a live wandb fetch
 steps: 200
 lr: 1.0e-4
-probe_every: null
-out_dir: outputs
+probe_every: 10
+out_dir: msc/tta/outputs/adapt  # relative to setup.ROOT, not the CWD

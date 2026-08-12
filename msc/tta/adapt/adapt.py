@@ -2,6 +2,7 @@ import argparse
 import copy
 from pathlib import Path
 
+import numpy as np
 import torch
 import wandb
 from hydra import compose, initialize_config_dir
@@ -10,6 +11,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import Subset
 
 from .. import setup
+from ..eval.report import _git_sha
 from . import loop
 
 CONFIG_DIR = Path(__file__).parent / "configs"
@@ -23,7 +25,7 @@ def load_config(overrides: list) -> DictConfig:
     _global_ package merge bypasses struct — so it is silently ignored.
 
     Args:
-      overrides: hydra override tokens, e.g. ["experiment=smoke", "steps=100"].
+      overrides: hydra override tokens, e.g. ["experiment=vanilla", "steps=100"].
 
     Returns:
       The composed config: objective/locus/stop groups, run mechanics, ckpt.
@@ -105,29 +107,93 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> 
     )
 
 
-def main(overrides: list) -> None:
-    """Runs the harness: compose config, open a wandb run, load the operator, adapt, print progress.
+def run_name(cfg: DictConfig) -> str:
+    """Composes the wandb run name from every axis a ladder cell varies along.
 
-    Persistence and wandb logging are not wired yet — adapt() prints its own
-    step/snapshot progress to stdout only.
+    Re-runs of one cell deliberately share a name — the wandb id keeps them
+    apart. n{pool_n} is the regime: n1 is online, n>1 is batch.
 
     Args:
-      overrides: hydra override tokens, e.g. ["experiment=smoke"].
+      cfg: resolved client config, as returned by load_config().
+
+    Returns:
+      A name like "physics-full-100to500-n1-lr1e-04-s100".
+    """
+    return (f"{cfg.objective.name}-{cfg.locus.name}-{cfg.op_re}to{cfg.target_re}"
+            f"-n{cfg.objective.get('pool_n', 1)}-lr{cfg.lr:.0e}-s{cfg.steps}")
+
+
+def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
+                 run_id: str, target_cfg: DictConfig, pool_n: int) -> None:
+    """Writes the run's raw snapshot/loss arrays plus metadata to a compressed .npz.
+
+    Stores loop.collate()'s output and the per-step loss components verbatim, so any
+    later band/frame/window slicing (e.g. early vs. full-trajectory rel_l2) is
+    recomputable without a GPU — same rationale as report.py::_save_arrays.
+
+    Args:
+      path: destination .npz path.
+      snapshots: the snapshot list loop.adapt() returned.
+      losses: the per-step loss dict list loop.adapt() returned.
+      cfg: resolved client config, as returned by load_config().
+      run_id: wandb run id this adaptation run logged under.
+      target_cfg: train_cfg retargeted to the target-Re data, as returned by build_splits().
+      pool_n: adapt pool size, as returned by len(build_splits()'s pool).
+    """
+    collated = loop.collate(snapshots)
+    loss_arrays = {f"losses_{k}": np.array([l[k] for l in losses]) for k in losses[0]}
+    meta = {
+        "run_id": run_id,
+        "exp": cfg.exp,
+        "ckpt": cfg.ckpt,
+        "op_re": cfg.op_re,
+        "target_re": cfg.target_re,
+        "objective": cfg.objective.name,
+        "ic_weight": cfg.objective.ic_weight,
+        "locus": cfg.locus.name,
+        "steps": cfg.steps,
+        "lr": cfg.lr,
+        "probe_every": cfg.probe_every,
+        "pool_n": pool_n,
+        "pool_split": f"train offset=0 n={pool_n}",
+        "heldout_split": f"val offset={setup.SPLIT['val']['offset']} n={setup.SPLIT['val']['n']}",
+        "target_path": target_cfg.data.data_path,
+        "commit": _git_sha(),
+    }
+    np.savez_compressed(path, **collated, **loss_arrays,
+                        **{f"meta_{k}": np.array(v) for k, v in meta.items()})
+    print(f"saved arrays + metadata -> {path}")
+
+
+def main(overrides: list) -> None:
+    """Runs the harness: compose config, open a wandb run, adapt, log to wandb, save arrays.
+
+    Args:
+      overrides: hydra override tokens, e.g. ["experiment=vanilla"].
     """
     cfg = load_config(overrides)
-    run = wandb.init(config=OmegaConf.to_container(cfg, resolve=True), **setup.wandb_tta_target())
+    run = wandb.init(name=run_name(cfg), group=cfg.exp,
+                     config=OmegaConf.to_container(cfg, resolve=True),
+                     **setup.wandb_tta_target())
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, train_cfg = build(cfg, device)
     print(describe(cfg, model, train_cfg))
     pool, heldout, target_cfg = build_splits(cfg, train_cfg)
     print(f"splits      : pool={len(pool)}  heldout={len(heldout)}")
     regime = setup.resolve_regime(target_cfg, op_re=cfg.op_re, test_re=cfg.target_re)
-    loop.adapt(model, pool, heldout, target_cfg, regime, cfg, device)
+    _, snapshots, losses = loop.adapt(
+        model, pool, heldout, target_cfg, regime, cfg, device,
+        log_fn=lambda metrics, step: run.log(metrics, step=step),
+    )
+    out_dir = setup.ROOT / cfg.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _save_arrays(str(out_dir / f"{run.name}_{run.id}.npz"), snapshots, losses, cfg,
+                 run.id, target_cfg, len(pool))
     run.finish()
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="TTA adaptation client (harness stage)")
-    ap.add_argument("overrides", nargs="*", help="hydra override tokens, e.g. experiment=smoke steps=100")
+    ap.add_argument("overrides", nargs="*", help="hydra override tokens, e.g. experiment=vanilla steps=100")
     args = ap.parse_args()
     main(args.overrides)
