@@ -32,21 +32,21 @@ def test_regime_is_frozen_so_a_consumer_cannot_retarget_it_mid_run():
 def test_resolve_regime_falls_back_to_the_training_re_per_side_independently():
     """--test-re alone is the row-B invocation: the operator keeps its training Re
     while the data side moves, so the two defaults must not be coupled."""
-    r = resolve_regime(_cfg(100), op_re=None, test_re=500, announce=False)
+    r = resolve_regime(_cfg(100), op_re=None, test_re=500)
     assert (r.op_re, r.test_re) == (100, 500)
-    r = resolve_regime(_cfg(100), op_re=None, test_re=None, announce=False)
+    r = resolve_regime(_cfg(100), op_re=None, test_re=None)
     assert (r.op_re, r.test_re) == (100, 100)
 
 
 def test_banner_names_the_regime_and_both_re():
-    native = resolve_regime(_cfg(100), announce=False).banner()
+    native = resolve_regime(_cfg(100)).banner()
     assert "NATIVE" in native and "Re100" in native
 
-    cross = resolve_regime(_cfg(100), test_re=500, announce=False).banner()
+    cross = resolve_regime(_cfg(100), test_re=500).banner()
     assert "CROSS" in cross and "Re100" in cross and "Re500" in cross
 
 
-def test_resolve_regime_prints_the_banner_once_when_announcing(capsys):
+def test_resolve_regime_prints_the_banner_once(capsys):
     resolve_regime(_cfg(100), test_re=500)
     out = capsys.readouterr().out
     assert out.count("physics regime:") == 1

@@ -100,8 +100,7 @@ def wandb_tta_target() -> dict:
 
 def resolve_regime(cfg: DictConfig,
                    op_re: "int | None" = None,
-                   test_re: "int | None" = None,
-                   announce: bool = True) -> Regime:
+                   test_re: "int | None" = None) -> Regime:
     """Resolves both Reynolds numbers from CLI overrides, falling back to the training Re.
 
     Args:
@@ -109,21 +108,19 @@ def resolve_regime(cfg: DictConfig,
         cfg.data.data_path is the file the test_re claim is checked against.
       op_re: override for the operator's Re, or None for the training Re.
       test_re: override for the data's Re, or None for the training Re.
-      announce: print the banner (set False when a caller prints it itself).
 
     Returns:
       The resolved Regime.
     """
     regime = Regime(op_re=op_re or cfg.loss.re,
                     test_re=test_re or cfg.loss.re)
-    if announce:
-        print(regime.banner())
-        found = path_re(cfg.get("data", {}).get("data_path", ""))
-        if found is not None and found != regime.test_re:
-            print(
-                f"  WARNING: data path says Re{found} but test_re={regime.test_re}; "
-                f"the residual is being scored against the wrong equation unless you "
-                f"meant this")
+    print(regime.banner())
+    found = path_re(cfg.get("data", {}).get("data_path", ""))
+    if found is not None and found != regime.test_re:
+        print(
+            f"  WARNING: data path says Re{found} but test_re={regime.test_re}; "
+            f"the residual is being scored against the wrong equation unless you "
+            f"meant this")
     return regime
 
 
