@@ -98,15 +98,15 @@ def wandb_tta_target() -> dict:
     return {"entity": w["entity"], "project": w["project_tta"]}
 
 
-def resolve_regime(cfg: "dict | DictConfig",
+def resolve_regime(cfg: DictConfig,
                    op_re: "int | None" = None,
                    test_re: "int | None" = None,
                    announce: bool = True) -> Regime:
     """Resolves both Reynolds numbers from CLI overrides, falling back to the training Re.
 
     Args:
-      cfg: resolved training config; cfg["loss"]["re"] is the per-side default and
-        cfg["data"]["data_path"] is the file the test_re claim is checked against.
+      cfg: resolved training config; cfg.loss.re is the per-side default and
+        cfg.data.data_path is the file the test_re claim is checked against.
       op_re: override for the operator's Re, or None for the training Re.
       test_re: override for the data's Re, or None for the training Re.
       announce: print the banner (set False when a caller prints it itself).
@@ -114,8 +114,8 @@ def resolve_regime(cfg: "dict | DictConfig",
     Returns:
       The resolved Regime.
     """
-    regime = Regime(op_re=op_re or cfg["loss"]["re"],
-                    test_re=test_re or cfg["loss"]["re"])
+    regime = Regime(op_re=op_re or cfg.loss.re,
+                    test_re=test_re or cfg.loss.re)
     if announce:
         print(regime.banner())
         found = path_re(cfg.get("data", {}).get("data_path", ""))

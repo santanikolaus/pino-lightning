@@ -4,12 +4,13 @@ Reynolds numbers are resolved and the only place a viscosity comes from.
 Pure dataclass logic: no checkpoints, no wandb, no data.
 """
 import pytest
+from omegaconf import DictConfig, OmegaConf
 
 from msc.tta.setup import Regime, path_re, resolve_regime
 
 
-def _cfg(re: int) -> dict:
-    return {"loss": {"re": re}}
+def _cfg(re: int) -> DictConfig:
+    return OmegaConf.create({"loss": {"re": re}})
 
 
 def test_native_and_cross_are_decided_by_the_two_re_differing():
@@ -65,7 +66,7 @@ def test_mismatched_data_path_and_test_re_is_warned_about(capsys):
     """--data-path and --test-re are independent flags, so pointing at Re500 data and
     forgetting --test-re scores it against the Re100 equation under a NATIVE banner.
     The banner alone would make that wrong answer look authoritative."""
-    cfg = {"loss": {"re": 100}, "data": {"data_path": "/d/Re500_T128_part0.npy"}}
+    cfg = OmegaConf.create({"loss": {"re": 100}, "data": {"data_path": "/d/Re500_T128_part0.npy"}})
 
     resolve_regime(cfg)
     assert "WARNING" in capsys.readouterr().out
@@ -75,5 +76,5 @@ def test_mismatched_data_path_and_test_re_is_warned_about(capsys):
 
 
 def test_no_warning_when_the_path_carries_no_re_token(capsys):
-    resolve_regime({"loss": {"re": 100}, "data": {"data_path": "/d/anon.npy"}})
+    resolve_regime(OmegaConf.create({"loss": {"re": 100}, "data": {"data_path": "/d/anon.npy"}}))
     assert "WARNING" not in capsys.readouterr().out
