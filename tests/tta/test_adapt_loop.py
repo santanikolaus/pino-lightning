@@ -102,10 +102,12 @@ def test_adapt_snapshots_on_schedule_and_clones_the_model():
     cfg = _adapt_cfg(steps=4, probe_every=2)
     regime = Regime(op_re=100, test_re=100)
 
-    adapted, snapshots = loop.adapt(model, pool, heldout, _target_cfg(), regime,
-                                    cfg, torch.device("cpu"))
+    adapted, snapshots, losses = loop.adapt(model, pool, heldout, _target_cfg(), regime,
+                                            cfg, torch.device("cpu"))
 
     assert [s["step"] for s in snapshots] == [0, 2, 4]
+    assert len(losses) == 4
+    assert all(set(l) == {"loss", "data", "pde", "ic"} for l in losses)
     assert adapted is not model
     assert not adapted.training
     after_original = torch.cat([p.flatten() for p in model.parameters()])
@@ -120,10 +122,52 @@ def test_adapt_final_step_not_duplicated_when_it_lands_on_probe_every():
     cfg = _adapt_cfg(steps=2, probe_every=2)  # steps % probe_every == 0
     regime = Regime(op_re=100, test_re=100)
 
-    _, snapshots = loop.adapt(model, pool, heldout, _target_cfg(), regime,
-                              cfg, torch.device("cpu"))
+    _, snapshots, _ = loop.adapt(model, pool, heldout, _target_cfg(), regime,
+                                 cfg, torch.device("cpu"))
 
     assert [s["step"] for s in snapshots] == [0, 2]
+
+
+def test_step_metrics_namespaces_loss_components():
+    step_losses = {"loss": 1.0, "data": 2.0, "pde": 3.0, "ic": 4.0}
+    assert loop._step_metrics(step_losses) == {
+        "train/loss": 1.0, "train/pde": 3.0, "train/ic": 4.0, "train/item_rel_l2": 2.0,
+    }
+
+
+def test_snapshot_metrics_dispatches_rel_l2_and_resid_rms(monkeypatch):
+    snapshot = {
+        "step": 5,
+        "pool": {"err_pt": "pool_err", "gt_pt": "pool_gt", "pde_res_pred_pt": "pool_res"},
+        "heldout": {"err_pt": "held_err", "gt_pt": "held_gt", "pde_res_pred_pt": "held_res"},
+    }
+    rel_l2_calls, resid_rms_calls = [], []
+    monkeypatch.setattr(loop.ev, "rel_l2", lambda err, gt: rel_l2_calls.append((err, gt)) or 0.5)
+    monkeypatch.setattr(loop.ev, "resid_rms", lambda res: resid_rms_calls.append(res) or loop.F_RMS)
+
+    out = loop._snapshot_metrics(snapshot)
+
+    assert out == {"pool/rel_l2": 0.5, "heldout/rel_l2": 0.5, "pool/res_rms": 1.0, "heldout/res_rms": 1.0}
+    assert rel_l2_calls == [("pool_err", "pool_gt"), ("held_err", "held_gt")]
+    assert resid_rms_calls == ["pool_res", "held_res"]
+
+
+def test_log_fn_called_every_step_and_extra_at_snapshots():
+    model = _tiny_model()
+    pool, heldout = _FakeDataset(1, 8, 5), _FakeDataset(1, 8, 5, seed=1)
+    cfg = _adapt_cfg(steps=4, probe_every=2)
+    regime = Regime(op_re=100, test_re=100)
+    calls = []
+
+    loop.adapt(model, pool, heldout, _target_cfg(), regime, cfg, torch.device("cpu"),
+              log_fn=lambda metrics, step: calls.append((step, frozenset(metrics))))
+
+    train_keys = frozenset({"train/loss", "train/pde", "train/ic", "train/item_rel_l2"})
+    snap_keys = frozenset({"pool/rel_l2", "pool/res_rms", "heldout/rel_l2", "heldout/res_rms"})
+    assert calls == [
+        (0, snap_keys), (1, train_keys), (2, train_keys), (2, snap_keys),
+        (3, train_keys), (4, train_keys), (4, snap_keys),
+    ]
 
 
 def test_collate_stacks_per_side_and_keeps_scalars_unstacked():

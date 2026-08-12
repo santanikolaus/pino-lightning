@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 import torch
 from omegaconf import MissingMandatoryValue, OmegaConf
@@ -22,13 +23,14 @@ def test_load_config_missing_ckpt_raises_on_access():
 
 
 def test_load_config_experiment_overrides_and_sets_ckpt():
-    cfg = adapt.load_config(["experiment=smoke"])
+    cfg = adapt.load_config(["experiment=vanilla"])
     assert cfg.ckpt == "75prctl5"
-    assert cfg.steps == 50
+    assert cfg.exp == "vanilla"
+    assert cfg.steps == 100
 
 
 def test_load_config_group_swap_brings_pool_n():
-    cfg = adapt.load_config(["experiment=smoke", "objective=spectral"])
+    cfg = adapt.load_config(["experiment=vanilla", "objective=spectral"])
     assert cfg.objective.name == "spectral"
     assert cfg.objective.pool_n == 8
 
@@ -37,7 +39,7 @@ def test_load_config_cli_override_of_undeclared_key_raises():
     """A `key=val` override (no +) on an undeclared key fails loud at compose."""
     from hydra.errors import ConfigCompositionException
     with pytest.raises(ConfigCompositionException):
-        adapt.load_config(["experiment=smoke", "stpes=99"])
+        adapt.load_config(["experiment=vanilla", "stpes=99"])
 
 
 def _cfg(overrides):
@@ -149,3 +151,43 @@ def test_build_splits_heldout_reads_val_not_test(monkeypatch, train_cfg):
     cfg = _cfg({"target_re": 500, "objective": {"name": "physics", "ic_weight": 5.0}})
     _, heldout, _ = adapt.build_splits(cfg, train_cfg)
     assert len(heldout) == 7
+
+
+def test_run_name_encodes_every_ladder_axis():
+    cfg = _cfg({"objective": {"name": "physics", "pool_n": 8}, "locus": {"name": "full"},
+                "op_re": 100, "target_re": 500, "lr": 1e-4, "steps": 100})
+    assert adapt.run_name(cfg) == "physics-full-100to500-n8-lr1e-04-s100"
+
+
+def test_run_name_defaults_pool_n_to_online():
+    cfg = _cfg({"objective": {"name": "physics"}, "locus": {"name": "full"},
+                "op_re": 100, "target_re": 500, "lr": 1e-4, "steps": 100})
+    assert adapt.run_name(cfg) == "physics-full-100to500-n1-lr1e-04-s100"
+
+
+def test_save_arrays_round_trips_through_tmp_npz(tmp_path, monkeypatch):
+    from msc.tta.adapt import adapt as adapt_module  # _save_arrays is private, not package-re-exported
+
+    monkeypatch.setattr(adapt_module, "_git_sha", lambda: "deadbeef")
+    snapshots = [
+        {"step": 0, "pool": {"n_bands": 5, "err_pt": np.ones((1, 5, 3))},
+         "heldout": {"n_bands": 5, "err_pt": np.zeros((2, 5, 3))}},
+        {"step": 1, "pool": {"n_bands": 5, "err_pt": 2 * np.ones((1, 5, 3))},
+         "heldout": {"n_bands": 5, "err_pt": np.ones((2, 5, 3))}},
+    ]
+    losses = [{"loss": 0.5, "data": 0.1, "pde": 0.3, "ic": 0.2}]
+    cfg = _cfg({"exp": "vanilla", "ckpt": "abc123", "op_re": 100, "target_re": 500, "steps": 1, "lr": 1e-4,
+               "probe_every": 1, "objective": {"name": "physics", "ic_weight": 5.0},
+               "locus": {"name": "full"}})
+    target_cfg = _cfg({"data": {"data_path": "/data/Re500_res128_part0.npy"}})
+
+    path = str(tmp_path / "run.npz")
+    adapt_module._save_arrays(path, snapshots, losses, cfg, "wandbrun1", target_cfg, pool_n=1)
+
+    out = np.load(path)
+    assert list(out["step"]) == [0, 1]
+    assert out["losses_loss"][0] == pytest.approx(0.5)
+    assert out["meta_run_id"].item() == "wandbrun1"
+    assert out["meta_ckpt"].item() == "abc123"
+    assert out["meta_target_path"].item() == "/data/Re500_res128_part0.npy"
+    assert out["meta_commit"].item() == "deadbeef"
