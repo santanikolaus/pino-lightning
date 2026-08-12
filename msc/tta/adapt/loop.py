@@ -2,6 +2,7 @@ import copy
 
 import numpy as np
 import torch
+from omegaconf import DictConfig
 
 from src.models.kf_fno import enable_gradient_checkpointing, kf_forward
 from src.pde.ns import KFLoss
@@ -17,7 +18,7 @@ def _loss_fn(cfg) -> KFLoss:
     return KFLoss(re=cfg.target_re, data_weight=0.0, pde_weight=1.0, ic_weight=cfg.objective.ic_weight)
 
 
-def _eval(model, pool, heldout, target_cfg: dict, regime, device, step: int) -> dict:
+def _eval(model, pool, heldout, target_cfg: DictConfig, regime, device, step: int) -> dict:
     """Measures pool (transductive) and heldout (inductive) via the eval client."""
     pool_measurement = probe.measure(model, pool, target_cfg, regime, device)
     heldout_measurement = probe.measure(model, heldout, target_cfg, regime, device)
@@ -31,7 +32,7 @@ def _print_progress(snapshot: dict) -> None:
     print(f"  {snapshot['step']:>5} | pool rel_l2={pool_l2:.4f}  heldout rel_l2={held_l2:.4f}")
 
 
-def adapt(model, pool, heldout, target_cfg: dict, regime, cfg, device):
+def adapt(model, pool, heldout, target_cfg: DictConfig, regime, cfg, device):
     """Adapts a cloned operator on pool via fixed-step Adam, snapshotting on a schedule.
 
     Args:
@@ -65,8 +66,8 @@ def adapt(model, pool, heldout, target_cfg: dict, regime, cfg, device):
         ic = item["x"].unsqueeze(0).to(device)
         target = item["y"].unsqueeze(0).to(device)
         pred = kf_forward(
-            model, ic, target.shape[-1], time_scale=target_cfg["data"]["time_scale"],
-            temporal_pad=target_cfg["data"]["temporal_pad"], pad_mode=target_cfg["data"]["pad_mode"]
+            model, ic, target.shape[-1], time_scale=target_cfg.data.time_scale,
+            temporal_pad=target_cfg.data.temporal_pad, pad_mode=target_cfg.data.pad_mode
         )
         opt.zero_grad()
         loss_fn(pred, target)["loss"].backward()

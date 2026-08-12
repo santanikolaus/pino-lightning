@@ -12,6 +12,7 @@ import subprocess
 
 import numpy as np
 import torch
+from omegaconf import DictConfig
 
 from . import eval as ev
 from .. import setup
@@ -389,7 +390,7 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def _save_arrays(path: str, bands_cache: dict, cfg: dict, run_id: str, regime,
+def _save_arrays(path: str, bands_cache: dict, cfg: DictConfig, run_id: str, regime,
                  T_eff: int) -> None:
     """Writes the band/residual arrays plus run metadata to a compressed .npz.
 
@@ -411,11 +412,11 @@ def _save_arrays(path: str, bands_cache: dict, cfg: dict, run_id: str, regime,
     """
     meta = {
         "run_id": run_id,
-        "data_path": cfg["data"]["data_path"],
-        "coarse_path": str(cfg["data"].get("coarse_path")),
+        "data_path": cfg.data.data_path,
+        "coarse_path": str(cfg.data.get("coarse_path")),
         "op_re": regime.op_re,
         "test_re": regime.test_re,
-        "sub_t": cfg["data"]["sub_t"],
+        "sub_t": cfg.data.sub_t,
         "T_eff": T_eff,
         "split": f"test offset={setup.SPLIT['test']['offset']} n={setup.SPLIT['test']['n']}",
         "commit": _git_sha(),
@@ -545,9 +546,9 @@ def main():
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, cfg = setup.load_model(args.run_id, device)
     if args.data_path:
-        cfg["data"]["data_path"] = args.data_path
+        cfg.data.data_path = args.data_path
     if args.coarse_path:
-        cfg["data"]["coarse_path"] = args.coarse_path
+        cfg.data.coarse_path = args.coarse_path
     dataset = setup.build_dataset(cfg, "test")
 
     T_eff = dataset[0]["y"].shape[-1]
@@ -559,18 +560,18 @@ def main():
         cache["bands"] = ev.forward_bands(
             model, dataset, device,
             regime=regime,
-            time_scale=cfg["data"]["time_scale"],
-            temporal_pad=cfg["data"]["temporal_pad"],
-            pad_mode=cfg["data"]["pad_mode"],
-            t_interval=cfg["loss"]["t_interval"],
+            time_scale=cfg.data.time_scale,
+            temporal_pad=cfg.data.temporal_pad,
+            pad_mode=cfg.data.pad_mode,
+            t_interval=cfg.loss.t_interval,
             residuals="physics" in selected or bool(args.save_npz),
         )
     if "fields" in needed:
         cache["fields"] = ev.forward_fields(
             model, dataset, device,
-            time_scale=cfg["data"]["time_scale"],
-            temporal_pad=cfg["data"]["temporal_pad"],
-            pad_mode=cfg["data"]["pad_mode"],
+            time_scale=cfg.data.time_scale,
+            temporal_pad=cfg.data.temporal_pad,
+            pad_mode=cfg.data.pad_mode,
         )
 
     n_bands = (cache["bands"]["n_bands"] if "bands" in cache

@@ -290,9 +290,9 @@ def _cli():
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, cfg = setup.load_model(args.run_id, device)
     if args.data_path:
-        cfg["data"]["data_path"] = args.data_path
+        cfg.data.data_path = args.data_path
     if args.coarse_path:
-        cfg["data"]["coarse_path"] = args.coarse_path
+        cfg.data.coarse_path = args.coarse_path
     dataset = setup.build_dataset(cfg, "test")
 
     sample = dataset[args.traj]
@@ -301,9 +301,9 @@ def _cli():
     coarse_traj = sample["coarse"].unsqueeze(0).to(device) if "coarse" in sample else None
     with torch.no_grad():
         pred = kf_forward(model, ic, gt.shape[-1],
-                          time_scale=cfg["data"]["time_scale"],
-                          temporal_pad=cfg["data"]["temporal_pad"],
-                          pad_mode=cfg["data"]["pad_mode"],
+                          time_scale=cfg.data.time_scale,
+                          temporal_pad=cfg.data.temporal_pad,
+                          pad_mode=cfg.data.pad_mode,
                           coarse_traj=coarse_traj)[0, 0]  # (S, S, T)
     pred = _to_numpy(pred)
 
@@ -312,11 +312,11 @@ def _cli():
                                  vmax_diff=args.vmax_diff, vmax_swap=args.vmax_swap,
                                  ylim=args.ylim)
     s = animator.scales()
-    print(f"data: {cfg['data']['data_path']}")
+    print(f"data: {cfg.data.data_path}")
     print(f"scales (pass these to a second run at --kmax {args.kmax} to share them):\n"
           f"  --vmax {s['vmax']:.6g} --vmax-diff {s['vmax_diff']:.6g} "
           f"--vmax-swap {s['vmax_swap']:.6g} --ylim {s['ylim'][0]:.6g} {s['ylim'][1]:.6g}")
-    paths = animator.render_all(args.out, tag=tag, n_modes=cfg["model"]["n_modes"][0],
+    paths = animator.render_all(args.out, tag=tag, n_modes=cfg.model.n_modes[0],
                                 stride=args.stride, fps=args.fps)
     print("wrote:", *paths, sep="\n  ")
 

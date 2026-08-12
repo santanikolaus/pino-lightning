@@ -40,10 +40,10 @@ def main():
         grids = ev.forward_bands(
             model, dataset, device,
             regime=setup.resolve_regime(cfg, args.op_re, args.test_re, announce=False),
-            time_scale=cfg["data"]["time_scale"],
-            temporal_pad=cfg["data"]["temporal_pad"],
-            pad_mode=cfg["data"]["pad_mode"],
-            t_interval=cfg["loss"]["t_interval"],
+            time_scale=cfg.data.time_scale,
+            temporal_pad=cfg.data.temporal_pad,
+            pad_mode=cfg.data.pad_mode,
+            t_interval=cfg.loss.t_interval,
             residuals=False,
         )
         err_pt, gt_pt = grids["err_pt"], grids["gt_pt"]
@@ -58,10 +58,10 @@ def main():
             grids = ev.forward_bands(
                 model, dataset, device,
                 regime=setup.resolve_regime(cfg, args.op_re, args.test_re, announce=False),
-                time_scale=cfg["data"]["time_scale"],
-                temporal_pad=cfg["data"]["temporal_pad"],
-                pad_mode=cfg["data"]["pad_mode"],
-                t_interval=cfg["loss"]["t_interval"],
+                time_scale=cfg.data.time_scale,
+                temporal_pad=cfg.data.temporal_pad,
+                pad_mode=cfg.data.pad_mode,
+                t_interval=cfg.loss.t_interval,
                 residuals=False,
             )
             err_pt, gt_pt = grids["err_pt"], grids["gt_pt"]

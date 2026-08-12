@@ -8,7 +8,7 @@ import torch
 import wandb
 import yaml
 from hydra.core.global_hydra import GlobalHydra
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from src.datasets.kf_dataset import KFDataset
 from src.models.kf_fno import build_fno_kf
@@ -98,7 +98,7 @@ def wandb_tta_target() -> dict:
     return {"entity": w["entity"], "project": w["project_tta"]}
 
 
-def resolve_regime(cfg: dict,
+def resolve_regime(cfg: "dict | DictConfig",
                    op_re: "int | None" = None,
                    test_re: "int | None" = None,
                    announce: bool = True) -> Regime:
@@ -127,7 +127,7 @@ def resolve_regime(cfg: dict,
     return regime
 
 
-def resolve(run_id: str) -> dict:
+def resolve(run_id: str) -> DictConfig:
     """Live-fetches a run's launch overrides from wandb and recomposes its resolved training config.
 
     Args:
@@ -145,15 +145,11 @@ def resolve(run_id: str) -> dict:
     with hydra.initialize_config_dir(config_dir=str(ROOT / "configs"),
                                      version_base=None):
         cfg = hydra.compose(config_name="train_kf", overrides=overrides)
-    # TODO: return cfg (DictConfig) instead of to_container()'s plain dict, so every
-    # consumer gets attribute access (target_cfg.data.time_scale) instead of bracket
-    # chains. Deferred: report.py/mmd_gate.py/report_gif/report_image/legacy + the
-    # npz metadata path all currently assume a plain dict here -- a deliberate,
-    # cross-file change, not a drive-by fix.
-    return OmegaConf.to_container(cfg, resolve=True)
+    OmegaConf.resolve(cfg)
+    return cfg
 
 
-def ckpt_path(run_id: str, cfg: dict) -> Path:
+def ckpt_path(run_id: str, cfg: DictConfig) -> Path:
     """Builds the checkpoint file path for a run.
 
     Args:
@@ -163,7 +159,7 @@ def ckpt_path(run_id: str, cfg: dict) -> Path:
     Returns:
       Path to the run's saved checkpoint file.
     """
-    filename = cfg["callbacks"]["model_checkpoint"]["filename"]
+    filename = cfg.callbacks.model_checkpoint.filename
     project = _PATHS["wandb"]["project"]
     return Path(_PATHS["projects"]["pino_lightning"]
                 ) / project / run_id / "checkpoints" / f"{filename}.ckpt"
@@ -180,7 +176,7 @@ def load_model(run_id: str, device: torch.device):
       A tuple (model, cfg): the loaded model in eval mode, and its resolved config.
     """
     cfg = resolve(run_id)
-    model = build_fno_kf(cfg["model"])
+    model = build_fno_kf(cfg.model)
     state_dict = torch.load(ckpt_path(run_id, cfg),
                             weights_only=False,
                             map_location=device)["state_dict"]
@@ -192,7 +188,7 @@ def load_model(run_id: str, device: torch.device):
     return model.to(device).eval(), cfg
 
 
-def build_dataset(cfg: dict, split_name: str) -> KFDataset:
+def build_dataset(cfg: DictConfig, split_name: str) -> KFDataset:
     """Builds the KFDataset for one split window, wired with cfg's own data paths.
 
     Args:
@@ -205,12 +201,12 @@ def build_dataset(cfg: dict, split_name: str) -> KFDataset:
       A KFDataset over the requested split window.
     """
     sp = SPLIT[split_name]
-    data_cfg = cfg["data"]
+    data_cfg = cfg.data
     return KFDataset(
-        data_cfg["data_path"],
+        data_cfg.data_path,
         sp["n"],
         offset=sp["offset"],
-        sub_t=data_cfg["sub_t"],
+        sub_t=data_cfg.sub_t,
         coarse_path=data_cfg.get("coarse_path"),
         n_context=data_cfg.get("n_context", 1),
     )
