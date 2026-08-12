@@ -111,16 +111,18 @@ def run_name(cfg: DictConfig) -> str:
     """Composes the wandb run name from every axis a ladder cell varies along.
 
     cfg.exp leads because it names the backbone — the one axis the objective /
-    locus groups cannot express. Re-runs of one cell deliberately share a name;
-    the wandb id keeps them apart. n{pool_n} is the regime: n1 online, n>1 batch.
+    locus groups cannot express. op_re/target_re are frozen at 100->500 and stay
+    out; wandb config and the npz meta_ fields carry them. Re-runs of one cell
+    deliberately share a name; the wandb id keeps them apart. n{pool_n} is the
+    regime: n1 online, n>1 batch.
 
     Args:
       cfg: resolved client config, as returned by load_config().
 
     Returns:
-      A name like "fno-physics-full-100to500-n1-lr1e-04-s100".
+      A name like "fno-physics-full-n1-lr1e-04-s100".
     """
-    return (f"{cfg.exp}-{cfg.objective.name}-{cfg.locus.name}-{cfg.op_re}to{cfg.target_re}"
+    return (f"{cfg.exp}-{cfg.objective.name}-{cfg.locus.name}"
             f"-n{cfg.objective.get('pool_n', 1)}-lr{cfg.lr:.0e}-s{cfg.steps}")
 
 

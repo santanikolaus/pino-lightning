@@ -153,17 +153,16 @@ def test_build_splits_heldout_reads_val_not_test(monkeypatch, train_cfg):
     assert len(heldout) == 7
 
 
-def test_run_name_encodes_backbone_and_every_ladder_axis():
+def test_run_name_encodes_backbone_and_every_varying_axis():
     cfg = _cfg({"exp": "unet", "objective": {"name": "physics", "pool_n": 8},
-                "locus": {"name": "full"},
-                "op_re": 100, "target_re": 500, "lr": 1e-4, "steps": 100})
-    assert adapt.run_name(cfg) == "unet-physics-full-100to500-n8-lr1e-04-s100"
+                "locus": {"name": "full"}, "lr": 1e-4, "steps": 100})
+    assert adapt.run_name(cfg) == "unet-physics-full-n8-lr1e-04-s100"
 
 
 def test_run_name_defaults_pool_n_to_online():
     cfg = _cfg({"exp": "fno", "objective": {"name": "physics"}, "locus": {"name": "full"},
-                "op_re": 100, "target_re": 500, "lr": 1e-4, "steps": 100})
-    assert adapt.run_name(cfg) == "fno-physics-full-100to500-n1-lr1e-04-s100"
+                "lr": 1e-4, "steps": 100})
+    assert adapt.run_name(cfg) == "fno-physics-full-n1-lr1e-04-s100"
 
 
 def test_save_arrays_round_trips_through_tmp_npz(tmp_path, monkeypatch):
