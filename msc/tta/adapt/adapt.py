@@ -25,7 +25,7 @@ def load_config(overrides: list) -> DictConfig:
     _global_ package merge bypasses struct — so it is silently ignored.
 
     Args:
-      overrides: hydra override tokens, e.g. ["experiment=vanilla", "steps=100"].
+      overrides: hydra override tokens, e.g. ["experiment=fno", "steps=100"].
 
     Returns:
       The composed config: objective/locus/stop groups, run mechanics, ckpt.
@@ -110,16 +110,17 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> 
 def run_name(cfg: DictConfig) -> str:
     """Composes the wandb run name from every axis a ladder cell varies along.
 
-    Re-runs of one cell deliberately share a name — the wandb id keeps them
-    apart. n{pool_n} is the regime: n1 is online, n>1 is batch.
+    cfg.exp leads because it names the backbone — the one axis the objective /
+    locus groups cannot express. Re-runs of one cell deliberately share a name;
+    the wandb id keeps them apart. n{pool_n} is the regime: n1 online, n>1 batch.
 
     Args:
       cfg: resolved client config, as returned by load_config().
 
     Returns:
-      A name like "physics-full-100to500-n1-lr1e-04-s100".
+      A name like "fno-physics-full-100to500-n1-lr1e-04-s100".
     """
-    return (f"{cfg.objective.name}-{cfg.locus.name}-{cfg.op_re}to{cfg.target_re}"
+    return (f"{cfg.exp}-{cfg.objective.name}-{cfg.locus.name}-{cfg.op_re}to{cfg.target_re}"
             f"-n{cfg.objective.get('pool_n', 1)}-lr{cfg.lr:.0e}-s{cfg.steps}")
 
 
@@ -169,7 +170,7 @@ def main(overrides: list) -> None:
     """Runs the harness: compose config, open a wandb run, adapt, log to wandb, save arrays.
 
     Args:
-      overrides: hydra override tokens, e.g. ["experiment=vanilla"].
+      overrides: hydra override tokens, e.g. ["experiment=fno"].
     """
     cfg = load_config(overrides)
     run = wandb.init(name=run_name(cfg), group=cfg.exp,
@@ -194,6 +195,6 @@ def main(overrides: list) -> None:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="TTA adaptation client (harness stage)")
-    ap.add_argument("overrides", nargs="*", help="hydra override tokens, e.g. experiment=vanilla steps=100")
+    ap.add_argument("overrides", nargs="*", help="hydra override tokens, e.g. experiment=fno steps=100")
     args = ap.parse_args()
     main(args.overrides)

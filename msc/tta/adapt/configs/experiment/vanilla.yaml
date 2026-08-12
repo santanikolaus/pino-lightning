@@ -1,5 +1,0 @@
-# @package _global_
-exp: vanilla
-ckpt: 75prctl5  # Re100 operator, paths.yaml pretrain_checkpoints.re100
-target_re: 500
-steps: 100
