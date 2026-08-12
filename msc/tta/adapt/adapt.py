@@ -10,6 +10,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import Subset
 
 from .. import setup
+from . import loop
 
 CONFIG_DIR = Path(__file__).parent / "configs"
 
@@ -105,7 +106,10 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> 
 
 
 def main(overrides: list) -> None:
-    """Runs the harness: compose config, open a wandb run, load the operator, print the plan.
+    """Runs the harness: compose config, open a wandb run, load the operator, adapt, print progress.
+
+    Persistence and wandb logging are not wired yet — adapt() prints its own
+    step/snapshot progress to stdout only.
 
     Args:
       overrides: hydra override tokens, e.g. ["experiment=smoke"].
@@ -115,8 +119,10 @@ def main(overrides: list) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, train_cfg = build(cfg, device)
     print(describe(cfg, model, train_cfg))
-    pool, heldout, _ = build_splits(cfg, train_cfg)
-    print(f"carved      : pool={len(pool)}  heldout={len(heldout)}")
+    pool, heldout, target_cfg = build_splits(cfg, train_cfg)
+    print(f"splits      : pool={len(pool)}  heldout={len(heldout)}")
+    regime = setup.resolve_regime(target_cfg, op_re=cfg.op_re, test_re=cfg.target_re)
+    loop.adapt(model, pool, heldout, target_cfg, regime, cfg, device)
     run.finish()
 
 

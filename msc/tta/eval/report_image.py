@@ -39,7 +39,7 @@ def main():
         dataset = setup.build_dataset(cfg, "test")
         grids = ev.forward_bands(
             model, dataset, device,
-            regime=setup.resolve_regime(cfg, args.op_re, args.test_re, announce=False),
+            regime=setup.resolve_regime(cfg, args.op_re, args.test_re),
             time_scale=cfg.data.time_scale,
             temporal_pad=cfg.data.temporal_pad,
             pad_mode=cfg.data.pad_mode,
@@ -57,7 +57,7 @@ def main():
             dataset = setup.build_dataset(cfg, "test")
             grids = ev.forward_bands(
                 model, dataset, device,
-                regime=setup.resolve_regime(cfg, args.op_re, args.test_re, announce=False),
+                regime=setup.resolve_regime(cfg, args.op_re, args.test_re),
                 time_scale=cfg.data.time_scale,
                 temporal_pad=cfg.data.temporal_pad,
                 pad_mode=cfg.data.pad_mode,
