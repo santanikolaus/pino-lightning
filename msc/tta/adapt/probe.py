@@ -1,10 +1,11 @@
 import torch
+from omegaconf import DictConfig
 
 from .. import setup
 from ..eval import eval as ev
 
 
-def measure(model: torch.nn.Module, dataset, target_cfg: dict, regime: setup.Regime, device: torch.device) -> dict:
+def measure(model: torch.nn.Module, dataset, target_cfg: DictConfig, regime: setup.Regime, device: torch.device) -> dict:
     """Forwards model over dataset via forward_bands; returns its raw per-sample arrays.
 
     Args:
@@ -21,7 +22,7 @@ def measure(model: torch.nn.Module, dataset, target_cfg: dict, regime: setup.Reg
       arrays, each per-sample.
     """
     return ev.forward_bands(
-        model, dataset, device, regime=regime, time_scale=target_cfg["data"]["time_scale"],
-        temporal_pad=target_cfg["data"]["temporal_pad"], pad_mode=target_cfg["data"]["pad_mode"],
-        t_interval=target_cfg["loss"]["t_interval"],
+        model, dataset, device, regime=regime, time_scale=target_cfg.data.time_scale,
+        temporal_pad=target_cfg.data.temporal_pad, pad_mode=target_cfg.data.pad_mode,
+        t_interval=target_cfg.loss.t_interval,
     )

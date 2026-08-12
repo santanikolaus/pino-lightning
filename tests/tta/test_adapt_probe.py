@@ -1,12 +1,14 @@
+from omegaconf import OmegaConf
+
 from msc.tta.adapt import probe
 from msc.tta.setup import Regime
 
 
 def test_measure_dispatches_target_cfg_kwargs_and_returns_stub_untouched(monkeypatch):
-    target_cfg = {
+    target_cfg = OmegaConf.create({
         "data": {"time_scale": 2.0, "temporal_pad": 4, "pad_mode": "periodic"},
         "loss": {"t_interval": 0.5},
-    }
+    })
     regime = Regime(op_re=100, test_re=500)
     model, dataset, device = object(), object(), object()
     sentinel = {"pred_pt": object()}

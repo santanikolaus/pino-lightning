@@ -251,16 +251,16 @@ def main():
         from .. import setup
         eval_key = f"ns_re{args.eval_re}"
         model, cfg = setup.load_model(args.run_id, device)
-        cfg["data"]["data_path"] = _data_path(eval_key)
-        if cfg["data"].get("coarse_path"):
-            cfg["data"]["coarse_path"] = _coarse_path(eval_key, cfg["data"]["coarse_path"])
-        cfg["data"]["sub_t"] = args.sub_t
+        cfg.data.data_path = _data_path(eval_key)
+        if cfg.data.get("coarse_path"):
+            cfg.data.coarse_path = _coarse_path(eval_key, cfg.data.coarse_path)
+        cfg.data.sub_t = args.sub_t
         ds = setup.build_dataset(cfg, "test")
         pred = ev.forward_inband(
             model, ds, device, kmax=args.kmax, s_out=args.s_out,
-            time_scale=cfg["data"]["time_scale"],
-            temporal_pad=cfg["data"]["temporal_pad"],
-            pad_mode=cfg["data"]["pad_mode"])
+            time_scale=cfg.data.time_scale,
+            temporal_pad=cfg.data.temporal_pad,
+            pad_mode=cfg.data.pad_mode)
 
         refs = ([100, 500] if args.ref_re == "both"
                 else [args.eval_re] if args.ref_re == "match" else [int(args.ref_re)])

@@ -1,17 +1,18 @@
 import numpy as np
 import pytest
 import torch
+from omegaconf import DictConfig, OmegaConf
 
 from msc.tta import eval as ev
 from msc.tta.eval import report
 from msc.tta.setup import Regime
 
 
-def _fake_cfg() -> dict:
-    return {
+def _fake_cfg() -> DictConfig:
+    return OmegaConf.create({
         "data": {"time_scale": 1.0, "temporal_pad": 0, "pad_mode": "zero"},
         "loss": {"re": 100, "t_interval": 0.1},
-    }
+    })
 
 
 class _FakeDataset:

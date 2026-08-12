@@ -47,7 +47,7 @@ def build(cfg: DictConfig, device: torch.device):
     return setup.load_model(cfg.ckpt, device)
 
 
-def build_splits(cfg: DictConfig, train_cfg: dict) -> tuple:
+def build_splits(cfg: DictConfig, train_cfg: DictConfig) -> tuple:
     """Builds the adapt pool and the held-out probe set on the target-Re data.
 
     heldout reads the val split ([240:270]), not test: probe fires every
@@ -65,7 +65,7 @@ def build_splits(cfg: DictConfig, train_cfg: dict) -> tuple:
       dataset, and the training config retargeted to the target-Re data.
     """
     target_cfg = copy.deepcopy(train_cfg)
-    target_cfg["data"]["data_path"] = setup.data_path_for_re(cfg.target_re)
+    target_cfg.data.data_path = setup.data_path_for_re(cfg.target_re)
 
     heldout = setup.build_dataset(target_cfg, "val")
     train = setup.build_dataset(target_cfg, "train")
@@ -77,7 +77,7 @@ def build_splits(cfg: DictConfig, train_cfg: dict) -> tuple:
     return Subset(train, range(pool_n)), heldout, target_cfg
 
 
-def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: dict) -> str:
+def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> str:
     """Renders the resolved run plan as text, without adapting anything.
 
     Args:
@@ -88,14 +88,14 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: dict) -> str:
     Returns:
       A human-readable multi-line summary of what an adaptation run would use.
     """
-    data = train_cfg["data"]
+    data = train_cfg.data
     n_params = sum(p.numel() for p in model.parameters())
     return "\n".join(
         [
-            f"run_id      : {cfg.ckpt}", f"model       : {type(model).__name__} ({train_cfg['model']['model_arch']})",
+            f"run_id      : {cfg.ckpt}", f"model       : {type(model).__name__} ({train_cfg.model.model_arch})",
             f"n_params    : {n_params:,}", f"device      : {next(model.parameters()).device}",
             f"source_re   : {cfg.op_re}", f"target_re   : {cfg.target_re}",
-            f"target_path : {setup.data_path_for_re(cfg.target_re)}", f"sub_t       : {data['sub_t']}",
+            f"target_path : {setup.data_path_for_re(cfg.target_re)}", f"sub_t       : {data.sub_t}",
             f"n_context   : {data.get('n_context', 1)}", f"objective   : {cfg.objective.name}",
             f"locus       : {cfg.locus.name}", f"pool        : {cfg.objective.get('pool_n', 1)} samples (train split)",
             f"heldout     : {setup.SPLIT['val']['n']} samples (val split)",

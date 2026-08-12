@@ -50,9 +50,9 @@ def test_describe_formats_without_model_load():
     cfg = _cfg({"ckpt": "abc123", "target_re": 500, "op_re": 100, "steps": 200, "lr": 1e-4,
                 "objective": {"name": "physics", "ic_weight": 5.0},
                 "locus": {"name": "full"}})
-    train_cfg = {"model": {"model_arch": "fno"},
-                 "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2},
-                 "loss": {"re": 999}}  # deliberately wrong: source_re must read cfg.op_re, not this
+    train_cfg = _cfg({"model": {"model_arch": "fno"},
+                      "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2},
+                      "loss": {"re": 999}})  # deliberately wrong: source_re must read cfg.op_re, not this
     out = adapt.describe(cfg, model, train_cfg)
     assert "abc123" in out
     assert "Linear (fno)" in out
@@ -66,10 +66,10 @@ def test_describe_reports_pool_for_spectral_objective():
     cfg = _cfg({"ckpt": "z", "target_re": 500, "op_re": 100, "steps": 200, "lr": 1e-4,
                 "objective": {"name": "spectral", "pool_n": 8},
                 "locus": {"name": "full"}})
-    train_cfg = {"model": {"model_arch": "unet"},
-                 "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2,
-                          "n_context": 10},
-                 "loss": {"re": 100}}
+    train_cfg = _cfg({"model": {"model_arch": "unet"},
+                      "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2,
+                               "n_context": 10},
+                      "loss": {"re": 100}})
     out = adapt.describe(cfg, model, train_cfg)
     assert "objective   : spectral" in out
     assert "pool        : 8 samples" in out
@@ -106,10 +106,10 @@ def _stub_setup(monkeypatch, train_len, val_len=5, target_path="/data/Re500_res1
 
 @pytest.fixture
 def train_cfg():
-    return {
+    return _cfg({
         "loss": {"re": 100},
         "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2},
-    }
+    })
 
 
 def test_build_splits_pool_n_exceeds_train_raises(monkeypatch, train_cfg):

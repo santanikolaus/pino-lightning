@@ -91,8 +91,8 @@ def _adapt_cfg(steps, probe_every):
 
 
 def _target_cfg():
-    return {"data": {"time_scale": 1.0, "temporal_pad": 0, "pad_mode": "zero"},
-           "loss": {"t_interval": 0.1}}
+    return OmegaConf.create({"data": {"time_scale": 1.0, "temporal_pad": 0, "pad_mode": "zero"},
+                            "loss": {"t_interval": 0.1}})
 
 
 def test_adapt_snapshots_on_schedule_and_clones_the_model():
