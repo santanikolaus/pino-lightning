@@ -2,12 +2,14 @@ import argparse
 from functools import partial
 from itertools import zip_longest
 from pathlib import Path
+from typing import Callable, NamedTuple
 
 import numpy as np
 
 from . import eval as ev
 
 SIDES = ("pool", "heldout")
+NPZ_KEYS = ("pred_pt", "gt_pt", "err_pt")
 DEFAULT_BANDS = "1-4,5-7,8-16,17-32,33-64"
 DEFAULT_FRAMES = "0-0,4-4,16-16,63-63"
 GAP = "    "
@@ -131,6 +133,73 @@ def _rel_l2(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple
     first, last = frame_window
     return ev.rel_l2(side_arrays["err_pt"][snap], side_arrays["gt_pt"][snap],
                      bands=band_slice, frames=slice(first, last + 1))
+
+
+def _rho(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple) -> float:
+    """Evaluates pooled correlation over one snapshot's band and frame selection.
+
+    Args:
+      side_arrays: that side's {key: array}, as returned by _load.
+      snap: index along the snapshot axis.
+      band_slice: bands to pool over.
+      frame_window: (lo, hi) inclusive frames to pool over.
+
+    Returns:
+      Pooled correlation in [-1, 1] over the selection.
+    """
+    first, last = frame_window
+    return ev.corr_pooled(side_arrays["pred_pt"][snap], side_arrays["gt_pt"][snap],
+                          side_arrays["err_pt"][snap],
+                          bands=band_slice, frames=slice(first, last + 1))
+
+
+def _gamma(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple) -> float:
+    """Evaluates the pooled amplitude ratio over one snapshot's band and frame selection.
+
+    Args:
+      side_arrays: that side's {key: array}, as returned by _load.
+      snap: index along the snapshot axis.
+      band_slice: bands to pool over.
+      frame_window: (lo, hi) inclusive frames to pool over.
+
+    Returns:
+      Pooled sqrt(sum(pred_power) / sum(gt_power)) over the selection.
+    """
+    first, last = frame_window
+    return ev.amp_ratio(side_arrays["pred_pt"][snap], side_arrays["gt_pt"][snap],
+                        bands=band_slice, frames=slice(first, last + 1))
+
+
+class Metric(NamedTuple):
+    """One metric's cell evaluator and how it prints.
+
+    Attributes:
+      evaluate: called as evaluate(side_arrays, snap, band_slice, frame_window) -> float.
+      direction: the line printed under the table, stating which way is better.
+    """
+
+    evaluate: Callable
+    cell_fmt: str
+    direction: str
+
+
+METRICS = {
+    "rel_l2": Metric(
+        evaluate=_rel_l2,
+        cell_fmt=".4f",
+        direction="rel_l2 = sqrt(sum(err_power) / sum(gt_power)) — LOWER is better",
+    ),
+    "rho": Metric(
+        evaluate=_rho,
+        cell_fmt=".4f",
+        direction="rho = pooled correlation — HIGHER is better (1 = phase-perfect)",
+    ),
+    "gamma": Metric(
+        evaluate=_gamma,
+        cell_fmt=".4f",
+        direction="gamma = sqrt(sum(pred_power) / sum(gt_power)) — CLOSER TO 1 is better",
+    ),
+}
 
 
 def _rows(bands: list, frames: list, t_eff: int):
@@ -270,12 +339,14 @@ def _provenance_lines(meta: dict, column_steps: list, bands_spec: str, frames_sp
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="rel_l2 tables over an adaptation trajectory")
+    ap = argparse.ArgumentParser(description="band × frame metric tables over an adaptation trajectory")
     ap.add_argument("npz", help="adapt run .npz, as written by adapt.py::_save_arrays")
     ap.add_argument("--snapshots", required=True, help="step numbers, e.g. 0,500,1000")
     ap.add_argument("--bands", default=DEFAULT_BANDS, help="band groups, e.g. 1-4,5-7")
     ap.add_argument("--frames", default=DEFAULT_FRAMES, help="frame windows, e.g. 0-0,4-4")
     ap.add_argument("--sides", nargs="+", choices=SIDES, default=list(SIDES), help="sides to print")
+    ap.add_argument("--metrics", nargs="+", choices=list(METRICS), default=list(METRICS),
+                    help="metric tables to print (default: all)")
     ap.add_argument("--save", default=None, metavar="DIR",
                     help="write the report to DIR/<npz stem>.txt instead of printing")
     args = ap.parse_args()
@@ -290,14 +361,12 @@ def main() -> None:
     bands = _resolve_groups(args.bands, n_bands, "band")
     frames = _resolve_groups(args.frames, t_eff, "frame")
 
-    arrays = _load(args.npz, sides, snap_idx, ("err_pt", "gt_pt"))
+    arrays = _load(args.npz, sides, snap_idx, NPZ_KEYS)
     rows = list(_rows(bands, frames, t_eff))
 
-    values = {}
     n_chains = {}
     for side in sides:
-        values[side] = _table_values(partial(_rel_l2, arrays[side]), len(column_steps), rows)
-        n_chains[side] = arrays[side]["err_pt"].shape[1]
+        n_chains[side] = arrays[side][NPZ_KEYS[0]].shape[1]
 
     banner = (
         f"{meta.get('exp')}-{meta.get('objective')}-{meta.get('locus')} "
@@ -310,15 +379,17 @@ def main() -> None:
         "power, never a mean of per-chain ratios.\npool N = adapted chains, heldout N = val "
         "split. columns are adaptation steps; compare them directly."
     )
-    direction = "rel_l2 = sqrt(sum(err_power) / sum(gt_power)) — LOWER is better"
 
-    tables = []
-    for side in sides:
-        tables.append(_table_lines(values[side], rows, column_steps, ".4f", side, n_chains[side]))
-
-    body = [banner, note, "", "rel_l2"]
-    body += _side_by_side(tables)
-    body.append(f"  {direction}")
+    body = [banner, note]
+    for name in args.metrics:
+        metric = METRICS[name]
+        tables = []
+        for side in sides:
+            values = _table_values(partial(metric.evaluate, arrays[side]), len(column_steps), rows)
+            tables.append(_table_lines(values, rows, column_steps, metric.cell_fmt, side, n_chains[side]))
+        body += ["", name]
+        body += _side_by_side(tables)
+        body.append(f"  {metric.direction}")
 
     if args.save:
         header = _provenance_lines(meta, column_steps, args.bands, args.frames)
