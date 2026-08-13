@@ -67,10 +67,26 @@ def test_rel_l2_pools_over_the_window_it_is_given():
 def test_every_metric_evaluates_from_npz_keys():
     """NPZ_KEYS is all _load fetches; a metric reading anything else raises KeyError at runtime."""
     arrays = {k: np.ones((2, 3, 8, 5)) for k in rt.NPZ_KEYS}
-    rows = list(rt._rows([(1, 4)], [(0, 0)], 5))
+    rows = list(rt._rows([(1, 4)], [(1, 3)], 5))  # not t0: res_rms has no value there
     for name, metric in rt.METRICS.items():
         assert np.isfinite(metric.evaluate(arrays, 0, rows[0][2], rows[0][3])), name
         assert metric.direction, name
+
+
+def test_res_rms_has_no_value_at_field_frame_zero():
+    """The centred stencil starts at field frame 1; t0 must not silently borrow frame 1's value."""
+    arrays = {"pde_res_pred_pt": np.ones((2, 3, 8, 5))}
+    assert np.isnan(rt._res_rms(arrays, 0, slice(1, 5), (0, 0)))
+
+
+def test_res_rms_shifts_its_window_onto_the_residual_axis():
+    """Field frame f reads residual entry f-1; an all-frames window clips to the shorter axis."""
+    residual = np.zeros((2, 3, 8, 5))
+    residual[:, :, :, 3] = 1.0
+    arrays = {"pde_res_pred_pt": residual}
+    assert rt._res_rms(arrays, 0, slice(1, 5), (4, 4)) > 0
+    assert rt._res_rms(arrays, 0, slice(1, 5), (3, 3)) == 0.0
+    assert np.isfinite(rt._res_rms(arrays, 0, slice(1, 5), (0, 6)))
 
 
 def test_rel_l2_decomposes_into_rho_and_gamma():
@@ -116,6 +132,15 @@ def test_table_lines_renders_values_without_a_delta_column():
     assert "s0" in lines[1] and "s100" in lines[1]
     assert "delta" not in lines[1]
     assert all("0.5000" in ln for ln in lines[3:])
+
+
+def test_table_lines_prints_absent_cells_as_a_dash():
+    """A residual metric has no value at field frame 0; NaN is how the metric says so."""
+    rows = list(rt._rows([(1, 4)], [(0, 0)], 5))
+    values = np.full((len(rows), 2), 0.5)
+    values[0, 0] = np.nan
+    lines = rt._table_lines(values, rows, [0, 100], ".4f", "pool", 3)
+    assert lines[3] == f"{'k1-4':<{rt.LABEL_W}}{'t0':<{rt.LABEL_W}}{'-':>{rt.CELL_W}}{0.5:>{rt.CELL_W}.4f}"
 
 
 def test_side_by_side_places_tables_next_to_one_another():

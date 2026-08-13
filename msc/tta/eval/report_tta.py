@@ -7,9 +7,10 @@ from typing import Callable, NamedTuple
 import numpy as np
 
 from . import eval as ev
+from .report import F_RMS
 
 SIDES = ("pool", "heldout")
-NPZ_KEYS = ("pred_pt", "gt_pt", "err_pt")
+NPZ_KEYS = ("pred_pt", "gt_pt", "err_pt", "pde_res_pred_pt")
 DEFAULT_BANDS = "1-4,5-7,8-16,17-32,33-64"
 DEFAULT_FRAMES = "0-0,4-4,16-16,63-63"
 GAP = "    "
@@ -170,6 +171,30 @@ def _gamma(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple)
                         bands=band_slice, frames=slice(first, last + 1))
 
 
+def _res_rms(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple) -> float:
+    """Evaluates the dimensionless physics residual over one snapshot's band and frame selection.
+
+    The residual's centred stencil spans three field frames, so its entry j is centred
+    on field frame j+1 and field frame 0 has no residual at all — an all-frames window
+    clips to the residual axis, and a t0 window empties and returns NaN.
+
+    Args:
+      side_arrays: that side's {key: array}, as returned by _load.
+      snap: index along the snapshot axis.
+      band_slice: bands to pool over.
+      frame_window: (lo, hi) inclusive FIELD frames, remapped onto the residual axis.
+
+    Returns:
+      Residual RMS over the forcing RMS, or NaN where the window holds no residual.
+    """
+    residual = side_arrays["pde_res_pred_pt"][snap]
+    first = max(frame_window[0] - 1, 0)
+    last = min(frame_window[1] - 1, residual.shape[-1] - 1)
+    if first > last:
+        return float("nan")
+    return ev.resid_rms(residual, bands=band_slice, frames=slice(first, last + 1)) / F_RMS
+
+
 class Metric(NamedTuple):
     """One metric's cell evaluator and how it prints.
 
@@ -198,6 +223,11 @@ METRICS = {
         evaluate=_gamma,
         cell_fmt=".4f",
         direction="gamma = sqrt(sum(pred_power) / sum(gt_power)) — CLOSER TO 1 is better",
+    ),
+    "res_rms": Metric(
+        evaluate=_res_rms,
+        cell_fmt=".4g",
+        direction="res_rms = |PDE residual| / |forcing| — LOWER is better (the adapted objective)",
     ),
 }
 
@@ -260,7 +290,9 @@ def _table_lines(values: np.ndarray, rows: list, column_steps: list, fmt: str,
 
     Snapshot columns are compared directly; there is no delta column, because a
     first-to-last percentage change only reads correctly for a lower-is-better
-    metric and the caller states the direction per metric instead.
+    metric and the caller states the direction per metric instead. Cells the metric
+    cannot evaluate arrive as NaN and print as "-": the centred residual has no
+    entry for field frame 0.
 
     Args:
       values: (len(rows), len(column_steps)) cells, as returned by _table_values.
@@ -284,7 +316,7 @@ def _table_lines(values: np.ndarray, rows: list, column_steps: list, fmt: str,
     for row_idx, (band_label, frame_label, _, _) in enumerate(rows):
         cells = ""
         for value in values[row_idx]:
-            cells += f"{value:>{CELL_W}{fmt}}"
+            cells += f"{'-':>{CELL_W}}" if np.isnan(value) else f"{value:>{CELL_W}{fmt}}"
         lines.append(f"{band_label:<{LABEL_W}}{frame_label:<{LABEL_W}}{cells}")
     return lines
 
