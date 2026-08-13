@@ -2,6 +2,7 @@ import argparse
 from functools import partial
 from itertools import zip_longest
 from pathlib import Path
+from typing import Callable, NamedTuple
 
 import numpy as np
 
@@ -131,6 +132,32 @@ def _rel_l2(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple
     first, last = frame_window
     return ev.rel_l2(side_arrays["err_pt"][snap], side_arrays["gt_pt"][snap],
                      bands=band_slice, frames=slice(first, last + 1))
+
+
+class Metric(NamedTuple):
+    """One metric's cell evaluator, the npz arrays it reads, and how it prints.
+
+    Attributes:
+      evaluate: called as evaluate(side_arrays, snap, band_slice, frame_window) -> float.
+      npz_keys: npz array names it consumes, without the side prefix.
+      cell_fmt: format spec for one cell.
+      direction: the line printed under the table, stating which way is better.
+    """
+
+    evaluate: Callable
+    npz_keys: tuple
+    cell_fmt: str
+    direction: str
+
+
+METRICS = {
+    "rel_l2": Metric(
+        evaluate=_rel_l2,
+        npz_keys=("err_pt", "gt_pt"),
+        cell_fmt=".4f",
+        direction="rel_l2 = sqrt(sum(err_power) / sum(gt_power)) — LOWER is better",
+    ),
+}
 
 
 def _rows(bands: list, frames: list, t_eff: int):
@@ -290,14 +317,15 @@ def main() -> None:
     bands = _resolve_groups(args.bands, n_bands, "band")
     frames = _resolve_groups(args.frames, t_eff, "frame")
 
-    arrays = _load(args.npz, sides, snap_idx, ("err_pt", "gt_pt"))
+    metric_name = "rel_l2"
+    metric = METRICS[metric_name]
+
+    arrays = _load(args.npz, sides, snap_idx, metric.npz_keys)
     rows = list(_rows(bands, frames, t_eff))
 
-    values = {}
     n_chains = {}
     for side in sides:
-        values[side] = _table_values(partial(_rel_l2, arrays[side]), len(column_steps), rows)
-        n_chains[side] = arrays[side]["err_pt"].shape[1]
+        n_chains[side] = arrays[side][metric.npz_keys[0]].shape[1]
 
     banner = (
         f"{meta.get('exp')}-{meta.get('objective')}-{meta.get('locus')} "
@@ -310,15 +338,15 @@ def main() -> None:
         "power, never a mean of per-chain ratios.\npool N = adapted chains, heldout N = val "
         "split. columns are adaptation steps; compare them directly."
     )
-    direction = "rel_l2 = sqrt(sum(err_power) / sum(gt_power)) — LOWER is better"
 
     tables = []
     for side in sides:
-        tables.append(_table_lines(values[side], rows, column_steps, ".4f", side, n_chains[side]))
+        values = _table_values(partial(metric.evaluate, arrays[side]), len(column_steps), rows)
+        tables.append(_table_lines(values, rows, column_steps, metric.cell_fmt, side, n_chains[side]))
 
-    body = [banner, note, "", "rel_l2"]
+    body = [banner, note, "", metric_name]
     body += _side_by_side(tables)
-    body.append(f"  {direction}")
+    body.append(f"  {metric.direction}")
 
     if args.save:
         header = _provenance_lines(meta, column_steps, args.bands, args.frames)
