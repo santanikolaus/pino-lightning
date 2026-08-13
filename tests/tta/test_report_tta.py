@@ -73,6 +73,26 @@ def test_every_metric_evaluates_from_npz_keys():
         assert metric.direction, name
 
 
+def test_rel_l2_decomposes_into_rho_and_gamma():
+    """rel_l2^2 = (1 - rho^2) + (gamma - rho)^2 over any window.
+
+    A wiring check, not a validation: corr_pooled recovers the cross term from
+    err_pt, so the identity is algebraic. It catches mismatched keys or slices.
+    """
+    rng = np.random.default_rng(0)
+    pred = rng.random((2, 3, 8, 5)) + 0.5
+    gt = rng.random((2, 3, 8, 5)) + 0.5
+    # per-bin rho = 0.7 keeps pooled rho <= 0.7 by Cauchy-Schwarz, clear of corr_pooled's clip
+    err = pred + gt - 2 * 0.7 * np.sqrt(pred * gt)
+    arrays = {"pred_pt": pred, "gt_pt": gt, "err_pt": err}
+
+    for band_slice, frame_window in [(slice(1, 5), (0, 0)), (slice(0, 8), (0, 4)), (slice(2, 7), (1, 3))]:
+        l2 = rt._rel_l2(arrays, 1, band_slice, frame_window)
+        rho = rt._rho(arrays, 1, band_slice, frame_window)
+        gamma = rt._gamma(arrays, 1, band_slice, frame_window)
+        assert l2 ** 2 == pytest.approx((1 - rho ** 2) + (gamma - rho) ** 2)
+
+
 def test_metrics_registry_routes_rel_l2():
     """The registry entry must evaluate identically to the function it wraps."""
     arrays = {"err_pt": np.ones((2, 3, 8, 5)), "gt_pt": 4 * np.ones((2, 3, 8, 5))}

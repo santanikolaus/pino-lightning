@@ -135,6 +135,41 @@ def _rel_l2(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple
                      bands=band_slice, frames=slice(first, last + 1))
 
 
+def _rho(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple) -> float:
+    """Evaluates pooled correlation over one snapshot's band and frame selection.
+
+    Args:
+      side_arrays: that side's {key: array}, as returned by _load.
+      snap: index along the snapshot axis.
+      band_slice: bands to pool over.
+      frame_window: (lo, hi) inclusive frames to pool over.
+
+    Returns:
+      Pooled correlation in [-1, 1] over the selection.
+    """
+    first, last = frame_window
+    return ev.corr_pooled(side_arrays["pred_pt"][snap], side_arrays["gt_pt"][snap],
+                          side_arrays["err_pt"][snap],
+                          bands=band_slice, frames=slice(first, last + 1))
+
+
+def _gamma(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple) -> float:
+    """Evaluates the pooled amplitude ratio over one snapshot's band and frame selection.
+
+    Args:
+      side_arrays: that side's {key: array}, as returned by _load.
+      snap: index along the snapshot axis.
+      band_slice: bands to pool over.
+      frame_window: (lo, hi) inclusive frames to pool over.
+
+    Returns:
+      Pooled sqrt(sum(pred_power) / sum(gt_power)) over the selection.
+    """
+    first, last = frame_window
+    return ev.amp_ratio(side_arrays["pred_pt"][snap], side_arrays["gt_pt"][snap],
+                        bands=band_slice, frames=slice(first, last + 1))
+
+
 class Metric(NamedTuple):
     """One metric's cell evaluator and how it prints.
 
@@ -153,6 +188,16 @@ METRICS = {
         evaluate=_rel_l2,
         cell_fmt=".4f",
         direction="rel_l2 = sqrt(sum(err_power) / sum(gt_power)) — LOWER is better",
+    ),
+    "rho": Metric(
+        evaluate=_rho,
+        cell_fmt=".4f",
+        direction="rho = pooled correlation — HIGHER is better (1 = phase-perfect)",
+    ),
+    "gamma": Metric(
+        evaluate=_gamma,
+        cell_fmt=".4f",
+        direction="gamma = sqrt(sum(pred_power) / sum(gt_power)) — CLOSER TO 1 is better",
     ),
 }
 
