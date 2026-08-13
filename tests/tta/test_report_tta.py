@@ -64,19 +64,19 @@ def test_rel_l2_pools_over_the_window_it_is_given():
     assert rt._rel_l2(arrays, 1, slice(1, 5), (0, 4)) == pytest.approx(0.5)
 
 
+def test_every_metric_evaluates_from_npz_keys():
+    """NPZ_KEYS is all _load fetches; a metric reading anything else raises KeyError at runtime."""
+    arrays = {k: np.ones((2, 3, 8, 5)) for k in rt.NPZ_KEYS}
+    rows = list(rt._rows([(1, 4)], [(0, 0)], 5))
+    for name, metric in rt.METRICS.items():
+        assert np.isfinite(metric.evaluate(arrays, 0, rows[0][2], rows[0][3])), name
+        assert metric.direction, name
+
+
 def test_metrics_registry_routes_rel_l2():
     """The registry entry must evaluate identically to the function it wraps."""
     arrays = {"err_pt": np.ones((2, 3, 8, 5)), "gt_pt": 4 * np.ones((2, 3, 8, 5))}
-    metric = rt.METRICS["rel_l2"]
-    assert metric.npz_keys == ("err_pt", "gt_pt")
-    assert metric.evaluate(arrays, 1, slice(1, 5), (0, 4)) == pytest.approx(0.5)
-
-
-def test_every_metric_declares_keys_and_a_direction():
-    """_load reads npz_keys and main prints direction; an entry missing either fails silently."""
-    for name, metric in rt.METRICS.items():
-        assert metric.npz_keys, name
-        assert metric.direction, name
+    assert rt.METRICS["rel_l2"].evaluate(arrays, 1, slice(1, 5), (0, 4)) == pytest.approx(0.5)
 
 
 def test_table_values_evaluates_every_cell():
