@@ -89,6 +89,35 @@ def test_res_rms_shifts_its_window_onto_the_residual_axis():
     assert np.isfinite(rt._res_rms(arrays, 0, slice(1, 5), (0, 6)))
 
 
+def _horizon_arrays(drop_at: int, n_frames: int = 8) -> dict:
+    """Builds (snap, N, bands, T) power arrays whose correlation is 1.0 before drop_at and 0.5 after."""
+    pred = np.ones((1, 2, 4, n_frames))
+    gt = np.ones((1, 2, 4, n_frames))
+    err = np.zeros((1, 2, 4, n_frames))
+    err[..., drop_at:] = 1.0
+    return {"pred_pt": pred, "gt_pt": gt, "err_pt": err}
+
+
+def test_rho_horizon_reports_the_frame_the_correlation_drops():
+    """Pins the window offset: the horizon counts frames from the window's first, not from 0."""
+    arrays = _horizon_arrays(drop_at=3)
+    assert rt._rho_horizon(arrays, 0, slice(0, 4), (0, 7)) == pytest.approx(3.0)
+    assert rt._rho_horizon(arrays, 0, slice(0, 4), (0, 5)) == pytest.approx(3.0)
+    assert rt._rho_horizon(arrays, 0, slice(0, 4), (1, 7)) == pytest.approx(2.0)
+
+
+def test_rho_horizon_censors_a_curve_that_never_drops():
+    """A chain still correlated at the last frame scores the window length, not the axis length."""
+    arrays = _horizon_arrays(drop_at=8)
+    assert rt._rho_horizon(arrays, 0, slice(0, 4), (0, 7)) == pytest.approx(8.0)
+    assert rt._rho_horizon(arrays, 0, slice(0, 4), (0, 3)) == pytest.approx(4.0)
+
+
+def test_rho_horizon_has_no_value_on_a_single_frame():
+    """One frame cannot express a decay; NaN is how the metric says so."""
+    assert np.isnan(rt._rho_horizon(_horizon_arrays(drop_at=3), 0, slice(0, 4), (4, 4)))
+
+
 def test_rel_l2_decomposes_into_rho_and_gamma():
     """rel_l2^2 = (1 - rho^2) + (gamma - rho)^2 over any window.
 

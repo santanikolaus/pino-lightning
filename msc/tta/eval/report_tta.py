@@ -13,6 +13,7 @@ SIDES = ("pool", "heldout")
 NPZ_KEYS = ("pred_pt", "gt_pt", "err_pt", "pde_res_pred_pt")
 DEFAULT_BANDS = "1-4,5-7,8-16,17-32,33-64"
 DEFAULT_FRAMES = "0-0,4-4,16-16,63-63"
+RHO_THRESH = 0.9
 GAP = "    "
 LABEL_W = 8
 CELL_W = 10
@@ -195,6 +196,27 @@ def _res_rms(side_arrays: dict, snap: int, band_slice: slice, frame_window: tupl
     return ev.resid_rms(residual, bands=band_slice, frames=slice(first, last + 1)) / F_RMS
 
 
+def _rho_horizon(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple) -> float:
+    """Evaluates the mean per-chain decorrelation horizon over one snapshot's selection.
+
+    Args:
+      side_arrays: that side's {key: array}, as returned by _load.
+      snap: index along the snapshot axis.
+      band_slice: bands to pool over.
+      frame_window: (lo, hi) inclusive frames; a single frame has no horizon.
+
+    Returns:
+      Mean frames until correlation first drops below RHO_THRESH, censored at the
+      window length, or NaN for a single-frame window.
+    """
+    first, last = frame_window
+    if first == last:
+        return float("nan")
+    curve = ev.corr_curve(side_arrays["pred_pt"][snap], side_arrays["gt_pt"][snap],
+                          side_arrays["err_pt"][snap], bands=band_slice)
+    return float(ev.time_to_threshold(curve[:, first:last + 1], RHO_THRESH).mean())
+
+
 class Metric(NamedTuple):
     """One metric's cell evaluator and how it prints.
 
@@ -228,6 +250,17 @@ METRICS = {
         evaluate=_res_rms,
         cell_fmt=".4g",
         direction="res_rms = |PDE residual| / |forcing| — LOWER is better (the adapted objective)",
+    ),
+    "rho_horizon": Metric(
+        evaluate=_rho_horizon,
+        cell_fmt=".1f",
+        direction=(
+            f"rho_horizon = mean frames until per-chain correlation < {RHO_THRESH} — HIGHER is better.\n"
+            "  the one MEAN OF PER-CHAIN values here, not a ratio of pooled sums, so it is not\n"
+            "  cross-checkable against rho. censored at the window length; single-frame rows are '-'.\n"
+            "  band groups are energy-weighted: a group reports its low-k half's horizon, so read\n"
+            "  per shell (--bands 1-1,2-2,...) for the physics, not the pooled default"
+        ),
     ),
 }
 
