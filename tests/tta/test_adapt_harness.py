@@ -11,7 +11,7 @@ def test_load_config_base_defaults():
     assert cfg.objective.name == "physics"
     assert cfg.locus.name == "full"
     assert cfg.stop.name == "fixed"
-    assert cfg.steps == 200
+    assert cfg.steps == 300
     assert cfg.target_re == 500
 
 
@@ -26,7 +26,7 @@ def test_load_config_experiment_overrides_and_sets_ckpt():
     cfg = adapt.load_config(["experiment=fno"])
     assert cfg.ckpt == "75prctl5"
     assert cfg.exp == "fno"
-    assert cfg.steps == 100
+    assert cfg.steps == 300
 
 
 def test_load_config_group_swap_brings_pool_n():
