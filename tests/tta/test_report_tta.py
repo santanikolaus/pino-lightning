@@ -67,9 +67,12 @@ def test_rel_l2_pools_over_the_window_it_is_given():
 def test_every_metric_evaluates_from_npz_keys():
     """NPZ_KEYS is all _load fetches; a metric reading anything else raises KeyError at runtime."""
     arrays = {k: np.ones((2, 3, 8, 5)) for k in rt.NPZ_KEYS}
-    rows = list(rt._rows([(1, 4)], [(1, 3)], 5))  # not t0: res_rms has no value there
-    for name, metric in rt.METRICS.items():
-        assert np.isfinite(metric.evaluate(arrays, 0, rows[0][2], rows[0][3])), name
+    arrays["w1_t"] = arrays["w1wc_t"] = np.ones((2, 3, 5))
+    rows = list(rt._rows([(1, 4)], [(1, 3)], 5))
+    frame_rows = list(rt._frame_rows([(1, 3)], 5))
+    for name, metric in rt.ALL_METRICS.items():
+        row = frame_rows[0] if name in rt.FRAME_METRICS else rows[0]
+        assert np.isfinite(metric.evaluate(arrays, 0, row[2], row[3])), name
         assert metric.direction, name
 
 
@@ -141,7 +144,7 @@ def test_rel_l2_decomposes_into_rho_and_gamma():
 def test_metrics_registry_routes_rel_l2():
     """The registry entry must evaluate identically to the function it wraps."""
     arrays = {"err_pt": np.ones((2, 3, 8, 5)), "gt_pt": 4 * np.ones((2, 3, 8, 5))}
-    assert rt.METRICS["rel_l2"].evaluate(arrays, 1, slice(1, 5), (0, 4)) == pytest.approx(0.5)
+    assert rt.BAND_METRICS["rel_l2"].evaluate(arrays, 1, slice(1, 5), (0, 4)) == pytest.approx(0.5)
 
 
 def test_table_values_evaluates_every_cell():
@@ -192,3 +195,41 @@ def test_provenance_lines_record_the_run_and_the_view():
     assert lines[3] == f"{'snapshots':<{rt.META_W}}: 0, 1000"
     assert lines[4] == f"{'bands':<{rt.META_W}}: 1-4,5-7"
     assert lines[5] == f"{'frames':<{rt.META_W}}: 0-0,63-63"
+
+
+def test_frame_rows_drop_the_band_axis_and_close_on_all_frames():
+    """W1 pools every pixel of a frame into one histogram, so it has no band to slice."""
+    rows = list(rt._frame_rows([(0, 0), (4, 4)], 65))
+
+    assert [(b, f) for b, f, _, _ in rows] == [("", "t0"), ("", "t4"), ("", "all")]
+    assert [w for _, _, _, w in rows] == [(0, 0), (4, 4), (0, 64)]
+    assert all(band_slice is None for _, _, band_slice, _ in rows)
+
+
+def test_w1_metrics_average_over_chains_and_the_frame_window():
+    curve = np.arange(2 * 3 * 5, dtype=float).reshape(2, 3, 5)
+    arrays = {"w1_t": curve, "w1wc_t": 2 * curve}
+
+    assert rt._w1(arrays, 1, None, (1, 3)) == pytest.approx(curve[1][:, 1:4].mean())
+    assert rt._w1wc(arrays, 0, None, (0, 4)) == pytest.approx(2 * curve[0].mean())
+
+
+def test_w1_metrics_skip_a_collapsed_chain_rather_than_blanking_the_cell():
+    """w1_width_corrected scores NaN for a chain with no width to match; one must not void the cell."""
+    curve = np.ones((1, 3, 5))
+    curve[0, 2, :] = np.nan
+
+    assert rt._w1wc({"w1wc_t": curve}, 0, None, (0, 4)) == pytest.approx(1.0)
+
+    with pytest.warns(RuntimeWarning):
+        assert np.isnan(rt._w1wc({"w1wc_t": np.full((1, 3, 5), np.nan)}, 0, None, (0, 4)))
+
+
+def test_load_skips_a_key_the_npz_predates(tmp_path):
+    """The banked runs carry no w1 arrays; opening them must still work."""
+    path = tmp_path / "old.npz"
+    np.savez(path, step=np.array([0]), pool_gt_pt=np.ones((1, 2, 3, 4)))
+
+    loaded = rt._load(str(path), ("pool",), [0], ("gt_pt", "w1_t"))
+
+    assert set(loaded["pool"]) == {"gt_pt"}
