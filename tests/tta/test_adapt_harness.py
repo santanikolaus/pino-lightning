@@ -12,6 +12,7 @@ def test_load_config_base_defaults():
     assert cfg.locus.name == "full"
     assert cfg.stop.name == "fixed"
     assert cfg.steps == 300
+    assert cfg.objective.pool_n == 20
     assert cfg.target_re == 500
 
 
