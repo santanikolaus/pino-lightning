@@ -20,7 +20,7 @@ projects:
 wandb:
   entity: megafuchs-johannes-kepler-universit-t-linz
   project: msc-base
-  project_tta: msc-tta
+  project_tta: msc-tta-ladder
   # checkpoint pattern: <projects.pino_lightning>/msc-base/<run_id>/checkpoints/best.ckpt
   # project_tta: separate project for TTA-in-OOD adaptation runs (not the pretrains)
 

@@ -10,7 +10,7 @@ from . import eval as ev
 from .report import F_RMS
 
 SIDES = ("pool", "heldout")
-NPZ_KEYS = ("pred_pt", "gt_pt", "err_pt", "pde_res_pred_pt")
+NPZ_KEYS = ("pred_pt", "gt_pt", "err_pt", "pde_res_pred_pt", "w1_t", "w1wc_t")
 DEFAULT_BANDS = "1-4,5-7,8-16,17-32,33-64"
 DEFAULT_FRAMES = "0-0,4-4,16-16,63-63"
 RHO_THRESH = 0.9
@@ -105,7 +105,8 @@ def _load(path: str, sides: tuple, snap_idx: list, keys: tuple) -> dict:
       path: the adapt run's .npz.
       sides: side prefixes to read, e.g. ("pool", "heldout").
       snap_idx: indices along the snapshot axis to retain.
-      keys: forward_bands array names, without the side prefix.
+      keys: forward_bands array names, without the side prefix; one absent from the
+        npz is skipped, so a run predating a metric fails at that metric, not here.
 
     Returns:
       {side: {key: array}}, each array reduced to len(snap_idx) along its leading axis.
@@ -115,7 +116,8 @@ def _load(path: str, sides: tuple, snap_idx: list, keys: tuple) -> dict:
         for side in sides:
             side_arrays = {}
             for key in keys:
-                side_arrays[key] = npz[f"{side}_{key}"][snap_idx]
+                if f"{side}_{key}" in npz.files:
+                    side_arrays[key] = npz[f"{side}_{key}"][snap_idx]
             loaded[side] = side_arrays
     return loaded
 
@@ -217,6 +219,38 @@ def _rho_horizon(side_arrays: dict, snap: int, band_slice: slice, frame_window: 
     return float(ev.time_to_threshold(curve[:, first:last + 1], RHO_THRESH).mean())
 
 
+def _w1(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple) -> float:
+    """Evaluates the mean per-chain value-distribution distance over one snapshot's frames.
+
+    Args:
+      side_arrays: that side's {key: array}, as returned by _load.
+      snap: index along the snapshot axis.
+      band_slice: unused; W1 pools every pixel of a frame into one histogram.
+      frame_window: (lo, hi) inclusive frames to average over.
+
+    Returns:
+      Mean W1 over chains and frames, or NaN where every chain collapsed.
+    """
+    first, last = frame_window
+    return float(np.nanmean(side_arrays["w1_t"][snap][:, first:last + 1]))
+
+
+def _w1wc(side_arrays: dict, snap: int, band_slice: slice, frame_window: tuple) -> float:
+    """Evaluates the mean per-chain width-corrected W1 over one snapshot's frames.
+
+    Args:
+      side_arrays: that side's {key: array}, as returned by _load.
+      snap: index along the snapshot axis.
+      band_slice: unused; W1 pools every pixel of a frame into one histogram.
+      frame_window: (lo, hi) inclusive frames to average over.
+
+    Returns:
+      Mean width-corrected W1 over chains and frames, or NaN where every chain collapsed.
+    """
+    first, last = frame_window
+    return float(np.nanmean(side_arrays["w1wc_t"][snap][:, first:last + 1]))
+
+
 class Metric(NamedTuple):
     """One metric's cell evaluator and how it prints.
 
@@ -230,7 +264,7 @@ class Metric(NamedTuple):
     direction: str
 
 
-METRICS = {
+BAND_METRICS = {
     "rel_l2": Metric(
         evaluate=_rel_l2,
         cell_fmt=".4f",
@@ -264,6 +298,29 @@ METRICS = {
     ),
 }
 
+FRAME_METRICS = {
+    "w1": Metric(
+        evaluate=_w1,
+        cell_fmt=".4f",
+        direction=(
+            "w1 = W1(pred values, gt values) / std(gt), per chain then averaged — LOWER is better.\n"
+            "  no band column: W1 pools every pixel of a frame into one histogram.\n"
+            "  the 'all' row is the MEAN of per-frame values, not pooled W1 — W1 is convex, so it\n"
+            "  is strictly larger than a pooled read and must not be quoted against one"
+        ),
+    ),
+    "w1wc": Metric(
+        evaluate=_w1wc,
+        cell_fmt=".4f",
+        direction=(
+            "w1wc = W1 after rescaling pred to gt's width — LOWER is better (0 = same distribution).\n"
+            "  what survives once the width gamma already reports is removed: skew and tail weight"
+        ),
+    ),
+}
+
+ALL_METRICS = {**BAND_METRICS, **FRAME_METRICS}
+
 
 def _rows(bands: list, frames: list, t_eff: int):
     """Yields the table's rows: display labels plus the band and frame selectors behind them.
@@ -292,6 +349,22 @@ def _rows(bands: list, frames: list, t_eff: int):
 
     span_first, span_last = bands[0][0], bands[-1][1]
     yield f"k{span_first}-{span_last}", "all", slice(span_first, span_last + 1), all_frames
+
+
+def _frame_rows(frames: list, t_eff: int):
+    """Yields a band-free table's rows: one per frame window, closing on an all-frames row.
+
+    Args:
+      frames: (lo, hi) inclusive frame windows, one row each.
+      t_eff: frame count, for the closing all-frames window.
+
+    Returns:
+      Yields (band_label, frame_label, band_slice, frame_window) with the band label
+      blank and the band slice None, which a FRAME_METRICS evaluator ignores.
+    """
+    for first, last in frames:
+        yield "", f"t{first}" if first == last else f"t{first}-{last}", None, (first, last)
+    yield "", "all", None, (0, t_eff - 1)
 
 
 def _table_values(metric, n_columns: int, rows: list) -> np.ndarray:
@@ -410,7 +483,7 @@ def main() -> None:
     ap.add_argument("--bands", default=DEFAULT_BANDS, help="band groups, e.g. 1-4,5-7")
     ap.add_argument("--frames", default=DEFAULT_FRAMES, help="frame windows, e.g. 0-0,4-4")
     ap.add_argument("--sides", nargs="+", choices=SIDES, default=list(SIDES), help="sides to print")
-    ap.add_argument("--metrics", nargs="+", choices=list(METRICS), default=list(METRICS),
+    ap.add_argument("--metrics", nargs="+", choices=list(ALL_METRICS), default=list(ALL_METRICS),
                     help="metric tables to print (default: all)")
     ap.add_argument("--save", default=None, metavar="DIR",
                     help="write the report to DIR/<npz stem>.txt instead of printing")
@@ -427,7 +500,8 @@ def main() -> None:
     frames = _resolve_groups(args.frames, t_eff, "frame")
 
     arrays = _load(args.npz, sides, snap_idx, NPZ_KEYS)
-    rows = list(_rows(bands, frames, t_eff))
+    band_rows = list(_rows(bands, frames, t_eff))
+    frame_rows = list(_frame_rows(frames, t_eff))
 
     n_chains = {}
     for side in sides:
@@ -447,7 +521,8 @@ def main() -> None:
 
     body = [banner, note]
     for name in args.metrics:
-        metric = METRICS[name]
+        metric = ALL_METRICS[name]
+        rows = frame_rows if name in FRAME_METRICS else band_rows
         tables = []
         for side in sides:
             values = _table_values(partial(metric.evaluate, arrays[side]), len(column_steps), rows)
