@@ -135,21 +135,51 @@ def test_step_metrics_namespaces_loss_components():
     }
 
 
-def test_snapshot_metrics_dispatches_rel_l2_and_resid_rms(monkeypatch):
-    snapshot = {
-        "step": 5,
-        "pool": {"err_pt": "pool_err", "gt_pt": "pool_gt", "pde_res_pred_pt": "pool_res"},
-        "heldout": {"err_pt": "held_err", "gt_pt": "held_gt", "pde_res_pred_pt": "held_res"},
-    }
-    rel_l2_calls, resid_rms_calls = [], []
-    monkeypatch.setattr(loop.ev, "rel_l2", lambda err, gt: rel_l2_calls.append((err, gt)) or 0.5)
-    monkeypatch.setattr(loop.ev, "resid_rms", lambda res: resid_rms_calls.append(res) or loop.F_RMS)
+def _side_arrays(n_bands: int = 65, T: int = 9, seed: int = 0) -> dict:
+    """Builds one side's forward_bands output with every key _snapshot_metrics reads."""
+    rng = np.random.default_rng(seed)
+    keys = ("pred_pt", "gt_pt", "err_pt", "pde_res_pred_pt", "pde_res_gt_pt")
+    return {k: rng.random((3, n_bands, T)) + 0.5 for k in keys}
+
+
+def test_snapshot_metrics_names_every_side_band_and_read():
+    snapshot = {"step": 5, "pool": _side_arrays(), "heldout": _side_arrays(seed=1)}
 
     out = loop._snapshot_metrics(snapshot)
 
-    assert out == {"pool/rel_l2": 0.5, "heldout/rel_l2": 0.5, "pool/res_rms": 1.0, "heldout/res_rms": 1.0}
-    assert rel_l2_calls == [("pool_err", "pool_gt"), ("held_err", "held_gt")]
-    assert resid_rms_calls == ["pool_res", "held_res"]
+    for side in ("pool", "heldout"):
+        for read in ("rel_l2", "res_rms", "rho", "gamma", "resid_ratio"):
+            assert np.isfinite(out[f"{side}/{read}"]), f"{side}/{read}"
+        for label in loop.BANDS:
+            assert np.isfinite(out[f"{side}/rel_l2_{label}"]), label
+            assert np.isfinite(out[f"{side}/rho_horizon_{label}"]), label
+            assert 0.0 <= out[f"{side}/rho_horizon_cens_{label}"] <= 1.0, label
+    assert len(out) == 2 * (5 + 3 * len(loop.BANDS))
+
+
+def test_snapshot_metrics_excludes_dc_from_every_added_read():
+    """rel_l2/res_rms stay all-band for continuity; the added keys must match report_tta's k1 start."""
+    side = _side_arrays()
+    side["pred_pt"][:, 0] = side["gt_pt"][:, 0] = side["err_pt"][:, 0] = 1e6
+    baseline = loop._snapshot_metrics({"step": 0, "pool": _side_arrays(), "heldout": _side_arrays()})
+    spiked = loop._snapshot_metrics({"step": 0, "pool": side, "heldout": _side_arrays()})
+
+    assert spiked["pool/rel_l2"] != baseline["pool/rel_l2"]
+    for key in ("pool/rho", "pool/gamma", "pool/rel_l2_k1-64", "pool/rho_horizon_k1-64"):
+        assert spiked[key] == pytest.approx(baseline[key]), key
+
+
+def test_horizon_reports_a_censored_fraction():
+    """A chain still correlated at the last frame is a lower bound, not a horizon."""
+    pred = np.ones((4, 8, 6))
+    gt = np.ones((4, 8, 6))
+    err = np.zeros((4, 8, 6))
+    err[:2, :, 3:] = 1.0
+
+    horizon, censored = loop._horizon(pred, gt, err, slice(1, None))
+
+    assert horizon == pytest.approx((3 + 3 + 6 + 6) / 4)
+    assert censored == pytest.approx(0.5)
 
 
 def test_log_fn_called_every_step_and_extra_at_snapshots():
@@ -160,13 +190,12 @@ def test_log_fn_called_every_step_and_extra_at_snapshots():
     calls = []
 
     loop.adapt(model, pool, heldout, _target_cfg(), regime, cfg, torch.device("cpu"),
-              log_fn=lambda metrics, step: calls.append((step, frozenset(metrics))))
+              log_fn=lambda metrics, step: calls.append(
+                  (step, "train" if any(k.startswith("train/") for k in metrics) else "snap")))
 
-    train_keys = frozenset({"train/loss", "train/pde", "train/ic", "train/item_rel_l2"})
-    snap_keys = frozenset({"pool/rel_l2", "pool/res_rms", "heldout/rel_l2", "heldout/res_rms"})
     assert calls == [
-        (0, snap_keys), (1, train_keys), (2, train_keys), (2, snap_keys),
-        (3, train_keys), (4, train_keys), (4, snap_keys),
+        (0, "snap"), (1, "train"), (2, "train"), (2, "snap"),
+        (3, "train"), (4, "train"), (4, "snap"),
     ]
 
 

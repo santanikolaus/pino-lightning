@@ -12,6 +12,10 @@ from ..eval.report import F_RMS
 from . import probe
 
 
+BANDS = {"k1-64": slice(1, None), "k1-4": slice(1, 5), "k5-7": slice(5, 8), "k8+": slice(8, None)}
+RHO_THRESH = 0.9
+
+
 def _loss_fn(cfg) -> KFLoss:
     """Builds the adaptation loss from cfg.objective — physics only, for now."""
     if cfg.objective.name != "physics":
@@ -56,11 +60,35 @@ def _step_metrics(step_losses: dict) -> dict:
     }
 
 
+def _horizon(pred_pt, gt_pt, err_pt, bands: slice) -> tuple:
+    """Measures the mean per-chain decorrelation horizon and how much of it is censored.
+
+    time_to_threshold censors at the curve's own frame count, so that length is the
+    sentinel the censored fraction tests for — never slice curve between the two.
+
+    Args:
+      pred_pt: (N, n_bands, T) predicted power, as returned by forward_bands.
+      gt_pt: (N, n_bands, T) GT power, as returned by forward_bands.
+      err_pt: (N, n_bands, T) error power, as returned by forward_bands.
+      bands: band slice to pool over.
+
+    Returns:
+      (mean horizon in frames, fraction of chains that never decorrelated); a
+      censored fraction above 0 makes the horizon a lower bound, not a value.
+    """
+    curve = ev.corr_curve(pred_pt, gt_pt, err_pt, bands=bands)
+    horizons = ev.time_to_threshold(curve, RHO_THRESH)
+    return float(horizons.mean()), float((horizons == curve.shape[-1]).mean())
+
+
 def _snapshot_metrics(snapshot: dict) -> dict:
-    """Namespaces one snapshot's pool/heldout accuracy and physics-residual reads.
+    """Namespaces one snapshot's pool/heldout accuracy, phase and physics-residual reads.
 
     res_rms uses report.py's dimensionless convention (RMS over forcing RMS),
     so it is directly comparable to every other report banked in the thesis.
+    rel_l2 and res_rms pool every band including DC and are left that way for
+    continuity with runs already banked; every other key here starts at k1,
+    matching report_tta.py, so only those are comparable to a report row.
 
     Args:
       snapshot: one {"step", "pool", "heldout"} dict, as returned by _eval().
@@ -71,8 +99,18 @@ def _snapshot_metrics(snapshot: dict) -> dict:
     out = {}
     for side in ("pool", "heldout"):
         g = snapshot[side]
-        out[f"{side}/rel_l2"] = ev.rel_l2(g["err_pt"], g["gt_pt"])
-        out[f"{side}/res_rms"] = ev.resid_rms(g["pde_res_pred_pt"]) / F_RMS
+        pred, gt, err, res = g["pred_pt"], g["gt_pt"], g["err_pt"], g["pde_res_pred_pt"]
+        no_dc = BANDS["k1-64"]
+        out[f"{side}/rel_l2"] = ev.rel_l2(err, gt)
+        out[f"{side}/res_rms"] = ev.resid_rms(res) / F_RMS
+        out[f"{side}/rho"] = ev.corr_pooled(pred, gt, err, bands=no_dc)
+        out[f"{side}/gamma"] = ev.amp_ratio(pred, gt, bands=no_dc)
+        out[f"{side}/resid_ratio"] = ev.resid_ratio(res, g["pde_res_gt_pt"], bands=no_dc)
+        for label, band_slice in BANDS.items():
+            out[f"{side}/rel_l2_{label}"] = ev.rel_l2(err, gt, bands=band_slice)
+            horizon, censored = _horizon(pred, gt, err, band_slice)
+            out[f"{side}/rho_horizon_{label}"] = horizon
+            out[f"{side}/rho_horizon_cens_{label}"] = censored
     return out
 
 
