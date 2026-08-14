@@ -9,7 +9,7 @@ exp: base  # ladder rung, set by the experiment yaml; groups runs in wandb
 ckpt: ???
 target_re: 500
 op_re: 100  # operator's training Re, fixed here so the probe's regime is legible from checked-in config, not a live wandb fetch
-steps: 20
+steps: 300
 lr: 3.0e-4
-probe_every: 1
+probe_every: 5
 out_dir: msc/tta/outputs/adapt  # relative to setup.ROOT, not the CWD
