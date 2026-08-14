@@ -104,6 +104,7 @@ def forward_bands(model: torch.nn.Module,
                   pad_mode: str,
                   t_interval: float,
                   residuals: bool = True,
+                  w1: bool = False,
                   shuffle_coarse: bool = False) -> dict:
     """Forwards model over dataset; returns raw per-band, per-frame power arrays.
 
@@ -122,6 +123,8 @@ def forward_bands(model: torch.nn.Module,
       t_interval: physical time spanned by consecutive frames, for the residual.
       residuals: compute the three PDE-residual arrays; False skips them for a caller
         that reads only the field powers, saving three residual passes per sample.
+      w1: reduce each frame's raw fields to their W1 value-distance here, the only
+        place they exist — no stored array can recover it later.
       shuffle_coarse: feed a random other sample's coarse trajectory instead of
         the matched one (tests phase-mismatch sensitivity). A model trained
         without a coarse channel never receives one either way.
@@ -135,6 +138,10 @@ def forward_bands(model: torch.nn.Module,
       OPERATOR's own training equation, nu_op — self-consistency, equal to the former
       in a native regime), and pde_res_gt_pt (GT against the data's equation, the
       stencil's own error floor). Both û residuals are stored rather than one derived
+      stencil's own error floor). With w1=True, two more of (N, T_eff), w1_t and
+      w1wc_t: each frame's paired W1 and its width-corrected form, band-free because
+      W1 pools every pixel of a frame into one histogram. Both û residuals are
+      stored rather than one derived
       from the other: they differ by the exactly-known term -(nu_test - nu_op)*lap(û),
       but these arrays hold power, and the cross term in |a+b|**2 needs the phase that
       band_power_t discards. The sample axis is kept per-sample because it is the
@@ -161,6 +168,8 @@ def forward_bands(model: torch.nn.Module,
     pde_res_pred_ps: list = []
     pde_res_pred_op_ps: list = []
     pde_res_gt_ps: list = []
+    w1_ts: list = []
+    w1wc_ts: list = []
     for i in range(len(dataset)):
         item = dataset[i]
         ic = item["x"].unsqueeze(0).to(device)
@@ -195,6 +204,11 @@ def forward_bands(model: torch.nn.Module,
             pde_res_gt_ps.append(
                 band_power_t(resid_minus_forcing(gt, regime.nu_test, t_interval),
                              kinf, n_bands))
+        if w1:
+            pred_f, gt_f = uhat.cpu().numpy(), gt.cpu().numpy()
+            w1_ts.append([w1_values(pred_f, gt_f, frames=slice(t, t + 1)) for t in range(T)])
+            w1wc_ts.append([w1_width_corrected(pred_f, gt_f, frames=slice(t, t + 1))
+                            for t in range(T)])
 
     out = {
         "n_bands": n_bands,
@@ -207,6 +221,9 @@ def forward_bands(model: torch.nn.Module,
         out["pde_res_pred_pt"] = np.stack(pde_res_pred_ps)
         out["pde_res_pred_op_pt"] = np.stack(pde_res_pred_op_ps)
         out["pde_res_gt_pt"] = np.stack(pde_res_gt_ps)
+    if w1:
+        out["w1_t"] = np.array(w1_ts)
+        out["w1wc_t"] = np.array(w1wc_ts)
     return out
 
 
@@ -660,8 +677,12 @@ def w1_values(pred, gt, frames: slice = slice(None),
     """
     a = np.asarray(pred)[..., frames].ravel()
     b = np.asarray(gt)[..., frames].ravel()
-    w = stats.wasserstein_distance(a, b)
-    return float(w / (b.std() + 1e-30)) if normalize else float(w)
+    if a.size == b.size:
+        # equal sizes make W1 the mean gap between order statistics, 40x faster
+        w = float(np.abs(np.sort(a) - np.sort(b)).mean())
+    else:
+        w = float(stats.wasserstein_distance(a, b))
+    return w / (float(b.std()) + 1e-30) if normalize else w
 
 
 def w1_width_corrected(pred, gt, frames: slice = slice(None)) -> float:

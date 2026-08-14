@@ -14,8 +14,11 @@ from msc.tta.eval import (
     band_power_t,
     cheb_bins,
     forward_bands,
+    forward_fields,
     rel_l2,
     resid_minus_forcing,
+    w1_values,
+    w1_width_corrected,
 )
 from msc.tta.setup import Regime
 from src.models.kf_fno import build_fno_kf
@@ -254,3 +257,47 @@ def test_forward_bands_stacks_per_sample_not_summed():
         gt = dataset[i]["y"].unsqueeze(0)
         expected = band_power_t(gt, kinf, n_bands)
         np.testing.assert_allclose(out["gt_pt"][i], expected, rtol=1e-10)
+
+
+def test_forward_bands_w1_adds_two_per_frame_arrays_without_a_band_axis():
+    """W1 pools every pixel of a frame into one histogram, so it has no band axis."""
+    S, T, N = 8, 5, 2
+    out = forward_bands(
+        _tiny_model(), _FakeDataset(n=N, S=S, T=T), torch.device("cpu"),
+        regime=Regime(100, 100), time_scale=1.0,
+        temporal_pad=0, pad_mode="zero", t_interval=0.1, w1=True,
+    )
+
+    for key in ("w1_t", "w1wc_t"):
+        assert out[key].shape == (N, T), f"{key} shape={out[key].shape}"
+        assert np.isfinite(out[key]).all(), key
+
+
+def test_forward_bands_w1_matches_the_standalone_field_path():
+    """The in-loop reduction must see the same fields and frames forward_fields returns."""
+    S, T, N = 8, 5, 2
+    model, dataset, device = _tiny_model(), _FakeDataset(n=N, S=S, T=T), torch.device("cpu")
+    fwd = dict(time_scale=1.0, temporal_pad=0, pad_mode="zero")
+
+    out = forward_bands(model, dataset, device, regime=Regime(100, 100),
+                        t_interval=0.1, w1=True, **fwd)
+    pred, gt = forward_fields(model, dataset, device, **fwd)
+
+    for i in range(N):
+        for f in range(T):
+            window = slice(f, f + 1)
+            assert out["w1_t"][i, f] == pytest.approx(
+                w1_values(pred[i:i + 1], gt[i:i + 1], frames=window)), (i, f)
+            assert out["w1wc_t"][i, f] == pytest.approx(
+                w1_width_corrected(pred[i:i + 1], gt[i:i + 1], frames=window)), (i, f)
+
+
+def test_forward_bands_w1_defaults_off_so_report_pays_nothing():
+    """report.py forwards without w1=; the sort is ~17% of a probe and it never reads them."""
+    out = forward_bands(
+        _tiny_model(), _FakeDataset(n=2, S=8, T=5), torch.device("cpu"),
+        regime=Regime(100, 100), time_scale=1.0,
+        temporal_pad=0, pad_mode="zero", t_interval=0.1,
+    )
+
+    assert "w1_t" not in out and "w1wc_t" not in out

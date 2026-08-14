@@ -38,6 +38,7 @@ CPU-only, synthetic numpy data only.
 """
 import numpy as np
 import pytest
+from scipy import stats
 
 from msc.tta.eval import w1_curve, w1_lag_drift, w1_values, w1_width_corrected
 
@@ -749,3 +750,26 @@ def test_w1_lag_drift_is_a_null_not_a_realisation_spread_measurement():
 
     assert floor.max() < 0.05
     assert cross.min() > 0.15
+
+
+def test_w1_values_fast_path_matches_scipy_and_ravel_order_is_irrelevant():
+    """The fast branch must match scipy, and ravel order must not reach the answer."""
+    rng = np.random.default_rng(0)
+    pred = rng.standard_normal((3, 8, 8, 5)) * 1.4 + 0.3
+    gt = rng.standard_normal((3, 8, 8, 5))
+
+    expected = stats.wasserstein_distance(pred.ravel(), gt.ravel()) / gt.std()
+    assert w1_values(pred, gt) == pytest.approx(expected, rel=1e-12)
+
+    shuffled = rng.permutation(pred.ravel()).reshape(pred.shape)
+    assert w1_values(shuffled, gt) == pytest.approx(w1_values(pred, gt), rel=1e-12)
+
+
+def test_w1_values_unequal_sizes_still_route_through_scipy():
+    """report.py's GT-GT floor splits an odd sample count into unequal halves."""
+    rng = np.random.default_rng(1)
+    a = rng.standard_normal((3, 4, 4, 5))
+    b = rng.standard_normal((4, 4, 4, 5))
+
+    expected = stats.wasserstein_distance(a.ravel(), b.ravel()) / b.std()
+    assert w1_values(a, b) == pytest.approx(expected, rel=1e-12)

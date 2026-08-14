@@ -135,11 +135,13 @@ def test_step_metrics_namespaces_loss_components():
     }
 
 
-def _side_arrays(n_bands: int = 65, T: int = 9, seed: int = 0) -> dict:
+def _side_arrays(n_bands: int = 65, T: int = 65, seed: int = 0) -> dict:
     """Builds one side's forward_bands output with every key _snapshot_metrics reads."""
     rng = np.random.default_rng(seed)
     keys = ("pred_pt", "gt_pt", "err_pt", "pde_res_pred_pt", "pde_res_gt_pt")
-    return {k: rng.random((3, n_bands, T)) + 0.5 for k in keys}
+    side = {k: rng.random((3, n_bands, T)) + 0.5 for k in keys}
+    side["w1wc_t"] = rng.random((3, T))
+    return side
 
 
 def test_snapshot_metrics_names_every_side_band_and_read():
@@ -154,7 +156,9 @@ def test_snapshot_metrics_names_every_side_band_and_read():
             assert np.isfinite(out[f"{side}/rel_l2_{label}"]), label
             assert np.isfinite(out[f"{side}/rho_horizon_{label}"]), label
             assert 0.0 <= out[f"{side}/rho_horizon_cens_{label}"] <= 1.0, label
-    assert len(out) == 2 * (5 + 3 * len(loop.BANDS))
+        for frame in loop.W1_FRAMES:
+            assert np.isfinite(out[f"{side}/w1wc_t{frame}"]), frame
+    assert len(out) == 2 * (5 + 3 * len(loop.BANDS) + len(loop.W1_FRAMES))
 
 
 def test_snapshot_metrics_excludes_dc_from_every_added_read():

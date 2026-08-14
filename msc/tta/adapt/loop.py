@@ -14,6 +14,7 @@ from . import probe
 
 BANDS = {"k1-64": slice(1, None), "k1-4": slice(1, 5), "k5-7": slice(5, 8), "k8+": slice(8, None)}
 RHO_THRESH = 0.9
+W1_FRAMES = (4, 63)
 
 
 def _loss_fn(cfg) -> KFLoss:
@@ -63,9 +64,6 @@ def _step_metrics(step_losses: dict) -> dict:
 def _horizon(pred_pt, gt_pt, err_pt, bands: slice) -> tuple:
     """Measures the mean per-chain decorrelation horizon and how much of it is censored.
 
-    time_to_threshold censors at the curve's own frame count, so that length is the
-    sentinel the censored fraction tests for — never slice curve between the two.
-
     Args:
       pred_pt: (N, n_bands, T) predicted power, as returned by forward_bands.
       gt_pt: (N, n_bands, T) GT power, as returned by forward_bands.
@@ -78,6 +76,7 @@ def _horizon(pred_pt, gt_pt, err_pt, bands: slice) -> tuple:
     """
     curve = ev.corr_curve(pred_pt, gt_pt, err_pt, bands=bands)
     horizons = ev.time_to_threshold(curve, RHO_THRESH)
+    # slicing curve here would pin the censored fraction to zero
     return float(horizons.mean()), float((horizons == curve.shape[-1]).mean())
 
 
@@ -86,9 +85,9 @@ def _snapshot_metrics(snapshot: dict) -> dict:
 
     res_rms uses report.py's dimensionless convention (RMS over forcing RMS),
     so it is directly comparable to every other report banked in the thesis.
-    rel_l2 and res_rms pool every band including DC and are left that way for
-    continuity with runs already banked; every other key here starts at k1,
-    matching report_tta.py, so only those are comparable to a report row.
+    rel_l2 and res_rms pool every band including DC, kept that way for continuity
+    with banked runs; every other key starts at k1, so only those match a
+    report_tta row.
 
     Args:
       snapshot: one {"step", "pool", "heldout"} dict, as returned by _eval().
@@ -111,6 +110,10 @@ def _snapshot_metrics(snapshot: dict) -> dict:
             horizon, censored = _horizon(pred, gt, err, band_slice)
             out[f"{side}/rho_horizon_{label}"] = horizon
             out[f"{side}/rho_horizon_cens_{label}"] = censored
+        w1wc = g["w1wc_t"]
+        for frame in W1_FRAMES:
+            if frame < w1wc.shape[-1]:
+                out[f"{side}/w1wc_t{frame}"] = float(np.nanmean(w1wc[:, frame]))
     return out
 
 
