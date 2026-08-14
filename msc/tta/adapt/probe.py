@@ -18,11 +18,11 @@ def measure(model: torch.nn.Module, dataset, target_cfg: DictConfig, regime: set
       device: torch device to run the forward pass on.
 
     Returns:
-      forward_bands' raw dict: pred_pt/gt_pt/err_pt and the three pde_res_*
-      arrays, each per-sample.
+      forward_bands' raw dict: pred_pt/gt_pt/err_pt, the three pde_res_* arrays
+      and the two per-frame w1 arrays, each per-sample.
     """
     return ev.forward_bands(
         model, dataset, device, regime=regime, time_scale=target_cfg.data.time_scale,
         temporal_pad=target_cfg.data.temporal_pad, pad_mode=target_cfg.data.pad_mode,
-        t_interval=target_cfg.loss.t_interval,
+        t_interval=target_cfg.loss.t_interval, w1=True,
     )

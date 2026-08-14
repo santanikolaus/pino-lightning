@@ -15,10 +15,10 @@ def test_measure_dispatches_target_cfg_kwargs_and_returns_stub_untouched(monkeyp
     calls = []
 
     def _stub_forward_bands(m, d, dev, *, regime, time_scale, temporal_pad,
-                            pad_mode, t_interval):
+                            pad_mode, t_interval, w1):
         calls.append(dict(model=m, dataset=d, device=dev, regime=regime,
                           time_scale=time_scale, temporal_pad=temporal_pad,
-                          pad_mode=pad_mode, t_interval=t_interval))
+                          pad_mode=pad_mode, t_interval=t_interval, w1=w1))
         return sentinel
 
     monkeypatch.setattr(probe.ev, "forward_bands", _stub_forward_bands)
@@ -36,3 +36,4 @@ def test_measure_dispatches_target_cfg_kwargs_and_returns_stub_untouched(monkeyp
     assert call["temporal_pad"] == 4
     assert call["pad_mode"] == "periodic"
     assert call["t_interval"] == 0.5
+    assert call["w1"] is True
