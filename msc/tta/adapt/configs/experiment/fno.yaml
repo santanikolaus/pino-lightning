@@ -2,4 +2,3 @@
 exp: fno
 ckpt: 75prctl5
 target_re: 500
-steps: 100
