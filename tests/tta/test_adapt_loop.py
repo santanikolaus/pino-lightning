@@ -84,9 +84,10 @@ def test_eval_measures_both_sides_and_tags_the_step(monkeypatch):
         assert c["device"] is device
 
 
-def _adapt_cfg(steps, probe_every):
+def _adapt_cfg(steps, probe_every, lr_milestones=()):
     return _cfg({"target_re": 100, "op_re": 100, "steps": steps, "lr": 1e-3,
-                "probe_every": probe_every,
+                "probe_every": probe_every, "lr_milestones": list(lr_milestones),
+                "lr_gamma": 0.5,
                 "objective": {"name": "physics", "ic_weight": 5.0}})
 
 
@@ -107,7 +108,7 @@ def test_adapt_snapshots_on_schedule_and_clones_the_model():
 
     assert [s["step"] for s in snapshots] == [0, 2, 4]
     assert len(losses) == 4
-    assert all(set(l) == {"loss", "data", "pde", "ic"} for l in losses)
+    assert all(set(l) == {"loss", "data", "pde", "ic", "lr"} for l in losses)
     assert adapted is not model
     assert not adapted.training
     after_original = torch.cat([p.flatten() for p in model.parameters()])
@@ -129,10 +130,36 @@ def test_adapt_final_step_not_duplicated_when_it_lands_on_probe_every():
 
 
 def test_step_metrics_namespaces_loss_components():
-    step_losses = {"loss": 1.0, "data": 2.0, "pde": 3.0, "ic": 4.0}
+    step_losses = {"loss": 1.0, "data": 2.0, "pde": 3.0, "ic": 4.0, "lr": 5e-4}
     assert loop._step_metrics(step_losses) == {
         "train/loss": 1.0, "train/pde": 3.0, "train/ic": 4.0, "train/item_rel_l2": 2.0,
+        "train/lr": 5e-4,
     }
+
+
+def test_adapt_holds_lr_constant_when_no_milestones_are_set():
+    model = _tiny_model()
+    pool, heldout = _FakeDataset(1, 8, 5), _FakeDataset(1, 8, 5, seed=1)
+    cfg = _adapt_cfg(steps=4, probe_every=4)
+    regime = Regime(op_re=100, test_re=100)
+
+    _, _, losses = loop.adapt(model, pool, heldout, _target_cfg(), regime,
+                              cfg, torch.device("cpu"))
+
+    assert [l["lr"] for l in losses] == [1e-3] * 4
+
+
+def test_adapt_halves_lr_after_every_milestone_step():
+    """Milestone m decays after step m, so step m+1 is the first halved one."""
+    model = _tiny_model()
+    pool, heldout = _FakeDataset(1, 8, 5), _FakeDataset(1, 8, 5, seed=1)
+    cfg = _adapt_cfg(steps=4, probe_every=4, lr_milestones=(2, 3))
+    regime = Regime(op_re=100, test_re=100)
+
+    _, _, losses = loop.adapt(model, pool, heldout, _target_cfg(), regime,
+                              cfg, torch.device("cpu"))
+
+    assert [l["lr"] for l in losses] == [1e-3, 1e-3, 5e-4, 2.5e-4]
 
 
 def _side_arrays(n_bands: int = 65, T: int = 65, seed: int = 0) -> dict:

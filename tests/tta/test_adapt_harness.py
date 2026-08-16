@@ -156,14 +156,20 @@ def test_build_splits_heldout_reads_val_not_test(monkeypatch, train_cfg):
 
 def test_run_name_encodes_backbone_and_every_varying_axis():
     cfg = _cfg({"exp": "unet", "objective": {"name": "physics", "pool_n": 8},
-                "locus": {"name": "full"}, "lr": 1e-4, "steps": 100})
+                "locus": {"name": "full"}, "lr": 1e-4, "steps": 100, "lr_milestones": []})
     assert adapt.run_name(cfg) == "unet-physics-full-n8-lr1e-04-s100"
 
 
 def test_run_name_defaults_pool_n_to_online():
     cfg = _cfg({"exp": "fno", "objective": {"name": "physics"}, "locus": {"name": "full"},
-                "lr": 1e-4, "steps": 100})
+                "lr": 1e-4, "steps": 100, "lr_milestones": []})
     assert adapt.run_name(cfg) == "fno-physics-full-n1-lr1e-04-s100"
+
+
+def test_run_name_marks_a_decayed_run_apart_from_its_constant_lr_twin():
+    cfg = _cfg({"exp": "fno", "objective": {"name": "physics"}, "locus": {"name": "full"},
+                "lr": 3e-4, "steps": 300, "lr_milestones": [150, 250]})
+    assert adapt.run_name(cfg) == "fno-physics-full-n1-lr3e-04-s300-d150-250"
 
 
 def test_save_arrays_round_trips_through_tmp_npz(tmp_path, monkeypatch):
