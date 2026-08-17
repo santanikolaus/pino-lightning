@@ -120,10 +120,11 @@ def run_name(cfg: DictConfig) -> str:
       cfg: resolved client config, as returned by load_config().
 
     Returns:
-      A name like "fno-physics-full-n1-lr1e-04-s100".
+      A name like "fno-physics-full-n1-lr1e-04-s100", plus "-d150-250" when lr decays.
     """
+    decay = "-d" + "-".join(str(m) for m in cfg.lr_milestones) if cfg.lr_milestones else ""
     return (f"{cfg.exp}-{cfg.objective.name}-{cfg.locus.name}"
-            f"-n{cfg.objective.get('pool_n', 1)}-lr{cfg.lr:.0e}-s{cfg.steps}")
+            f"-n{cfg.objective.get('pool_n', 1)}-lr{cfg.lr:.0e}-s{cfg.steps}{decay}")
 
 
 def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,

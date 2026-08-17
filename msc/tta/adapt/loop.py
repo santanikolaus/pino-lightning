@@ -48,7 +48,7 @@ def _step_metrics(step_losses: dict) -> dict:
 
     Args:
       step_losses: one step's {"loss", "data", "pde", "ic"} scalars, as
-        returned by KFLoss.__call__ after .item().
+        returned by KFLoss.__call__ after .item(), plus "lr".
 
     Returns:
       Dict of wandb keys under the train/ namespace.
@@ -58,6 +58,7 @@ def _step_metrics(step_losses: dict) -> dict:
         "train/pde": step_losses["pde"],
         "train/ic": step_losses["ic"],
         "train/item_rel_l2": step_losses["data"],
+        "train/lr": step_losses["lr"],
     }
 
 
@@ -148,6 +149,9 @@ def adapt(model, pool, heldout, target_cfg: DictConfig, regime, cfg, device,
     enable_gradient_checkpointing(model)
     model.train()
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    sched = torch.optim.lr_scheduler.MultiStepLR(
+        opt, milestones=list(cfg.lr_milestones), gamma=cfg.lr_gamma
+    )
     loss_fn = _loss_fn(cfg)
 
     snapshots = [_eval(model, pool, heldout, target_cfg, regime, device, 0)]
@@ -169,6 +173,8 @@ def adapt(model, pool, heldout, target_cfg: DictConfig, regime, cfg, device,
         opt.step()
 
         step_losses = {k: v.item() for k, v in parts.items()}
+        step_losses["lr"] = opt.param_groups[0]["lr"]
+        sched.step()
         losses.append(step_losses)
         log_fn(_step_metrics(step_losses), step=step)
 
