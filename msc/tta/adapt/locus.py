@@ -6,7 +6,18 @@ from omegaconf import DictConfig
 
 
 def shell_index(kx: np.ndarray, ky: np.ndarray) -> np.ndarray:
-    """Returns the Chebyshev shell max(|kx|,|ky|) of each mode, matching eval.cheb_bins."""
+    """Returns the Chebyshev shell max(|kx|,|ky|) of every (kx, ky) mode pair.
+
+    Args:
+      kx: signed wavenumbers along the first spatial axis.
+      ky: signed wavenumbers along the second spatial axis.
+
+    Returns:
+      (len(kx), len(ky)) array — int for integer wavenumbers — whose entry
+      [i, j] is the shell of mode (kx[i], ky[j]), the convention eval.cheb_bins
+      uses for the reported bands.
+    """
+    return np.maximum(np.abs(kx)[:, None], np.abs(ky)[None, :])
 
 
 def mask_fno_shifted(mode_shape: tuple, shells: list, t_modes: list) -> torch.Tensor:
@@ -15,7 +26,7 @@ def mask_fno_shifted(mode_shape: tuple, shells: list, t_modes: list) -> torch.Te
     Spatial axes of size m index signed wavenumbers arange(m) - m // 2, so an
     8-wide axis spans -4..+3; the trailing axis is the temporal rfft, indexing
     0..kt_max. Valid only while the module uses its weight unsliced, which
-    check_mode_budget asserts.
+    check_mode_index_map asserts.
 
     Args:
       mode_shape: the weight's (kx, ky, kt) mode dims, without the channel dims.
@@ -23,8 +34,41 @@ def mask_fno_shifted(mode_shape: tuple, shells: list, t_modes: list) -> torch.Te
       t_modes: temporal rfft indices to keep; None keeps every temporal mode.
 
     Returns:
-      A bool tensor of shape (1, 1, kx, ky, kt), broadcastable onto the weight.
+      A CPU bool tensor of shape (1, 1, kx, ky, kt), broadcastable onto the
+      weight; attach_grad_masks places it on the parameter's device.
+
+    Raises:
+      ValueError: mode_shape is not three-dimensional, a requested shell or
+        temporal mode falls outside the weight's mode box, or the request keeps
+        no mode at all.
     """
+    if len(mode_shape) != 3:
+        raise ValueError(f"layout fno_shifted needs (kx, ky, kt) mode dims, got {mode_shape}")
+
+    n_kx, n_ky, n_kt = mode_shape
+    kx = np.arange(n_kx) - n_kx // 2
+    ky = np.arange(n_ky) - n_ky // 2
+    shell_grid = shell_index(kx, ky)
+
+    spatial_keep = np.ones((n_kx, n_ky), dtype=bool)
+    if shells is not None:
+        max_shell = int(shell_grid.max())
+        for shell in shells:
+            if not 0 <= shell <= max_shell:
+                raise ValueError(f"shell {shell} outside the mode box (0..{max_shell})")
+        spatial_keep = np.isin(shell_grid, list(shells))
+
+    temporal_keep = np.ones(n_kt, dtype=bool)
+    if t_modes is not None:
+        for t_mode in t_modes:
+            if not 0 <= t_mode < n_kt:
+                raise ValueError(f"temporal mode {t_mode} outside the box (0..{n_kt - 1})")
+        temporal_keep = np.isin(np.arange(n_kt), list(t_modes))
+
+    keep = spatial_keep[:, :, None] & temporal_keep[None, None, :]
+    if not keep.any():
+        raise ValueError(f"shells={shells} t_modes={t_modes} keep no mode of {mode_shape}")
+    return torch.from_numpy(keep)[None, None]
 
 
 def mask_unet_rfft_lo(mode_shape: tuple, shells: list, t_modes: list) -> torch.Tensor:
@@ -119,14 +163,52 @@ def build_mode_masks(locus_params: dict, layouts: dict, shells: list, t_modes: l
     Args:
       locus_params: name -> parameter, as returned by select_params().
       layouts: fnmatch pattern -> MODE_LAYOUTS key. A locus tensor matching no
-        pattern is left unmasked and adapts whole.
+        pattern is left unmasked and adapts whole, which is what lets one locus
+        mix restricted and whole tensors. The first matching pattern wins, and
+        every pattern must apply to at least one tensor, so a shadowed fallback
+        is rejected rather than silently ignored.
       shells: Chebyshev shells to keep; None keeps every shell.
       t_modes: temporal rfft indices to keep; None keeps every temporal mode.
 
     Returns:
-      Dict of parameter name -> bool mask broadcastable onto that parameter;
+      Dict of parameter name -> CPU bool mask broadcastable onto that parameter;
       empty when layouts is empty.
+
+    Raises:
+      ValueError: layouts restricts nothing, names an unknown layout, or carries
+        a pattern that matches no locus tensor.
     """
+    if layouts and shells is None and t_modes is None:
+        raise ValueError("layouts given but neither shells nor t_modes restricts anything")
+
+    masks = {}
+    used_patterns = set()
+    for name, param in locus_params.items():
+        layout = None
+        for pattern, candidate in layouts.items():
+            if fnmatch(name, pattern):
+                layout = candidate
+                used_patterns.add(pattern)
+                break
+        if layout is None:
+            continue
+        if layout not in MODE_LAYOUTS:
+            raise ValueError(f"unknown layout {layout!r} for {name}; "
+                             f"have {sorted(MODE_LAYOUTS)}")
+        mode_shape = tuple(param.shape[2:])
+        try:
+            masks[name] = MODE_LAYOUTS[layout](mode_shape, shells, t_modes)
+        except ValueError as bad_mask:
+            raise ValueError(f"{name}: {bad_mask}") from bad_mask
+
+    unused_patterns = []
+    for pattern in layouts:
+        if pattern not in used_patterns:
+            unused_patterns.append(pattern)
+    if unused_patterns:
+        raise ValueError(f"layouts patterns matched no locus tensor: {unused_patterns}")
+
+    return masks
 
 
 def attach_grad_masks(locus_params: dict, masks: dict) -> None:
@@ -134,12 +216,21 @@ def attach_grad_masks(locus_params: dict, masks: dict) -> None:
 
     A zero gradient from the first step on leaves Adam's exp_avg and exp_avg_sq
     at zero for those entries, so their update is exactly zero — the mask needs
-    no optimizer support, but it does need to hold from step 1.
+    no optimizer support, but it does need to hold from step 1. Masks arrive on
+    the CPU from the layout builders and are placed on the parameter here.
 
     Args:
       locus_params: name -> parameter, as returned by select_params().
       masks: parameter name -> keep-mask, as returned by build_mode_masks().
     """
+    for name, mask in masks.items():
+        param = locus_params[name]
+        keep = mask.to(param.device)
+
+        def zero_masked_grad(param, keep=keep):
+            param.grad.mul_(keep)
+
+        param.register_post_accumulate_grad_hook(zero_masked_grad)
 
 
 def check_mode_index_map(model: torch.nn.Module, layouts: dict) -> None:

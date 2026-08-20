@@ -22,6 +22,20 @@ def real_fno() -> torch.nn.Module:
 
 
 @pytest.fixture
+def real_fno_narrow() -> torch.nn.Module:
+    """Returns a real FNO whose channel width differs from its mode width.
+
+    hidden_channels 8 would coincide with n_modes 8, making a weight's channel
+    dims indistinguishable from its mode dims under a slicing slip.
+    """
+    model_cfg = OmegaConf.to_container(OmegaConf.load(FNO_CONFIG), resolve=True)
+    model_cfg["hidden_channels"] = 6
+    model_cfg["projection_channel_ratio"] = 1
+    torch.manual_seed(0)
+    return build_fno_kf(model_cfg)
+
+
+@pytest.fixture
 def real_unet() -> torch.nn.Module:
     """Returns a toy-width UNet3D with the bottleneck spectral mixer enabled."""
     torch.manual_seed(0)
