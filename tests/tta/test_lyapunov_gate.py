@@ -3,6 +3,10 @@
 Out of scope: NavierStokes2d physics integration, measure(), main() — those need GPU/data.
 All tests run on CPU with analytically predictable outcomes.
 """
+import pytest
+
+pytest.skip("legacy: scripts.lyapunov_gate.amplification was removed", allow_module_level=True)
+
 import math
 
 import numpy as np

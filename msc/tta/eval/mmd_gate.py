@@ -19,7 +19,7 @@ from src.datasets.kf_dataset import KFDataset
 
 from . import eval as ev
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 _PATHS = yaml.safe_load((ROOT / "msc" / "configs" / "paths.yaml").read_text())
 _SPLIT = yaml.safe_load(
     (ROOT / "msc" / "configs" / "configs.yaml").read_text())["split"]

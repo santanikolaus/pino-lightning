@@ -3,6 +3,10 @@
 The complement of band_energy_loss: position-SENSITIVE, magnitude-BLIND. A displaced
 field IS penalized (phase changed); a rescaled field is not (phase unchanged).
 """
+import pytest
+
+pytest.skip("legacy: src.pde.ns.band_phase_loss was removed", allow_module_level=True)
+
 import torch
 
 from src.pde.ns import band_phase_loss

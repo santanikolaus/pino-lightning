@@ -4,6 +4,10 @@ Guards:
   (A) Regression/drift: data_weight=0 default is invariant to non-IC target frames.
   (B) New supervised path: data_weight > 0 actually reaches KFLoss and improves data fit.
 """
+import pytest
+
+pytest.skip("legacy: msc.tta.methods moved to msc/tta/legacy; superseded by msc/tta/adapt", allow_module_level=True)
+
 import copy
 
 import numpy as np

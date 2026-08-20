@@ -4,6 +4,10 @@ Checks the make-or-break mechanics on a tiny FNO (CPU, no data/ckpt): the loss i
 finite and correctly shaped, the teacher is stop-grad (no grad leaks from it), and
 a few Adam steps actually reduce the distill term (knob reaches the optimizer).
 """
+import pytest
+
+pytest.skip("legacy: scripts/oracle_distill_probe.py was removed", allow_module_level=True)
+
 import torch
 from neuralop import LpLoss
 

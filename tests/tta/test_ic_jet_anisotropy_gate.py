@@ -3,6 +3,10 @@
 Out of scope: run(), report(), main(), solver physics, dataset I/O.
 All tests run on CPU with analytically predictable outcomes.
 """
+import pytest
+
+pytest.skip("legacy: scripts/gate2_phase_spread.py was removed", allow_module_level=True)
+
 import math
 
 import numpy as np

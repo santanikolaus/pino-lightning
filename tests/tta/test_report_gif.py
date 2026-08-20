@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("matplotlib")  # module imports matplotlib at top
-from msc.tta.report_gif import FieldDiagAnimator
+from msc.tta.eval.report_gif import FieldDiagAnimator
 
 S, T, KMAX = 16, 5, 7
 

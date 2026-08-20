@@ -3,6 +3,10 @@
 Pins the contract that makes it the right anti-backfire term: it measures energy,
 not position, so a displaced field is NOT penalized (won't force per-pixel commitment).
 """
+import pytest
+
+pytest.skip("legacy: src.pde.ns.band_energy_loss was removed", allow_module_level=True)
+
 import torch
 
 from src.pde.ns import band_energy_loss

@@ -3,6 +3,10 @@
 Checks the solver-reprojection produces correctly-shaped, finite, NaN-padded
 continuations, and that the k<=7 late-power metric is zero for identical fields.
 """
+import pytest
+
+pytest.skip("legacy: scripts/chaos_artifact_split.py was removed", allow_module_level=True)
+
 import math
 
 import torch

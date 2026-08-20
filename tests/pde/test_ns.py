@@ -1,12 +1,17 @@
-import sys
 import pytest
 import torch
 import numpy as np
 
 from src.pde.ns import NSVorticity, KFLoss, cheb_band_mask, cheb_lowpass
 
-sys.path.insert(0, "/Users/nick/Downloads/paper-pino")
-from train_utils.losses import FDM_NS_vorticity
+try:
+    from train_utils.losses import FDM_NS_vorticity
+except ModuleNotFoundError:
+    FDM_NS_vorticity = None
+
+needs_paper_pino = pytest.mark.skipif(
+    FDM_NS_vorticity is None,
+    reason="paper-pino train_utils not installed; reference-parity tests only")
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +76,7 @@ class TestNSVorticityPhysics:
         expected = torch.zeros_like(res)
         torch.testing.assert_close(res, expected, atol=1e-5, rtol=1e-5)
 
+    @needs_paper_pino
     def test_residual_matches_paper(self):
         """our_res == paper_res: both return Du (LHS), no forcing subtracted."""
         ns = NSVorticity(re=40)
@@ -136,7 +142,7 @@ class TestKFLossInterface:
         loss_fn = KFLoss(re=40)
         pred, target = self._make_pred_target()
         out = loss_fn(pred, target)
-        assert set(out.keys()) == {"loss", "data", "pde", "ic", "energy", "angle"}
+        assert set(out.keys()) == {"loss", "data", "pde", "ic"}
 
     def test_all_values_are_scalars(self):
         loss_fn = KFLoss(re=40)
@@ -558,6 +564,7 @@ class TestKFLossPDEMatchesPaper:
     just the intermediate residual step.
     """
 
+    @needs_paper_pino
     def test_kfloss_pde_equals_paper_loss_f(self):
         """KFLoss['pde'] must equal PINO_loss3d loss_f on the same input."""
         from train_utils.losses import PINO_loss3d, get_forcing
@@ -582,6 +589,7 @@ class TestKFLossPDEMatchesPaper:
 
         torch.testing.assert_close(out["pde"], loss_f_paper, atol=1e-5, rtol=1e-5)
 
+    @needs_paper_pino
     def test_kfloss_pde_zero_on_analytical_solution_matches_paper_zero(self):
         """Both KFLoss and paper give near-zero pde loss on the exact solution."""
         from train_utils.losses import PINO_loss3d, get_forcing
@@ -672,6 +680,8 @@ class TestKFLossICLoss:
         expected = dw * out["data"] + pw * out["pde"] + iw * out["ic"]
         torch.testing.assert_close(out["loss"], expected, atol=1e-5, rtol=1e-5)
 
+    @pytest.mark.skip(reason="legacy: KFLoss angle_weight and src.pde.ns.band_phase_loss were removed")
+
     def test_angle_term_matches_band_phase_loss_and_arithmetic(self):
         """With angle_weight>0: out['angle'] == band_phase_loss(w,y,band) and the total
         adds exactly angle_weight*angle (the term is wired, not dropped)."""
@@ -685,6 +695,8 @@ class TestKFLossICLoss:
         torch.testing.assert_close(out["angle"], ref, atol=1e-6, rtol=1e-5)
         expected = 5.0 * out["data"] + out["pde"] + out["ic"] + 5.0 * out["angle"]
         torch.testing.assert_close(out["loss"], expected, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.skip(reason="legacy: KFLoss angle_weight and src.pde.ns.band_phase_loss were removed")
 
     def test_angle_band_passthrough(self):
         """angle_k_hi must reach band_phase_loss: a wider band changes out['angle']."""
@@ -706,6 +718,7 @@ class TestKFLossICLoss:
         assert torch.isfinite(pred.grad).all()
         assert pred.grad.abs().sum().item() > 0.0
 
+    @needs_paper_pino
     def test_ic_loss_numerical_match_to_paper(self):
         """KFLoss['ic'] equals PINO_loss3d(...)[0] (loss_ic) on the same input."""
         from train_utils.losses import PINO_loss3d, get_forcing

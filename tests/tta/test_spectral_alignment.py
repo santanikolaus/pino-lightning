@@ -5,6 +5,10 @@ formalises all known-answer and round-trip contracts for those two functions onl
 CPU-only, float64, small S/T — no checkpoints, no disk I/O.
 """
 import pytest
+
+pytest.skip("legacy: msc.tta.eval.K_REP and src.pde.ns.spectral_alignment_loss were removed", allow_module_level=True)
+
+import pytest
 import torch
 import numpy as np
 
