@@ -1,0 +1,5 @@
+name: readout
+patterns: ["projection.*"]
+layouts: {}
+shells: null
+t_modes: null

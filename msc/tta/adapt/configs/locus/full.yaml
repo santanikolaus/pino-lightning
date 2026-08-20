@@ -1,1 +1,5 @@
 name: full
+patterns: ["*"]
+layouts: {}
+shells: null
+t_modes: null
