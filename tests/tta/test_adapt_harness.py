@@ -4,6 +4,7 @@ import torch
 from omegaconf import MissingMandatoryValue, OmegaConf
 
 from msc.tta import adapt, setup
+from msc.tta.adapt import loop
 
 FULL_LOCUS = {"name": "full", "patterns": ["*"], "layouts": {}, "shells": None,
               "t_modes": None}
@@ -37,6 +38,48 @@ def test_load_config_group_swap_brings_pool_n():
     cfg = adapt.load_config(["experiment=fno", "objective=spectral"])
     assert cfg.objective.name == "spectral"
     assert cfg.objective.pool_n == 8
+
+
+def test_load_config_carries_the_ladder_phase_wandb_project():
+    cfg = adapt.load_config(["experiment=fno"])
+    assert cfg.wandb_project == "tta-lr-sweep"
+
+
+def test_wandb_target_takes_the_project_from_the_config():
+    """The entity stays infrastructure; the project is a per-phase override."""
+    target = setup.wandb_tta_target("some-other-phase")
+    assert target["project"] == "some-other-phase"
+    assert target["entity"]
+
+
+def test_load_config_resolves_the_pde_only_objective():
+    cfg = adapt.load_config(["experiment=fno", "objective=pde"])
+    assert cfg.objective.name == "pde"
+    assert cfg.objective.pde_weight == 1.0
+    assert cfg.objective.ic_weight == 0.0
+
+
+def test_load_config_resolves_the_ic_only_objective():
+    cfg = adapt.load_config(["experiment=fno", "objective=ic"])
+    assert cfg.objective.name == "ic"
+    assert cfg.objective.pde_weight == 0.0
+    assert cfg.objective.ic_weight == 1.0
+
+
+def test_load_config_keeps_the_banked_physics_weights():
+    """Every banked fno-physics-* run means pde + 5*ic; guard that meaning."""
+    cfg = adapt.load_config(["experiment=fno", "objective=physics"])
+    assert cfg.objective.pde_weight == 1.0
+    assert cfg.objective.ic_weight == 5.0
+
+
+def test_the_weighted_objectives_share_one_pool_n():
+    """The objective axis must not drag the pool regime along with it."""
+    pool_sizes = set()
+    for objective in loop.WEIGHTED_OBJECTIVES:
+        cfg = adapt.load_config(["experiment=fno", f"objective={objective}"])
+        pool_sizes.add(cfg.objective.pool_n)
+    assert len(pool_sizes) == 1
 
 
 def test_load_config_cli_override_of_undeclared_key_raises():
@@ -187,7 +230,8 @@ def test_save_arrays_round_trips_through_tmp_npz(tmp_path, monkeypatch):
     ]
     losses = [{"loss": 0.5, "data": 0.1, "pde": 0.3, "ic": 0.2}]
     cfg = _cfg({"exp": "fno", "ckpt": "abc123", "op_re": 100, "target_re": 500, "steps": 1, "lr": 1e-4,
-               "probe_every": 1, "objective": {"name": "physics", "ic_weight": 5.0},
+               "probe_every": 1, "wandb_project": "tta-lr-sweep",
+               "objective": {"name": "physics", "pde_weight": 1.0, "ic_weight": 5.0},
                "locus": FULL_LOCUS})
     target_cfg = _cfg({"data": {"data_path": "/data/Re500_res128_part0.npy"}})
 
@@ -202,6 +246,9 @@ def test_save_arrays_round_trips_through_tmp_npz(tmp_path, monkeypatch):
     assert out["meta_ckpt"].item() == "abc123"
     assert out["meta_target_path"].item() == "/data/Re500_res128_part0.npy"
     assert out["meta_commit"].item() == "deadbeef"
+    assert out["meta_wandb_project"].item() == "tta-lr-sweep"
+    assert out["meta_pde_weight"].item() == pytest.approx(1.0)
+    assert out["meta_ic_weight"].item() == pytest.approx(5.0)
 
 
 def test_run_name_carries_the_shell_set_of_a_modes_arm(shipped_modes):
@@ -242,8 +289,8 @@ def test_save_arrays_records_the_locus_it_enforced(tmp_path, monkeypatch, shippe
                   "heldout": {"n_bands": 5, "err_pt": np.zeros((2, 5, 3))}}]
     losses = [{"loss": 0.5, "data": 0.1, "pde": 0.3, "ic": 0.2}]
     cfg = _cfg({"exp": "fno", "ckpt": "abc123", "op_re": 100, "target_re": 500, "steps": 10,
-                "lr": 3e-4, "probe_every": 1,
-                "objective": {"name": "physics", "ic_weight": 5.0}})
+                "lr": 3e-4, "probe_every": 1, "wandb_project": "tta-lr-sweep",
+                "objective": {"name": "physics", "pde_weight": 1.0, "ic_weight": 5.0}})
     cfg.locus = shipped_modes
     target_cfg = _cfg({"data": {"data_path": "/data/Re500_res128_part0.npy"}})
 

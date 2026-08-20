@@ -92,10 +92,16 @@ def data_path_for_re(re: int) -> str:
     return str(Path(data["ns"]) / fname)
 
 
-def wandb_tta_target() -> dict:
-    """Returns the entity and project a TTA adaptation run logs to."""
-    w = _PATHS["wandb"]
-    return {"entity": w["entity"], "project": w["project_tta"]}
+def wandb_tta_target(project: str) -> dict:
+    """Returns the entity and project a TTA adaptation run logs to.
+
+    Args:
+      project: wandb project for this ladder phase, from cfg.wandb_project.
+
+    Returns:
+      The entity/project kwargs wandb.init() takes.
+    """
+    return {"entity": _PATHS["wandb"]["entity"], "project": project}
 
 
 def resolve_regime(cfg: DictConfig,

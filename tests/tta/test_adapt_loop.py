@@ -18,6 +18,9 @@ MODEL_CFG = {
     "rank": 1.0, "fixed_rank_modes": False, "stabilizer": "None",
 }
 
+FULL_LOCUS = {"name": "full", "patterns": ["*"], "layouts": {}, "shells": None,
+              "t_modes": None}
+
 
 def _tiny_model() -> torch.nn.Module:
     torch.manual_seed(0)
@@ -44,7 +47,8 @@ def _cfg(overrides):
 
 
 def test_loss_fn_physics_wires_label_free_kfloss():
-    cfg = _cfg({"target_re": 500, "objective": {"name": "physics", "ic_weight": 5.0}})
+    cfg = _cfg({"target_re": 500,
+                "objective": {"name": "physics", "pde_weight": 1.0, "ic_weight": 5.0}})
     loss_fn = loop._loss_fn(cfg)
     assert loss_fn.data_weight == 0.0
     assert loss_fn.pde_weight == 1.0
@@ -56,6 +60,40 @@ def test_loss_fn_rejects_unimplemented_objective():
     cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 8}})
     with pytest.raises(NotImplementedError, match="spectral"):
         loop._loss_fn(cfg)
+
+
+def _field_pair(grid: int = 16, frames: int = 5) -> tuple:
+    """Returns a (pred, target) pair whose pde residual and ic error are both nonzero."""
+    generator = torch.Generator().manual_seed(0)
+    pred = torch.randn(1, 1, grid, grid, frames, generator=generator)
+    target = torch.randn(1, grid, grid, frames, generator=generator)
+    return pred, target
+
+
+def test_ic_only_objective_drops_the_pde_term_from_the_loss():
+    """pde_weight=0 removes physics from the loss while still reporting its residual."""
+    cfg = _cfg({"target_re": 500,
+                "objective": {"name": "ic", "pde_weight": 0.0, "ic_weight": 1.0}})
+    pred, target = _field_pair()
+
+    parts = loop._loss_fn(cfg)(pred, target)
+
+    assert parts["pde"].item() > 0.0
+    assert parts["ic"].item() > 0.0
+    assert parts["loss"].item() == pytest.approx(parts["ic"].item())
+
+
+def test_pde_only_objective_drops_the_ic_term_from_the_loss():
+    """ic_weight=0 removes the IC anchor from the loss while still reporting it."""
+    cfg = _cfg({"target_re": 500,
+                "objective": {"name": "pde", "pde_weight": 1.0, "ic_weight": 0.0}})
+    pred, target = _field_pair()
+
+    parts = loop._loss_fn(cfg)(pred, target)
+
+    assert parts["ic"].item() > 0.0
+    assert parts["pde"].item() > 0.0
+    assert parts["loss"].item() == pytest.approx(parts["pde"].item())
 
 
 def test_eval_measures_both_sides_and_tags_the_step(monkeypatch):
@@ -87,8 +125,8 @@ def test_eval_measures_both_sides_and_tags_the_step(monkeypatch):
 def _adapt_cfg(steps, probe_every, lr_milestones=()):
     return _cfg({"target_re": 100, "op_re": 100, "steps": steps, "lr": 1e-3,
                 "probe_every": probe_every, "lr_milestones": list(lr_milestones),
-                "lr_gamma": 0.5,
-                "objective": {"name": "physics", "ic_weight": 5.0}})
+                "lr_gamma": 0.5, "locus": FULL_LOCUS,
+                "objective": {"name": "physics", "pde_weight": 1.0, "ic_weight": 5.0}})
 
 
 def _target_cfg():

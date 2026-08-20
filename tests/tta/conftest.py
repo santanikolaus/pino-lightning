@@ -22,6 +22,15 @@ def real_fno() -> torch.nn.Module:
 
 
 @pytest.fixture
+def probe_conv() -> torch.nn.Module:
+    """Returns one SpectralConv from a minimal FNO, for single-mode excitation probes."""
+    model_cfg = OmegaConf.to_container(OmegaConf.load(FNO_CONFIG), resolve=True)
+    model_cfg.update({"hidden_channels": 2, "n_layers": 1, "projection_channel_ratio": 1})
+    torch.manual_seed(0)
+    return build_fno_kf(model_cfg).fno_blocks.convs[0]
+
+
+@pytest.fixture
 def locus_config_dir() -> Path:
     """Returns the directory holding the shipped locus group yamls."""
     return LOCUS_CONFIG_DIR

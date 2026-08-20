@@ -158,11 +158,13 @@ def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
     loss_arrays = {f"losses_{k}": np.array([l[k] for l in losses]) for k in losses[0]}
     meta = {
         "run_id": run_id,
+        "wandb_project": cfg.wandb_project,
         "exp": cfg.exp,
         "ckpt": cfg.ckpt,
         "op_re": cfg.op_re,
         "target_re": cfg.target_re,
         "objective": cfg.objective.name,
+        "pde_weight": cfg.objective.pde_weight,
         "ic_weight": cfg.objective.ic_weight,
         "locus": locus.label(cfg.locus),
         "locus_patterns": ", ".join(cfg.locus.patterns),
@@ -195,7 +197,7 @@ def main(overrides: list) -> None:
     cfg = load_config(overrides)
     run = wandb.init(name=run_name(cfg), group=cfg.exp,
                      config=OmegaConf.to_container(cfg, resolve=True),
-                     **setup.wandb_tta_target())
+                     **setup.wandb_tta_target(cfg.wandb_project))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, train_cfg = build(cfg, device)
     print(describe(cfg, model, train_cfg))

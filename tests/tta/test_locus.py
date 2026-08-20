@@ -8,8 +8,8 @@ from omegaconf import DictConfig, OmegaConf
 from msc.tta.adapt import locus
 from msc.tta.eval.eval import cheb_bins
 
-STAGE_NAMES = ("check_mode_index_map", "select_params", "freeze_all_except",
-               "build_mode_masks", "attach_grad_masks")
+STAGE_NAMES = ("check_mode_index_map", "select_params", "build_mode_masks",
+               "freeze_all_except", "attach_grad_masks")
 
 
 def _tiny_module() -> torch.nn.Module:
@@ -74,8 +74,8 @@ def _patch_stages(monkeypatch, guard_error: bool = False) -> dict:
         record["order"].append("attach_grad_masks")
         record["args"]["attach_grad_masks"] = masks
 
-    for stage in (check_mode_index_map, select_params, freeze_all_except,
-                  build_mode_masks, attach_grad_masks):
+    for stage in (check_mode_index_map, select_params, build_mode_masks,
+                  freeze_all_except, attach_grad_masks):
         monkeypatch.setattr(locus, stage.__name__, stage)
     return record
 
@@ -716,3 +716,51 @@ def test_label_reads_the_shipped_locus_yamls(locus_config_dir):
     for name in ("full", "readout"):
         group = OmegaConf.load(locus_config_dir / f"{name}.yaml")
         assert locus.label(group) == name
+
+
+def test_build_mode_masks_rejects_shells_without_a_layout(real_fno_narrow):
+    locus_params = locus.select_params(real_fno_narrow, ["projection.*"])
+    with pytest.raises(ValueError, match="layouts is empty"):
+        locus.build_mode_masks(locus_params, {}, [0, 1], None)
+    with pytest.raises(ValueError, match="layouts is empty"):
+        locus.build_mode_masks(locus_params, {}, None, [0])
+
+
+def test_mask_unet_layouts_are_unimplemented_rather_than_empty():
+    for builder in (locus.mask_unet_rfft_lo, locus.mask_unet_rfft_hi):
+        with pytest.raises(NotImplementedError, match="lands with the UNet arm"):
+            builder((4, 4, 2), [0, 1], None)
+
+
+def test_census_reports_an_unimplemented_layout_as_such(real_fno_narrow):
+    cfg = OmegaConf.create({"name": "modes", "patterns": [MODES_PATTERN],
+                            "layouts": {MODES_PATTERN: "unet_rfft_lo"},
+                            "shells": [0, 1], "t_modes": None})
+    with pytest.raises(NotImplementedError, match="lands with the UNet arm"):
+        locus.census(real_fno_narrow, cfg)
+
+
+def test_mask_fno_shifted_index_map_matches_a_real_forward_pass(probe_conv):
+    """Excites one weight entry at a time and locates the output mode it drives."""
+    grid, frames = 16, 8
+    torch.manual_seed(1)
+    field = torch.randn(1, probe_conv.in_channels, grid, grid, frames)
+    n_kx, n_ky, n_kt = tuple(probe_conv.weight.shape[2:])
+    with torch.no_grad():
+        probe_conv.bias.zero_()
+    for index_x in range(n_kx):
+        for index_y in range(n_ky):
+            for index_t in range(n_kt):
+                with torch.no_grad():
+                    probe_conv.weight.tensor.zero_()
+                    probe_conv.weight.tensor[0, 0, index_x, index_y, index_t] = 1.0
+                    out = probe_conv(field)
+                spectrum = torch.fft.fftshift(torch.fft.rfftn(out[0, 0], dim=(0, 1, 2)), dim=(0, 1))
+                power = spectrum.abs()
+                support = set()
+                for hit_x, hit_y, hit_t in (power > 1e-4 * power.max()).nonzero().tolist():
+                    support.add((hit_x - grid // 2, hit_y - grid // 2, hit_t))
+                driven = (index_x - n_kx // 2, index_y - n_ky // 2, index_t)
+                hermitian = (-driven[0], -driven[1], driven[2])
+                assert driven in support
+                assert support <= {driven, hermitian}
