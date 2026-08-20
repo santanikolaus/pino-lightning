@@ -1,0 +1,4 @@
+name: ic
+pde_weight: 0.0
+ic_weight: 1.0  # sole term, so Adam's scale invariance makes the magnitude inert
+pool_n: 20

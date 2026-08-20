@@ -1,3 +1,4 @@
 name: physics
+pde_weight: 1.0  # banked combination: pde + 5*ic
 ic_weight: 5.0
 pool_n: 20

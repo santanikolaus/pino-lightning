@@ -182,3 +182,15 @@ def test_the_shipped_step_budget_probes_every_step():
     cfg = adapt.load_config(["experiment=fno"])
     assert cfg.steps == 10
     assert cfg.probe_every == 1
+
+
+def test_a_shell_override_on_an_unmasked_arm_fails_instead_of_mislabelling(real_fno, shipped_locus):
+    arm = shipped_locus("readout")
+    arm.shells = [0, 1]
+    assert locus.label(arm) == "readout-k01"
+    with pytest.raises(ValueError, match="layouts is empty"):
+        locus.census(real_fno, arm)
+    with pytest.raises(ValueError, match="layouts is empty"):
+        locus.restrict_updates(real_fno, arm)
+    assert _trainable_names(real_fno) == _all_names(real_fno)
+    assert _hooked_count(real_fno) == 0

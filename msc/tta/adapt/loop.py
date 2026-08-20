@@ -15,13 +15,20 @@ from . import locus, probe
 BANDS = {"k1-64": slice(1, None), "k1-4": slice(1, 5), "k5-7": slice(5, 8), "k8+": slice(8, None)}
 RHO_THRESH = 0.9
 W1_FRAMES = (4, 63)
+WEIGHTED_OBJECTIVES = ("physics", "pde", "ic")
 
 
 def _loss_fn(cfg) -> KFLoss:
-    """Builds the adaptation loss from cfg.objective — physics only, for now."""
-    if cfg.objective.name != "physics":
+    """Builds the label-free adaptation loss from the objective's pde/ic weights.
+
+    data_weight is fixed at 0.0 and deliberately not configurable: it is the
+    GT-supervision term, and the method's OOD legality rests on it being zero.
+    """
+    if cfg.objective.name not in WEIGHTED_OBJECTIVES:
         raise NotImplementedError(f"objective {cfg.objective.name!r} not wired yet")
-    return KFLoss(re=cfg.target_re, data_weight=0.0, pde_weight=1.0, ic_weight=cfg.objective.ic_weight)
+    return KFLoss(re=cfg.target_re, data_weight=0.0,
+                  pde_weight=cfg.objective.pde_weight,
+                  ic_weight=cfg.objective.ic_weight)
 
 
 def _eval(model, pool, heldout, target_cfg: DictConfig, regime, device, step: int) -> dict:

@@ -1,0 +1,4 @@
+name: pde
+pde_weight: 1.0
+ic_weight: 0.0
+pool_n: 20

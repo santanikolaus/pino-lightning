@@ -85,7 +85,12 @@ def mask_unet_rfft_lo(mode_shape: tuple, shells: list, t_modes: list) -> torch.T
 
     Returns:
       A bool tensor of shape (1, 1, ky, kx, 1), broadcastable onto the weight.
+
+    Raises:
+      NotImplementedError: always — the contract stands, the body lands with
+        the UNet arm.
     """
+    raise NotImplementedError("layout unet_rfft_lo lands with the UNet arm")
 
 
 def mask_unet_rfft_hi(mode_shape: tuple, shells: list, t_modes: list) -> torch.Tensor:
@@ -102,10 +107,19 @@ def mask_unet_rfft_hi(mode_shape: tuple, shells: list, t_modes: list) -> torch.T
 
     Returns:
       A bool tensor of shape (1, 1, ky, kx, 1), broadcastable onto the weight.
+
+    Raises:
+      NotImplementedError: always — the contract stands, the body lands with
+        the UNet arm.
     """
+    raise NotImplementedError("layout unet_rfft_hi lands with the UNet arm")
 
 
-MODE_LAYOUTS = {"fno_shifted": mask_fno_shifted, "unet_rfft_lo": mask_unet_rfft_lo, "unet_rfft_hi": mask_unet_rfft_hi, }
+MODE_LAYOUTS = {
+    "fno_shifted": mask_fno_shifted,
+    "unet_rfft_lo": mask_unet_rfft_lo,
+    "unet_rfft_hi": mask_unet_rfft_hi,
+}
 
 
 def select_params(model: torch.nn.Module, patterns: list) -> dict:
@@ -160,13 +174,14 @@ def freeze_all_except(model: torch.nn.Module, trainable_names: set) -> None:
 def build_mode_masks(locus_params: dict, layouts: dict, shells: list, t_modes: list) -> dict:
     """Builds one keep-mask per mode-indexed locus tensor, keyed by parameter name.
 
+    The first layout pattern matching a tensor wins, and a tensor matching none
+    is left unmasked and adapts whole — which is what lets one locus mix
+    restricted and whole tensors. Every pattern must apply to at least one
+    tensor, so a shadowed fallback is rejected rather than silently ignored.
+
     Args:
       locus_params: name -> parameter, as returned by select_params().
-      layouts: fnmatch pattern -> MODE_LAYOUTS key. A locus tensor matching no
-        pattern is left unmasked and adapts whole, which is what lets one locus
-        mix restricted and whole tensors. The first matching pattern wins, and
-        every pattern must apply to at least one tensor, so a shadowed fallback
-        is rejected rather than silently ignored.
+      layouts: fnmatch pattern -> MODE_LAYOUTS key.
       shells: Chebyshev shells to keep; None keeps every shell.
       t_modes: temporal rfft indices to keep; None keeps every temporal mode.
 
@@ -175,11 +190,15 @@ def build_mode_masks(locus_params: dict, layouts: dict, shells: list, t_modes: l
       empty when layouts is empty.
 
     Raises:
-      ValueError: layouts restricts nothing, names an unknown layout, or carries
-        a pattern that matches no locus tensor.
+      ValueError: layouts and the shell/temporal restriction disagree — either
+        without the other would silently adapt every selected entry — or layouts
+        names an unknown layout or carries a pattern that matches no locus tensor.
     """
     if layouts and shells is None and t_modes is None:
         raise ValueError("layouts given but neither shells nor t_modes restricts anything")
+    if not layouts and (shells is not None or t_modes is not None):
+        raise ValueError(f"shells={shells} t_modes={t_modes} given but layouts is empty, so no "
+                         "tensor is mode-indexed and the run would adapt every selected entry")
 
     masks = {}
     used_patterns = set()
@@ -237,16 +256,19 @@ def check_mode_index_map(model: torch.nn.Module, layouts: dict) -> None:
     """Asserts the model indexes its modes the way each named layout assumes.
 
     An empty mapping is a no-op: with no mode-indexed tensor there is no index
-    map to validate.
+    map to validate. The check is deliberately conservative — it demands
+    n_modes == max_n_modes, so a module that stores more modes than it uses is
+    rejected even though its own index map would survive, because the mask and
+    census would then span entries the forward never touches.
 
     Args:
       model: the model to adapt.
       layouts: fnmatch pattern -> MODE_LAYOUTS key, as carried by cfg.locus.
 
     Raises:
-      ValueError: a module keeps fewer modes than it stores, so the stored
-        weight is used sliced and index i is no longer wavenumber i - n // 2;
-        or no mode-indexed module was found to validate at all.
+      ValueError: a module keeps fewer modes than it stores, so the mask and the
+        census would span entries the forward never touches; or no mode-indexed
+        module was found to validate at all.
       NotImplementedError: a layout whose index map has no check yet.
     """
     if not layouts:
@@ -276,8 +298,10 @@ def census(model: torch.nn.Module, locus_cfg: DictConfig) -> dict:
 
     Resolves the same patterns and masks restrict_updates would, so a bad locus
     config raises here — inside describe(), before the clone and any GPU work.
-    Counts tensor entries, so one complex weight counts once, matching the
-    convention behind the reported locus sizes.
+    check_mode_index_map is the one guard it skips, so a model that slices its
+    modes is caught at restrict_updates, not here. Counts tensor entries, so one
+    complex weight counts once, matching the convention behind the reported
+    locus sizes.
 
     Args:
       model: the model to adapt.
@@ -286,6 +310,11 @@ def census(model: torch.nn.Module, locus_cfg: DictConfig) -> dict:
     Returns:
       {"trainable": numel of the selected tensors, "effective": numel surviving
       the masks}; the two differ by the mask and only the second is the locus size.
+
+    Raises:
+      ValueError: the locus config is unusable, from select_params or
+        build_mode_masks.
+      NotImplementedError: a layout whose mask builder has no body yet.
     """
     locus_params = select_params(model, locus_cfg.patterns)
     masks = build_mode_masks(locus_params, locus_cfg.layouts, locus_cfg.shells,
@@ -335,9 +364,10 @@ def label(locus_cfg: DictConfig) -> str:
 def restrict_updates(model: torch.nn.Module, locus_cfg: DictConfig) -> list:
     """Restricts the model's updates to the locus and returns what the optimizer owns.
 
-    Apply to the adaptation clone only: requires_grad survives a deepcopy but
-    grad hooks do not, so a restricted model that is later cloned comes back
-    frozen yet unmasked.
+    Everything the locus config can get wrong is resolved before the model is
+    touched, so a rejected config leaves it unchanged. Apply to the adaptation
+    clone only: requires_grad survives a deepcopy but grad hooks do not, so a
+    restricted model that is later cloned comes back frozen yet unmasked.
 
     Args:
       model: the cloned model to adapt, mutated in place.
@@ -345,14 +375,20 @@ def restrict_updates(model: torch.nn.Module, locus_cfg: DictConfig) -> list:
 
     Returns:
       The locus parameters, for torch.optim.Adam.
+
+    Raises:
+      ValueError: the locus config is unusable, from check_mode_index_map,
+        select_params or build_mode_masks.
+      NotImplementedError: a layout with no index-map check or no mask builder.
     """
     if locus_cfg.layouts:
         check_mode_index_map(model, locus_cfg.layouts)
 
     locus_params = select_params(model, locus_cfg.patterns)
-    freeze_all_except(model, set(locus_params))
+    masks = build_mode_masks(locus_params, locus_cfg.layouts, locus_cfg.shells,
+                             locus_cfg.t_modes)
 
-    masks = build_mode_masks(locus_params, locus_cfg.layouts, locus_cfg.shells, locus_cfg.t_modes)
+    freeze_all_except(model, set(locus_params))
     attach_grad_masks(locus_params, masks)
 
     return list(locus_params.values())
