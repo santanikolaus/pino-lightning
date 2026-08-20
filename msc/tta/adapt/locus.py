@@ -274,6 +274,11 @@ def check_mode_index_map(model: torch.nn.Module, layouts: dict) -> None:
 def census(model: torch.nn.Module, locus_cfg: DictConfig) -> dict:
     """Counts the locus without mutating anything, for the run log and the npz meta.
 
+    Resolves the same patterns and masks restrict_updates would, so a bad locus
+    config raises here — inside describe(), before the clone and any GPU work.
+    Counts tensor entries, so one complex weight counts once, matching the
+    convention behind the reported locus sizes.
+
     Args:
       model: the model to adapt.
       locus_cfg: the resolved cfg.locus group.
@@ -282,10 +287,49 @@ def census(model: torch.nn.Module, locus_cfg: DictConfig) -> dict:
       {"trainable": numel of the selected tensors, "effective": numel surviving
       the masks}; the two differ by the mask and only the second is the locus size.
     """
+    locus_params = select_params(model, locus_cfg.patterns)
+    masks = build_mode_masks(locus_params, locus_cfg.layouts, locus_cfg.shells,
+                             locus_cfg.t_modes)
+
+    trainable = 0
+    effective = 0
+    for name, param in locus_params.items():
+        trainable += param.numel()
+        if name in masks:
+            effective += int(masks[name].expand_as(param).sum())
+        else:
+            effective += param.numel()
+    return {"trainable": trainable, "effective": effective}
 
 
 def label(locus_cfg: DictConfig) -> str:
-    """Returns the filesystem-safe run-name fragment, e.g. "modes-k01" or "full"."""
+    """Returns the filesystem-safe run-name fragment, e.g. "modes-k01" or "full".
+
+    Shell and temporal indices are concatenated as digits, so the fragment stays
+    legible inside a run name; they are sorted and deduplicated first, so two
+    configs that select the same modes always produce the same fragment.
+
+    Args:
+      locus_cfg: the resolved cfg.locus group.
+
+    Returns:
+      A fragment of [A-Za-z0-9-] only, since run_name() feeds a log filename.
+
+    Raises:
+      ValueError: an index above 9 would make the concatenation ambiguous.
+    """
+    ranges = {"k": locus_cfg.shells, "t": locus_cfg.t_modes}
+    parts = [locus_cfg.name]
+    for prefix, values in ranges.items():
+        if values is None:
+            continue
+        digits = ""
+        for value in sorted(set(values)):
+            if not 0 <= value <= 9:
+                raise ValueError(f"locus label needs single digits; {prefix!r} carries {value}")
+            digits += str(value)
+        parts.append(prefix + digits)
+    return "-".join(parts)
 
 
 def restrict_updates(model: torch.nn.Module, locus_cfg: DictConfig) -> list:

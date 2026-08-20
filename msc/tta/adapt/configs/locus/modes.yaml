@@ -1,0 +1,6 @@
+name: modes
+patterns: ["fno_blocks.convs.*.weight.tensor"]
+layouts:
+  "fno_blocks.convs.*.weight.tensor": fno_shifted
+shells: [0, 1, 2]
+t_modes: null
