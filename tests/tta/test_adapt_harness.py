@@ -5,13 +5,16 @@ from omegaconf import MissingMandatoryValue, OmegaConf
 
 from msc.tta import adapt, setup
 
+FULL_LOCUS = {"name": "full", "patterns": ["*"], "layouts": {}, "shells": None,
+              "t_modes": None}
+
 
 def test_load_config_base_defaults():
     cfg = adapt.load_config([])
     assert cfg.objective.name == "physics"
     assert cfg.locus.name == "full"
     assert cfg.stop.name == "fixed"
-    assert cfg.steps == 300
+    assert cfg.steps == 10
     assert cfg.objective.pool_n == 20
     assert cfg.target_re == 500
 
@@ -27,7 +30,7 @@ def test_load_config_experiment_overrides_and_sets_ckpt():
     cfg = adapt.load_config(["experiment=fno"])
     assert cfg.ckpt == "75prctl5"
     assert cfg.exp == "fno"
-    assert cfg.steps == 300
+    assert cfg.steps == 10
 
 
 def test_load_config_group_swap_brings_pool_n():
@@ -52,7 +55,7 @@ def test_describe_formats_without_model_load():
     model = torch.nn.Linear(3, 1)
     cfg = _cfg({"ckpt": "abc123", "target_re": 500, "op_re": 100, "steps": 200, "lr": 1e-4,
                 "objective": {"name": "physics", "ic_weight": 5.0},
-                "locus": {"name": "full"}})
+                "locus": FULL_LOCUS})
     train_cfg = _cfg({"model": {"model_arch": "fno"},
                       "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2},
                       "loss": {"re": 999}})  # deliberately wrong: source_re must read cfg.op_re, not this
@@ -68,7 +71,7 @@ def test_describe_reports_pool_for_spectral_objective():
     model = torch.nn.Linear(3, 1)
     cfg = _cfg({"ckpt": "z", "target_re": 500, "op_re": 100, "steps": 200, "lr": 1e-4,
                 "objective": {"name": "spectral", "pool_n": 8},
-                "locus": {"name": "full"}})
+                "locus": FULL_LOCUS})
     train_cfg = _cfg({"model": {"model_arch": "unet"},
                       "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2,
                                "n_context": 10},
@@ -156,18 +159,18 @@ def test_build_splits_heldout_reads_val_not_test(monkeypatch, train_cfg):
 
 def test_run_name_encodes_backbone_and_every_varying_axis():
     cfg = _cfg({"exp": "unet", "objective": {"name": "physics", "pool_n": 8},
-                "locus": {"name": "full"}, "lr": 1e-4, "steps": 100, "lr_milestones": []})
+                "locus": FULL_LOCUS, "lr": 1e-4, "steps": 100, "lr_milestones": []})
     assert adapt.run_name(cfg) == "unet-physics-full-n8-lr1e-04-s100"
 
 
 def test_run_name_defaults_pool_n_to_online():
-    cfg = _cfg({"exp": "fno", "objective": {"name": "physics"}, "locus": {"name": "full"},
+    cfg = _cfg({"exp": "fno", "objective": {"name": "physics"}, "locus": FULL_LOCUS,
                 "lr": 1e-4, "steps": 100, "lr_milestones": []})
     assert adapt.run_name(cfg) == "fno-physics-full-n1-lr1e-04-s100"
 
 
 def test_run_name_marks_a_decayed_run_apart_from_its_constant_lr_twin():
-    cfg = _cfg({"exp": "fno", "objective": {"name": "physics"}, "locus": {"name": "full"},
+    cfg = _cfg({"exp": "fno", "objective": {"name": "physics"}, "locus": FULL_LOCUS,
                 "lr": 3e-4, "steps": 300, "lr_milestones": [150, 250]})
     assert adapt.run_name(cfg) == "fno-physics-full-n1-lr3e-04-s300-d150-250"
 
@@ -185,11 +188,12 @@ def test_save_arrays_round_trips_through_tmp_npz(tmp_path, monkeypatch):
     losses = [{"loss": 0.5, "data": 0.1, "pde": 0.3, "ic": 0.2}]
     cfg = _cfg({"exp": "fno", "ckpt": "abc123", "op_re": 100, "target_re": 500, "steps": 1, "lr": 1e-4,
                "probe_every": 1, "objective": {"name": "physics", "ic_weight": 5.0},
-               "locus": {"name": "full"}})
+               "locus": FULL_LOCUS})
     target_cfg = _cfg({"data": {"data_path": "/data/Re500_res128_part0.npy"}})
 
     path = str(tmp_path / "run.npz")
-    adapt_module._save_arrays(path, snapshots, losses, cfg, "wandbrun1", target_cfg, pool_n=1)
+    adapt_module._save_arrays(path, snapshots, losses, cfg, "wandbrun1", target_cfg, pool_n=1,
+                              locus_counts={"trainable": 7, "effective": 3})
 
     out = np.load(path)
     assert list(out["step"]) == [0, 1]
@@ -198,3 +202,60 @@ def test_save_arrays_round_trips_through_tmp_npz(tmp_path, monkeypatch):
     assert out["meta_ckpt"].item() == "abc123"
     assert out["meta_target_path"].item() == "/data/Re500_res128_part0.npy"
     assert out["meta_commit"].item() == "deadbeef"
+
+
+def test_run_name_carries_the_shell_set_of_a_modes_arm(shipped_modes):
+    cfg = _cfg({"exp": "fno", "objective": {"name": "physics"}, "lr": 3e-4, "steps": 10,
+                "lr_milestones": []})
+    cfg.locus = shipped_modes
+    assert adapt.run_name(cfg) == "fno-physics-modes-k012-n1-lr3e-04-s10"
+
+
+def test_run_name_separates_two_shell_sets_of_one_arm(shipped_modes):
+    cfg = _cfg({"exp": "fno", "objective": {"name": "physics"}, "lr": 3e-4, "steps": 10,
+                "lr_milestones": []})
+    cfg.locus = shipped_modes
+    narrow = adapt.run_name(cfg)
+    cfg.locus.shells = [0, 1]
+    assert adapt.run_name(cfg) != narrow
+    assert adapt.run_name(cfg) == "fno-physics-modes-k01-n1-lr3e-04-s10"
+
+
+def test_describe_reports_what_the_locus_leaves_movable(real_fno, shipped_modes):
+    cfg = _cfg({"ckpt": "abc123", "target_re": 500, "op_re": 100, "steps": 10, "lr": 3e-4,
+                "objective": {"name": "physics", "ic_weight": 5.0}})
+    cfg.locus = shipped_modes
+    train_cfg = _cfg({"model": {"model_arch": "fno"},
+                      "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2},
+                      "loss": {"re": 100}})
+    out = adapt.describe(cfg, real_fno, train_cfg)
+    assert "locus       : modes-k012" in out
+    movable = 4 * 8 * 8 * 25 * 5
+    assert f"movable     : {movable:,} of" in out
+
+
+def test_save_arrays_records_the_locus_it_enforced(tmp_path, monkeypatch, shipped_modes):
+    from msc.tta.adapt import adapt as adapt_module
+
+    monkeypatch.setattr(adapt_module, "_git_sha", lambda: "deadbeef")
+    snapshots = [{"step": 0, "pool": {"n_bands": 5, "err_pt": np.ones((1, 5, 3))},
+                  "heldout": {"n_bands": 5, "err_pt": np.zeros((2, 5, 3))}}]
+    losses = [{"loss": 0.5, "data": 0.1, "pde": 0.3, "ic": 0.2}]
+    cfg = _cfg({"exp": "fno", "ckpt": "abc123", "op_re": 100, "target_re": 500, "steps": 10,
+                "lr": 3e-4, "probe_every": 1,
+                "objective": {"name": "physics", "ic_weight": 5.0}})
+    cfg.locus = shipped_modes
+    target_cfg = _cfg({"data": {"data_path": "/data/Re500_res128_part0.npy"}})
+
+    path = str(tmp_path / "run.npz")
+    adapt_module._save_arrays(path, snapshots, losses, cfg, "wandbrun2", target_cfg, pool_n=1,
+                              locus_counts={"trainable": 320, "effective": 125})
+
+    out = np.load(path)
+    assert out["meta_locus"].item() == "modes-k012"
+    assert list(out["meta_locus_shells"]) == [0, 1, 2]
+    assert list(out["meta_locus_t_modes"]) == []
+    assert out["meta_locus_patterns"].item() == "fno_blocks.convs.*.weight.tensor"
+    assert out["meta_locus_layouts"].item() == "fno_blocks.convs.*.weight.tensor=fno_shifted"
+    assert out["meta_locus_trainable"].item() == 320
+    assert out["meta_locus_effective"].item() == 125

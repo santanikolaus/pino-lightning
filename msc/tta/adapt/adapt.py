@@ -12,7 +12,7 @@ from torch.utils.data import Subset
 
 from .. import setup
 from ..eval.report import _git_sha
-from . import loop
+from . import locus, loop
 
 CONFIG_DIR = Path(__file__).parent / "configs"
 
@@ -93,6 +93,7 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> 
     """
     data = train_cfg.data
     n_params = sum(p.numel() for p in model.parameters())
+    counts = locus.census(model, cfg.locus)
     return "\n".join(
         [
             f"run_id      : {cfg.ckpt}", f"model       : {type(model).__name__} ({train_cfg.model.model_arch})",
@@ -100,7 +101,10 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> 
             f"source_re   : {cfg.op_re}", f"target_re   : {cfg.target_re}",
             f"target_path : {setup.data_path_for_re(cfg.target_re)}", f"sub_t       : {data.sub_t}",
             f"n_context   : {data.get('n_context', 1)}", f"objective   : {cfg.objective.name}",
-            f"locus       : {cfg.locus.name}", f"pool        : {cfg.objective.get('pool_n', 1)} samples (train split)",
+            f"locus       : {locus.label(cfg.locus)}",
+            f"movable     : {counts['effective']:,} of {n_params:,} entries "
+            f"({100 * counts['effective'] / n_params:.2f}%), {counts['trainable']:,} selected",
+            f"pool        : {cfg.objective.get('pool_n', 1)} samples (train split)",
             f"heldout     : {setup.SPLIT['val']['n']} samples (val split)",
             f"budget      : {cfg.steps} steps @ lr={cfg.lr}",
         ]
@@ -120,15 +124,18 @@ def run_name(cfg: DictConfig) -> str:
       cfg: resolved client config, as returned by load_config().
 
     Returns:
-      A name like "fno-physics-full-n1-lr1e-04-s100", plus "-d150-250" when lr decays.
+      A name like "fno-physics-modes-k012-n1-lr3e-04-s10", plus "-d150-250" when
+      lr decays; the locus fragment comes from locus.label, so two shell sets of
+      one arm never share a name.
     """
     decay = "-d" + "-".join(str(m) for m in cfg.lr_milestones) if cfg.lr_milestones else ""
-    return (f"{cfg.exp}-{cfg.objective.name}-{cfg.locus.name}"
+    return (f"{cfg.exp}-{cfg.objective.name}-{locus.label(cfg.locus)}"
             f"-n{cfg.objective.get('pool_n', 1)}-lr{cfg.lr:.0e}-s{cfg.steps}{decay}")
 
 
 def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
-                 run_id: str, target_cfg: DictConfig, pool_n: int) -> None:
+                 run_id: str, target_cfg: DictConfig, pool_n: int,
+                 locus_counts: dict) -> None:
     """Writes the run's raw snapshot/loss arrays plus metadata to a compressed .npz.
 
     Stores loop.collate()'s output and the per-step loss components verbatim, so any
@@ -143,6 +150,9 @@ def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
       run_id: wandb run id this adaptation run logged under.
       target_cfg: train_cfg retargeted to the target-Re data, as returned by build_splits().
       pool_n: adapt pool size, as returned by len(build_splits()'s pool).
+      locus_counts: {"trainable", "effective"} entry counts, as returned by
+        locus.census() — every field is stored as a string or number array so
+        the npz loads without allow_pickle.
     """
     collated = loop.collate(snapshots)
     loss_arrays = {f"losses_{k}": np.array([l[k] for l in losses]) for k in losses[0]}
@@ -154,7 +164,14 @@ def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
         "target_re": cfg.target_re,
         "objective": cfg.objective.name,
         "ic_weight": cfg.objective.ic_weight,
-        "locus": cfg.locus.name,
+        "locus": locus.label(cfg.locus),
+        "locus_patterns": ", ".join(cfg.locus.patterns),
+        "locus_layouts": ", ".join(f"{pattern}={layout}"
+                                  for pattern, layout in cfg.locus.layouts.items()),
+        "locus_shells": [] if cfg.locus.shells is None else list(cfg.locus.shells),
+        "locus_t_modes": [] if cfg.locus.t_modes is None else list(cfg.locus.t_modes),
+        "locus_trainable": locus_counts["trainable"],
+        "locus_effective": locus_counts["effective"],
         "steps": cfg.steps,
         "lr": cfg.lr,
         "probe_every": cfg.probe_every,
@@ -192,7 +209,7 @@ def main(overrides: list) -> None:
     out_dir = setup.ROOT / cfg.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     _save_arrays(str(out_dir / f"{run.name}_{run.id}.npz"), snapshots, losses, cfg,
-                 run.id, target_cfg, len(pool))
+                 run.id, target_cfg, len(pool), locus.census(model, cfg.locus))
     run.finish()
 
 

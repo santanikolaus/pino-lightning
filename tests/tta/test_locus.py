@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import pytest
 import torch
@@ -148,8 +150,8 @@ def test_select_params_returns_the_model_tensors_not_copies():
     assert id(selected["dropped"]) == id(model.dropped)
 
 
-def test_select_params_keeps_only_the_fno_spectral_weights(real_fno):
-    selected = locus.select_params(real_fno, [MODES_PATTERN])
+def test_select_params_keeps_only_the_fno_spectral_weights(real_fno, shipped_modes):
+    selected = locus.select_params(real_fno, shipped_modes.patterns)
     assert list(selected) == ["fno_blocks.convs.0.weight.tensor",
                               "fno_blocks.convs.1.weight.tensor",
                               "fno_blocks.convs.2.weight.tensor",
@@ -604,3 +606,113 @@ def test_check_mode_index_map_inspects_every_spectral_conv(real_fno_narrow):
     real_fno_narrow.fno_blocks.convs[2].n_modes = [4, 4, 3]
     with pytest.raises(ValueError, match="fno_blocks.convs.2 keeps modes"):
         locus.check_mode_index_map(real_fno_narrow, FNO_LAYOUTS)
+
+
+MODES_LOCUS_CFG = {"name": "modes", "patterns": [MODES_PATTERN], "layouts": FNO_LAYOUTS,
+                   "shells": [0, 1], "t_modes": None}
+PRODUCTION_TRAINABLE = 21_071_489
+PRODUCTION_MODES_EFFECTIVE = 4 * 128 * 128 * 25 * 5
+
+
+def test_census_counts_every_tensor_for_the_full_locus(real_fno_narrow):
+    counts = locus.census(real_fno_narrow, OmegaConf.create(
+        {"name": "full", "patterns": ["*"], "layouts": {}, "shells": None, "t_modes": None}))
+    total = sum(param.numel() for param in real_fno_narrow.parameters())
+    assert counts == {"trainable": total, "effective": total}
+
+
+def test_census_separates_trainable_from_effective_for_the_modes_locus(real_fno_narrow):
+    counts = locus.census(real_fno_narrow, OmegaConf.create(MODES_LOCUS_CFG))
+    spectral = 4 * 6 * 6 * 8 * 8 * 5
+    assert counts["trainable"] == spectral
+    assert counts["effective"] == 4 * 6 * 6 * 9 * 5
+    assert counts["effective"] * 64 == counts["trainable"] * 9
+
+
+def test_census_counts_an_unmasked_locus_tensor_whole(real_fno_narrow):
+    cfg = dict(MODES_LOCUS_CFG)
+    cfg["patterns"] = [MODES_PATTERN, "projection.*"]
+    counts = locus.census(real_fno_narrow, OmegaConf.create(cfg))
+    projection = 0
+    for name, param in real_fno_narrow.named_parameters():
+        if name.startswith("projection."):
+            projection += param.numel()
+    assert counts["trainable"] == 4 * 6 * 6 * 8 * 8 * 5 + projection
+    assert counts["effective"] == 4 * 6 * 6 * 9 * 5 + projection
+
+
+def test_census_reports_the_shipped_locus_sizes(production_fno, shipped_modes):
+    model = production_fno
+    full = locus.census(model, OmegaConf.create(
+        {"name": "full", "patterns": ["*"], "layouts": {}, "shells": None, "t_modes": None}))
+    modes = locus.census(model, shipped_modes)
+    assert full == {"trainable": PRODUCTION_TRAINABLE, "effective": PRODUCTION_TRAINABLE}
+    assert modes["effective"] == PRODUCTION_MODES_EFFECTIVE
+    assert round(100 * modes["effective"] / modes["trainable"], 2) == 39.06
+    assert round(100 * modes["trainable"] / PRODUCTION_TRAINABLE, 2) == 99.53
+
+
+def test_census_does_not_touch_the_model(real_fno_narrow):
+    locus.census(real_fno_narrow, OmegaConf.create(MODES_LOCUS_CFG))
+    assert _trainable_names(real_fno_narrow) == _all_names(real_fno_narrow)
+    assert _hooked_names(real_fno_narrow) == set()
+
+
+def test_census_rejects_a_bad_locus_before_any_run_work(real_fno_narrow):
+    cfg = dict(MODES_LOCUS_CFG)
+    cfg["shells"] = [9]
+    with pytest.raises(ValueError, match="outside the mode box"):
+        locus.census(real_fno_narrow, OmegaConf.create(cfg))
+
+
+SAFE_LABEL = re.compile(r"[A-Za-z0-9-]+")
+
+
+def _locus_group(**fields) -> DictConfig:
+    """Returns a locus group with name/patterns/layouts/shells/t_modes overridden."""
+    group = {"name": "modes", "patterns": [MODES_PATTERN], "layouts": FNO_LAYOUTS,
+             "shells": None, "t_modes": None}
+    group.update(fields)
+    return OmegaConf.create(group)
+
+
+def test_label_is_the_bare_name_without_a_mode_restriction():
+    assert locus.label(_locus_group(name="full", shells=None)) == "full"
+
+
+def test_label_carries_the_shell_set():
+    assert locus.label(_locus_group(shells=[0, 1])) == "modes-k01"
+    assert locus.label(_locus_group(shells=[0, 1, 2])) == "modes-k012"
+
+
+def test_label_carries_the_temporal_modes():
+    assert locus.label(_locus_group(t_modes=[0])) == "modes-t0"
+    assert locus.label(_locus_group(shells=[0, 1], t_modes=[0, 1])) == "modes-k01-t01"
+
+
+def test_label_is_canonical_under_reordering():
+    assert locus.label(_locus_group(shells=[1, 0])) == locus.label(_locus_group(shells=[0, 1]))
+
+
+def test_label_is_canonical_under_repetition():
+    assert locus.label(_locus_group(shells=[0, 1, 1])) == "modes-k01"
+
+
+def test_label_rejects_an_index_that_needs_two_digits():
+    with pytest.raises(ValueError, match="needs single digits"):
+        locus.label(_locus_group(shells=[0, 10]))
+
+
+def test_label_stays_filesystem_safe_for_every_arm():
+    arms = [_locus_group(name="full", shells=None),
+            _locus_group(name="readout", shells=None),
+            _locus_group(shells=[0, 1]),
+            _locus_group(shells=[0, 1, 2], t_modes=[0])]
+    for arm in arms:
+        assert SAFE_LABEL.fullmatch(locus.label(arm))
+
+
+def test_label_reads_the_shipped_locus_yamls(locus_config_dir):
+    for name in ("full", "readout"):
+        group = OmegaConf.load(locus_config_dir / f"{name}.yaml")
+        assert locus.label(group) == name

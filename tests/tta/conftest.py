@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from src.models.kf_fno import build_fno_kf
 from src.models.kf_unet import UNet3D
@@ -17,6 +17,26 @@ def real_fno() -> torch.nn.Module:
     model_cfg = OmegaConf.to_container(OmegaConf.load(FNO_CONFIG), resolve=True)
     model_cfg["hidden_channels"] = 8
     model_cfg["projection_channel_ratio"] = 1
+    torch.manual_seed(0)
+    return build_fno_kf(model_cfg)
+
+
+@pytest.fixture
+def locus_config_dir() -> Path:
+    """Returns the directory holding the shipped locus group yamls."""
+    return LOCUS_CONFIG_DIR
+
+
+@pytest.fixture
+def shipped_modes() -> DictConfig:
+    """Returns the shipped modes locus group, so tests read the arm rather than restate it."""
+    return OmegaConf.load(LOCUS_CONFIG_DIR / "modes.yaml")
+
+
+@pytest.fixture
+def production_fno() -> torch.nn.Module:
+    """Returns the FNO at its shipped width, for the reported locus-size numbers."""
+    model_cfg = OmegaConf.to_container(OmegaConf.load(FNO_CONFIG), resolve=True)
     torch.manual_seed(0)
     return build_fno_kf(model_cfg)
 
