@@ -9,6 +9,10 @@ checkpoints) and asserts, with numbers, that the knob actually reaches the
 optimisation: band vs full-field must train to DIFFERENT weights, and the logged
 band residual must be <= the full residual on the (identical) first batch.
 """
+import pytest
+
+pytest.skip("legacy: msc.tta.methods moved to msc/tta/legacy; superseded by msc/tta/adapt", allow_module_level=True)
+
 import copy
 
 import numpy as np

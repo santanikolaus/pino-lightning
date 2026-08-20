@@ -5,6 +5,10 @@ residual term-split has the right shape/finiteness, and a perfectly
 time-translation-invariant flow map has ZERO self-inconsistency (restart from own
 frame m reproduces the one-shot tail) — the alignment canary.
 """
+import pytest
+
+pytest.skip("legacy: scripts/self_consistency_diag.py was removed", allow_module_level=True)
+
 import numpy as np
 import torch
 

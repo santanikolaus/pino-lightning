@@ -81,18 +81,21 @@ def test_model_instantiates():
 
 
 def test_model_param_count():
-    """Parameter count must be in the plausible range for a 4-layer, width-64 FNO3d.
+    """Parameter count must match what hidden_channels, n_layers and n_modes imply.
 
-    This catches silent mis-configurations such as n_layers being ignored or
-    hidden_channels being interpreted as 1, which would produce a trivially small
-    (or absurdly large) model.
+    Catches silent mis-configuration — hidden_channels ignored, n_layers collapsed —
+    by deriving the spectral-weight count from the config rather than hardcoding a
+    range that goes stale the next time the config changes.
     """
     cfg = _load_kf_config()
     model = build_fno_kf(cfg)
     n_params = sum(p.numel() for p in model.parameters())
-    assert 2_500_000 < n_params < 8_000_000, (
-        f"Unexpected parameter count {n_params:,}. "
-        "Expected ~5.3M for hidden_channels=64, n_layers=4, n_modes=[8,8,8]. "
+    modes_x, modes_y, modes_t = cfg["n_modes"]
+    width = cfg["hidden_channels"]
+    spectral = cfg["n_layers"] * width * width * modes_x * modes_y * (modes_t // 2 + 1)
+    assert spectral < n_params < 1.05 * spectral, (
+        f"Unexpected parameter count {n_params:,}. The {cfg['n_layers']} spectral convs at "
+        f"width {width} and modes {cfg['n_modes']} alone account for {spectral:,}. "
         "Check that these config values are not being silently ignored."
     )
 

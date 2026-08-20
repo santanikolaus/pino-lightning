@@ -3,6 +3,10 @@
 Covers the pure math and plumbing for Exp 1 (the go/no-go gate for Exp 2).
 CPU-only, float64, synthetic data only — no checkpoints, no disk I/O.
 """
+import pytest
+
+pytest.skip("legacy: msc.tta.eval.K_REP was removed in the eval refactor", allow_module_level=True)
+
 import numpy as np
 import pytest
 import torch

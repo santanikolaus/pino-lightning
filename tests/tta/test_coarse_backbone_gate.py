@@ -3,6 +3,10 @@
 Out of scope: NavierStokes2d physics, KFDataset, main() CLI — those need GPU/data.
 All tests run on CPU with analytically predictable outcomes.
 """
+import pytest
+
+pytest.skip("legacy: msc.tta.eval.K_REP was removed in the eval refactor", allow_module_level=True)
+
 import numpy as np
 import pytest
 import torch

@@ -4,7 +4,7 @@ import torch
 from msc.tta import eval as ev
 import pytest
 
-from msc.tta.mmd_gate import (_coarse_path, _eval_vs_ref, _half_bags,
+from msc.tta.eval.mmd_gate import (_coarse_path, _eval_vs_ref, _half_bags,
                               _perm_pvalue, _standardize)
 
 
