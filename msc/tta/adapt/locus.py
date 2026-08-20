@@ -236,15 +236,39 @@ def attach_grad_masks(locus_params: dict, masks: dict) -> None:
 def check_mode_index_map(model: torch.nn.Module, layouts: dict) -> None:
     """Asserts the model indexes its modes the way each named layout assumes.
 
+    An empty mapping is a no-op: with no mode-indexed tensor there is no index
+    map to validate.
+
     Args:
       model: the model to adapt.
       layouts: fnmatch pattern -> MODE_LAYOUTS key, as carried by cfg.locus.
 
     Raises:
-      ValueError: a module keeps fewer modes than it stores (FNO n_modes below
-        max_n_modes, or a UNet mixer wider than its bottleneck grid), which
-        shifts the index-to-wavenumber map its layout assumes.
+      ValueError: a module keeps fewer modes than it stores, so the stored
+        weight is used sliced and index i is no longer wavenumber i - n // 2;
+        or no mode-indexed module was found to validate at all.
+      NotImplementedError: a layout whose index map has no check yet.
     """
+    if not layouts:
+        return
+
+    for layout in set(layouts.values()):
+        if layout != "fno_shifted":
+            raise NotImplementedError(f"no index-map check for layout {layout!r}")
+
+    inspected = 0
+    for module_name, module in model.named_modules():
+        n_modes = getattr(module, "n_modes", None)
+        max_n_modes = getattr(module, "max_n_modes", None)
+        if n_modes is None or max_n_modes is None:
+            continue
+        inspected += 1
+        if tuple(n_modes) != tuple(max_n_modes):
+            raise ValueError(
+                f"{module_name} keeps modes {tuple(n_modes)} of {tuple(max_n_modes)} stored; "
+                "the fno_shifted index-to-wavenumber map assumes none are sliced")
+    if inspected == 0:
+        raise ValueError("layout fno_shifted found no mode-indexed module to validate")
 
 
 def census(model: torch.nn.Module, locus_cfg: DictConfig) -> dict:

@@ -9,7 +9,7 @@ from src.pde.ns import KFLoss
 
 from ..eval import eval as ev
 from ..eval.report import F_RMS
-from . import probe
+from . import locus, probe
 
 
 BANDS = {"k1-64": slice(1, None), "k1-4": slice(1, 5), "k5-7": slice(5, 8), "k8+": slice(8, None)}
@@ -148,7 +148,7 @@ def adapt(model, pool, heldout, target_cfg: DictConfig, regime, cfg, device,
     model = copy.deepcopy(model).to(device)
     enable_gradient_checkpointing(model)
     model.train()
-    opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
+    opt = torch.optim.Adam(locus.restrict_updates(model, cfg.locus), lr=cfg.lr)
     sched = torch.optim.lr_scheduler.MultiStepLR(
         opt, milestones=list(cfg.lr_milestones), gamma=cfg.lr_gamma
     )

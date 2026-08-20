@@ -574,3 +574,33 @@ def test_attach_grad_masks_keeps_masks_apart_at_equal_shapes():
     (model.first.sum() + model.second.sum()).backward()
     assert int((model.first.grad != 0).sum()) == 2 * 2 * 1 * 5
     assert int((model.second.grad != 0).sum()) == 2 * 2 * 9 * 5
+
+
+def test_check_mode_index_map_accepts_an_unsliced_fno(real_fno_narrow):
+    locus.check_mode_index_map(real_fno_narrow, FNO_LAYOUTS)
+
+
+def test_check_mode_index_map_rejects_a_sliced_fno(real_fno_narrow):
+    real_fno_narrow.n_modes = (4, 4, 4)
+    with pytest.raises(ValueError, match=r"keeps modes \(4, 4, 3\) of \(8, 8, 5\) stored"):
+        locus.check_mode_index_map(real_fno_narrow, FNO_LAYOUTS)
+
+
+def test_check_mode_index_map_is_a_no_op_without_layouts():
+    locus.check_mode_index_map(_tiny_module(), {})
+
+
+def test_check_mode_index_map_rejects_a_model_without_mode_indexed_modules():
+    with pytest.raises(ValueError, match="found no mode-indexed module"):
+        locus.check_mode_index_map(_tiny_module(), FNO_LAYOUTS)
+
+
+def test_check_mode_index_map_rejects_a_layout_it_cannot_validate(real_unet):
+    with pytest.raises(NotImplementedError, match="no index-map check for layout 'unet_rfft_lo'"):
+        locus.check_mode_index_map(real_unet, {"*.w_lo": "unet_rfft_lo"})
+
+
+def test_check_mode_index_map_inspects_every_spectral_conv(real_fno_narrow):
+    real_fno_narrow.fno_blocks.convs[2].n_modes = [4, 4, 3]
+    with pytest.raises(ValueError, match="fno_blocks.convs.2 keeps modes"):
+        locus.check_mode_index_map(real_fno_narrow, FNO_LAYOUTS)

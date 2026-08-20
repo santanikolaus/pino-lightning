@@ -2,6 +2,7 @@ import copy
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 from omegaconf import DictConfig, OmegaConf
 
@@ -142,3 +143,11 @@ def test_a_clone_of_a_restricted_model_comes_back_unmasked(real_fno):
     clone = copy.deepcopy(real_fno)
     assert _hooked_count(clone) == 0
     assert _trainable_names(clone) == _trainable_names(real_fno)
+
+
+def test_modes_locus_refuses_a_sliced_fno_without_touching_it(real_fno):
+    real_fno.n_modes = (4, 4, 4)
+    with pytest.raises(ValueError, match="index-to-wavenumber map"):
+        locus.restrict_updates(real_fno, MODES_LOCUS)
+    assert _trainable_names(real_fno) == _all_names(real_fno)
+    assert _hooked_count(real_fno) == 0
