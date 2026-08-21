@@ -100,7 +100,36 @@ and k17-32 the OOD model is already longer than the native one.
   is an anti-proxy here. Reinforced by the Re-mismatch term being ~2 % of the OOD
   residual (0.8692 against Re500 vs 0.8497 against its own Re100).
 
-## Banked target gaps
+## Operative target — val [240:270]
+
+Adaptation probes heldout = val, so the gap it is scored against has to live on the
+same 30 chains. Two extra forwards, `--split val`:
+`unet_qr6rs0jb_re500_val.npz`, `unet_3z5bxjzp_re500_val.npz`.
+
+**Primary readout: k2-8, frames 15-25. s0 = 0.3841, target 0.2427, gap 0.1414
+(36.8 % of s0), of which amplitude can close 11 %.**
+
+| band | window | ref | OOD (s0) | gap | gap % | amp |
+|---|---|---|---|---|---|---|
+| **k2-8** | **t15-25** | **0.2427** | **0.3841** | **0.1414** | **36.8** | **11 %** |
+| k2-8 | t11-20 | 0.1991 | 0.3169 | 0.1178 | 37.2 | 19 % |
+| k2-8 | t21-40 | 0.3526 | 0.5360 | 0.1835 | 34.2 | 2 % |
+| k1 | t15-25 | 0.0399 | 0.1510 | 0.1111 | 73.6 | 95 % |
+| k9-64 | t15-25 | 0.8114 | 0.8748 | 0.0634 | 7.2 | 6 % |
+| k1-64 | t15-25 | 0.2438 | 0.3444 | 0.1005 | 29.2 | 23 % |
+
+`s0` is also the load guard: an adaptation run's step-0 heldout snapshot must
+reproduce 0.3841 at k2-8/t15-25, or the checkpoint or split moved.
+
+The val gap tracks the test gap closely (k2-8 t15-25: 36.8 % vs 37.0 %), so the
+test-split tables below stand as measured — the val read is for like-for-like
+subtraction, not because the test numbers were in doubt.
+
+Neither `wandb` nor `_snapshot_metrics` computes this readout — its fixed bands are
+k1-4/k5-7/k8+ and its W1 frames are (4, 63). Rank offline from the run's npz, which
+banks the full per-snapshot arrays.
+
+## Banked target gaps — test [270:300]
 
 **Read disjoint windows, never cumulative `t1-N`.** A cumulative window pools the
 easy early frames into every later readout, so the gap it reports is diluted by

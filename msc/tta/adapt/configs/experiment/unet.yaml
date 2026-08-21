@@ -2,3 +2,4 @@
 exp: unet
 ckpt: 3z5bxjzp
 target_re: 500
+wandb_project: unet-sweep
