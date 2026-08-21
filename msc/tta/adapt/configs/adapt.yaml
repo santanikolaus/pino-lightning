@@ -15,4 +15,4 @@ lr_milestones: []  # optimizer steps at which lr halves; [] = constant lr
 lr_gamma: 0.5
 probe_every: 1
 wandb_project: tta-lr-sweep  # ladder phase, not infrastructure; paths.yaml holds the entity
-out_dir: msc/tta/outputs/adapt  # relative to setup.ROOT, not the CWD
+out_dir: msc/tta/outputs/adapt/${exp}  # relative to setup.ROOT, not the CWD
