@@ -10,7 +10,8 @@ from msc.tta.setup import Regime
 
 def _fake_cfg() -> DictConfig:
     return OmegaConf.create({
-        "data": {"time_scale": 1.0, "temporal_pad": 0, "pad_mode": "zero"},
+        "data": {"time_scale": 1.0, "temporal_pad": 0, "pad_mode": "zero",
+                 "data_path": "x.npy", "sub_t": 2},
         "loss": {"re": 100, "t_interval": 0.1},
     })
 
@@ -327,3 +328,43 @@ def test_w1_columns_are_per_window_and_aggr_is_strictly_below_them(capsys):
     assert value[1:] == ["2.0000", "2.0000", "1.0000"]
     assert drift[-3:] == ["nan"] * 3
 
+
+
+@pytest.mark.parametrize("argv,expected",
+                         [([], "test"), (["--split", "val"], "val")],
+                         ids=["defaults_to_test", "val_when_asked"])
+def test_split_flag_selects_the_dataset_window(monkeypatch, argv, expected):
+    """The default must stay 'test' — every banked report was read there — while
+    --split val puts a reference forward on the chains an adaptation run probes."""
+    seen = {}
+
+    def fake_build_dataset(cfg, split):
+        seen["split"] = split
+        return _FakeDataset()
+
+    monkeypatch.setattr(report.ev, "forward_bands",
+                        lambda *a, **k: {"n_bands": 3, "T_eff": 5})
+    for name in report.REPORTS:
+        monkeypatch.setitem(report.REPORTS[name], "fn", lambda cache, **kw: None)
+    monkeypatch.setattr(report.setup, "load_model",
+                        lambda run_id, device: (None, _fake_cfg()))
+    monkeypatch.setattr(report.setup, "build_dataset", fake_build_dataset)
+    monkeypatch.setattr("sys.argv",
+                        ["report.py", "--run-id", "fake", "--reports", "decomp", *argv])
+
+    report.main()
+
+    assert seen["split"] == expected
+
+
+def test_saved_npz_records_the_split_it_was_measured_on(tmp_path, monkeypatch):
+    """Two npz files are only subtractable if they cover the same chains, so the
+    split each was measured on has to survive into the file, not be assumed."""
+    path = str(tmp_path / "bands.npz")
+    monkeypatch.setattr(report, "_git_sha", lambda: "deadbeef")
+
+    report._save_arrays(path, {"pred_pt": np.zeros((2, 3, 5))}, _fake_cfg(), "fake",
+                        Regime(op_re=100, test_re=500), T_eff=5, split_name="val")
+
+    with np.load(path) as npz:
+        assert npz["meta_split"].item() == "val offset=240 n=30"

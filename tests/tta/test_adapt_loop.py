@@ -6,6 +6,7 @@ from omegaconf import OmegaConf
 from msc.tta.adapt import loop
 from msc.tta.setup import Regime
 from src.models.kf_fno import build_fno_kf
+from src.models.kf_unet import DoubleConv
 
 MODEL_CFG = {
     "model_arch": "fno", "data_channels": 4, "out_channels": 1,
@@ -281,3 +282,42 @@ def test_collate_stacks_per_side_and_keeps_scalars_unstacked():
     assert out["pool_err_pt"].shape == (2, 1, 5, 3)
     assert out["heldout_err_pt"].shape == (2, 2, 5, 3)
     np.testing.assert_array_equal(out["pool_err_pt"][1], 2 * np.ones((1, 5, 3)))
+
+
+def test_enable_checkpointing_flips_every_unet_double_conv(real_unet):
+    assert not any(m.grad_checkpoint for m in real_unet.modules()
+                   if isinstance(m, DoubleConv))
+
+    loop._enable_checkpointing(real_unet)
+
+    blocks = [m for m in real_unet.modules() if isinstance(m, DoubleConv)]
+    assert blocks and all(m.grad_checkpoint for m in blocks)
+
+
+def test_enable_checkpointing_wraps_the_fno_forward():
+    model = _tiny_model()
+    before = model.forward
+
+    loop._enable_checkpointing(model)
+
+    assert model.forward is not before
+
+
+def test_enable_checkpointing_rejects_an_unknown_backbone():
+    with pytest.raises(NotImplementedError, match="Linear"):
+        loop._enable_checkpointing(torch.nn.Linear(2, 2))
+
+
+def test_adapt_runs_end_to_end_on_a_unet(real_unet):
+    before = torch.cat([p.flatten() for p in real_unet.parameters()]).clone()
+    pool, heldout = _FakeDataset(1, 8, 5), _FakeDataset(1, 8, 5, seed=7)
+    cfg = _adapt_cfg(steps=2, probe_every=2)
+    regime = Regime(op_re=100, test_re=500)
+
+    adapted, snapshots, losses = loop.adapt(real_unet, pool, heldout, _target_cfg(),
+                                            regime, cfg, torch.device("cpu"))
+
+    assert [s["step"] for s in snapshots] == [0, 2]
+    assert len(losses) == 2
+    after = torch.cat([p.flatten() for p in adapted.parameters()])
+    assert not torch.equal(before, after)

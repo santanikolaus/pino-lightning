@@ -391,7 +391,7 @@ def _git_sha() -> str:
 
 
 def _save_arrays(path: str, bands_cache: dict, cfg: DictConfig, run_id: str, regime,
-                 T_eff: int) -> None:
+                 T_eff: int, split_name: str) -> None:
     """Writes the band/residual arrays plus run metadata to a compressed .npz.
 
     Stores what forward_bands returned verbatim, so every later band grouping, frame
@@ -409,7 +409,11 @@ def _save_arrays(path: str, bands_cache: dict, cfg: DictConfig, run_id: str, reg
       regime: the run's Reynolds pair, recorded so a reader knows which equation
         each stored residual was scored against.
       T_eff: dataset frame count.
+      split_name: the split the arrays were measured on, as passed to --split —
+        stored because a reader comparing two npz files must know they cover the
+        same chains before subtracting them.
     """
+    split = setup.SPLIT[split_name]
     meta = {
         "run_id": run_id,
         "data_path": cfg.data.data_path,
@@ -418,7 +422,7 @@ def _save_arrays(path: str, bands_cache: dict, cfg: DictConfig, run_id: str, reg
         "test_re": regime.test_re,
         "sub_t": cfg.data.sub_t,
         "T_eff": T_eff,
-        "split": f"test offset={setup.SPLIT['test']['offset']} n={setup.SPLIT['test']['n']}",
+        "split": f"{split_name} offset={split['offset']} n={split['n']}",
         "commit": _git_sha(),
     }
     np.savez_compressed(path, **bands_cache,
@@ -532,6 +536,10 @@ def main():
     ap.add_argument("--coarse-path", default=None,
                     help="Override the coarse-conditioning file, e.g. pair a Re100 coarse "
                          "checkpoint with Re500's own coarse-solver file.")
+    ap.add_argument("--split", default="test", choices=sorted(setup.SPLIT),
+                    help="split window to score on. Default 'test' [270:300], the "
+                         "locked final read. Use 'val' [240:270] to put a reference "
+                         "forward on the same chains an adaptation run probes.")
     ap.add_argument("--device", default=None)
     ap.add_argument("--save-npz", default=None,
                     help="Write the band-power and residual arrays plus run metadata to "
@@ -549,7 +557,7 @@ def main():
         cfg.data.data_path = args.data_path
     if args.coarse_path:
         cfg.data.coarse_path = args.coarse_path
-    dataset = setup.build_dataset(cfg, "test")
+    dataset = setup.build_dataset(cfg, args.split)
 
     T_eff = dataset[0]["y"].shape[-1]
     regime = setup.resolve_regime(cfg, args.op_re, args.test_re)
@@ -578,7 +586,8 @@ def main():
                else dataset[0]["y"].shape[0] // 2 + 1)
 
     if args.save_npz and "bands" in cache:
-        _save_arrays(args.save_npz, cache["bands"], cfg, args.run_id, regime, T_eff)
+        _save_arrays(args.save_npz, cache["bands"], cfg, args.run_id, regime, T_eff,
+                     args.split)
 
     for r in ORDER:
         if r not in selected:

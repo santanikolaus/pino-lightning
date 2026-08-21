@@ -5,6 +5,7 @@ import torch
 from omegaconf import DictConfig
 
 from src.models.kf_fno import enable_gradient_checkpointing, kf_forward
+from src.models.kf_unet import DoubleConv, UNet3D
 from src.pde.ns import KFLoss
 
 from ..eval import eval as ev
@@ -29,6 +30,32 @@ def _loss_fn(cfg) -> KFLoss:
     return KFLoss(re=cfg.target_re, data_weight=0.0,
                   pde_weight=cfg.objective.pde_weight,
                   ic_weight=cfg.objective.ic_weight)
+
+
+def _enable_checkpointing(model: torch.nn.Module) -> None:
+    """Turns on activation checkpointing for the backbone at hand, in place.
+
+    The two backbones expose it differently: the FNO has no built-in flag and gets
+    its forward loop-wrapped, while UNet3D's DoubleConv reads self.grad_checkpoint
+    at call time, so flipping it after load is enough. Both are required, not
+    optional — a 128^2 x 65 backward does not fit a 12 GB card uncheckpointed.
+
+    Args:
+      model: the adaptation clone, mutated in place.
+
+    Raises:
+      NotImplementedError: the backbone has neither checkpointing path.
+    """
+    if isinstance(model, UNet3D):
+        for block in model.modules():
+            if isinstance(block, DoubleConv):
+                block.grad_checkpoint = True
+        return
+    if hasattr(model, "fno_blocks"):
+        enable_gradient_checkpointing(model)
+        return
+    raise NotImplementedError(
+        f"no activation-checkpointing path for {type(model).__name__}")
 
 
 def _eval(model, pool, heldout, target_cfg: DictConfig, regime, device, step: int) -> dict:
@@ -153,7 +180,7 @@ def adapt(model, pool, heldout, target_cfg: DictConfig, regime, cfg, device,
       between); and one {"loss", "data", "pde", "ic"} dict per training step.
     """
     model = copy.deepcopy(model).to(device)
-    enable_gradient_checkpointing(model)
+    _enable_checkpointing(model)
     model.train()
     opt = torch.optim.Adam(locus.restrict_updates(model, cfg.locus), lr=cfg.lr)
     sched = torch.optim.lr_scheduler.MultiStepLR(
