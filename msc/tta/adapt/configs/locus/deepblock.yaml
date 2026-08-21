@@ -1,0 +1,5 @@
+name: deepblock
+patterns: ["downs.2.*", "temporal_mixer.*"]
+layouts: {}
+shells: null
+t_modes: null
