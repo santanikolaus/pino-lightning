@@ -203,3 +203,20 @@ def test_bottleneck_locus_censuses_the_whole_unet_mixer(real_unet, shipped_locus
         if name.startswith("temporal_mixer"):
             mixer += param.numel()
     assert counts == {"trainable": mixer, "effective": mixer}
+
+
+def test_deepconv_locus_censuses_the_unet_deepest_downblock(real_unet, shipped_locus):
+    counts = locus.census(real_unet, shipped_locus("deepconv"))
+    deepest = 0
+    for name, param in real_unet.named_parameters():
+        if name.startswith("downs.2"):
+            deepest += param.numel()
+    assert counts == {"trainable": deepest, "effective": deepest}
+
+
+def test_deepblock_locus_is_exactly_deepconv_plus_bottleneck(real_unet, shipped_locus):
+    both = locus.census(real_unet, shipped_locus("deepblock"))
+    conv = locus.census(real_unet, shipped_locus("deepconv"))
+    mixer = locus.census(real_unet, shipped_locus("bottleneck"))
+    assert both["trainable"] == conv["trainable"] + mixer["trainable"]
+    assert both["effective"] == conv["effective"] + mixer["effective"]

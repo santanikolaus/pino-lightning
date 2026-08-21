@@ -1,0 +1,5 @@
+name: deepconv
+patterns: ["downs.2.*"]
+layouts: {}
+shells: null
+t_modes: null
