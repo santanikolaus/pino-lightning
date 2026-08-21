@@ -73,11 +73,11 @@ def build_splits(cfg: DictConfig, train_cfg: DictConfig) -> tuple:
     heldout = setup.build_dataset(target_cfg, "val")
     train = setup.build_dataset(target_cfg, "train")
     pool_n = cfg.objective.get("pool_n", 1)
-    if pool_n > len(train):
-        raise ValueError(f"pool_n={pool_n} exceeds the train split ({len(train)})")
-    # NOTE: pool is chains [0:pool_n); a one-off re-run with [10:10+pool_n) would
-    # check whether this fixed window biases adaptation measurements.
-    return Subset(train, range(pool_n)), heldout, target_cfg
+    pool_offset = cfg.get("pool_offset", 0)
+    if pool_offset + pool_n > len(train):
+        raise ValueError(f"pool [{pool_offset}:{pool_offset + pool_n}) exceeds the "
+                         f"train split ({len(train)})")
+    return Subset(train, range(pool_offset, pool_offset + pool_n)), heldout, target_cfg
 
 
 def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> str:
@@ -104,7 +104,8 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> 
             f"locus       : {locus.label(cfg.locus)}",
             f"movable     : {counts['effective']:,} of {n_params:,} entries "
             f"({100 * counts['effective'] / n_params:.2f}%), {counts['trainable']:,} selected",
-            f"pool        : {cfg.objective.get('pool_n', 1)} samples (train split)",
+            f"pool        : {cfg.objective.get('pool_n', 1)} samples "
+            f"(train [{cfg.get('pool_offset', 0)}:{cfg.get('pool_offset', 0) + cfg.objective.get('pool_n', 1)}))",
             f"heldout     : {setup.SPLIT['val']['n']} samples (val split)",
             f"budget      : {cfg.steps} steps @ lr={cfg.lr}",
         ]
@@ -128,9 +129,10 @@ def run_name(cfg: DictConfig) -> str:
       lr decays; the locus fragment comes from locus.label, so two shell sets of
       one arm never share a name.
     """
+    shift = f"-p{cfg.get('pool_offset', 0)}" if cfg.get("pool_offset", 0) else ""
     decay = "-d" + "-".join(str(m) for m in cfg.lr_milestones) if cfg.lr_milestones else ""
     return (f"{cfg.exp}-{cfg.objective.name}-{locus.label(cfg.locus)}"
-            f"-n{cfg.objective.get('pool_n', 1)}-lr{cfg.lr:.0e}-s{cfg.steps}{decay}")
+            f"-n{cfg.objective.get('pool_n', 1)}{shift}-lr{cfg.lr:.0e}-s{cfg.steps}{decay}")
 
 
 def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
@@ -178,7 +180,7 @@ def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
         "lr": cfg.lr,
         "probe_every": cfg.probe_every,
         "pool_n": pool_n,
-        "pool_split": f"train offset=0 n={pool_n}",
+        "pool_split": f"train offset={cfg.get('pool_offset', 0)} n={pool_n}",
         "heldout_split": f"val offset={setup.SPLIT['val']['offset']} n={setup.SPLIT['val']['n']}",
         "target_path": target_cfg.data.data_path,
         "commit": _git_sha(),

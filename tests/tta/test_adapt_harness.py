@@ -164,7 +164,7 @@ def train_cfg():
 def test_build_splits_pool_n_exceeds_train_raises(monkeypatch, train_cfg):
     _stub_setup(monkeypatch, train_len=3)
     cfg = _cfg({"target_re": 500, "objective": {"name": "spectral", "pool_n": 4}})
-    with pytest.raises(ValueError, match="pool_n"):
+    with pytest.raises(ValueError, match="exceeds the train split"):
         adapt.build_splits(cfg, train_cfg)
 
 
@@ -306,3 +306,34 @@ def test_save_arrays_records_the_locus_it_enforced(tmp_path, monkeypatch, shippe
     assert out["meta_locus_layouts"].item() == "fno_blocks.convs.*.weight.tensor=fno_shifted"
     assert out["meta_locus_trainable"].item() == 320
     assert out["meta_locus_effective"].item() == 125
+
+
+def test_pool_offset_shifts_the_adapt_pool_window(monkeypatch):
+    """The pool is a fixed window of train chains, so a headline cell has to be
+    re-runnable on different chains — that shift is the replication axis, since
+    adaptation is near-deterministic and reseeding changes nothing."""
+    from msc.tta.adapt import adapt as adapt_module
+
+    monkeypatch.setattr(adapt_module.setup, "data_path_for_re", lambda re: "x.npy")
+    monkeypatch.setattr(adapt_module.setup, "build_dataset",
+                        lambda cfg, split: list(range(240)))
+    train_cfg = OmegaConf.create({"data": {"data_path": "y.npy"}})
+    cfg = OmegaConf.create({"target_re": 500, "pool_offset": 10,
+                            "objective": {"pool_n": 5}})
+
+    pool, _, _ = adapt_module.build_splits(cfg, train_cfg)
+
+    assert list(pool.indices) == [10, 11, 12, 13, 14]
+
+
+def test_pool_offset_past_the_split_end_is_rejected(monkeypatch):
+    from msc.tta.adapt import adapt as adapt_module
+
+    monkeypatch.setattr(adapt_module.setup, "data_path_for_re", lambda re: "x.npy")
+    monkeypatch.setattr(adapt_module.setup, "build_dataset",
+                        lambda cfg, split: list(range(240)))
+    cfg = OmegaConf.create({"target_re": 500, "pool_offset": 238,
+                            "objective": {"pool_n": 5}})
+
+    with pytest.raises(ValueError, match="exceeds the train split"):
+        adapt_module.build_splits(cfg, OmegaConf.create({"data": {"data_path": "y.npy"}}))

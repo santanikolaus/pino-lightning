@@ -14,5 +14,6 @@ lr: 3.0e-4
 lr_milestones: []  # optimizer steps at which lr halves; [] = constant lr
 lr_gamma: 0.5
 probe_every: 1
+pool_offset: 0  # first train chain in the adapt pool; shift it to re-run a cell on different chains
 wandb_project: tta-lr-sweep  # ladder phase, not infrastructure; paths.yaml holds the entity
 out_dir: msc/tta/outputs/adapt/${exp}  # relative to setup.ROOT, not the CWD
