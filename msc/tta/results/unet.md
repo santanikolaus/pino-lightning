@@ -504,3 +504,422 @@ they beat the gain alone with a CI that excludes zero. Alone, physics only ties 
 
 Outstanding before this is claimable: pool-shift replication at `[10:15]`, the
 200-step curve to locate the plateau, and a persistence control on ρ(k8).
+
+---
+
+# Bracket 3 — physics, 200 steps. Three retractions and a real result.
+
+`{1e-4, 2e-4, 3e-4, 5e-4, 7e-4}`, n=5, `probe_every=5`, `locus=full`.
+
+## The 30-step read caught the method mid-transit
+
+| lr | id | ρ(k8) peak | @step | primary rel_l2 min | @step | γ(k8) s0→peak |
+|---|---|---|---|---|---|---|
+| 1e-4 | 665u7dbi | 0.7726 | **200** | 0.3272 | 200 | 0.626→0.617 |
+| **2e-4** | **z8io8n3g** | **0.7775** | **195** | **0.3206** | **195** | 0.626→0.638 |
+| 3e-4 | cxx0fkld | 0.7765 | **200** | 0.3259 | 190 | 0.626→0.631 |
+| 5e-4 | p25j482q | 0.7723 | 135 | 0.3362 | 200 | 0.626→0.597 |
+| 7e-4 | zsrzt2hk | 0.7675 | 115 | 0.3546 | 175 | 0.626→0.571 |
+
+**Not peaked.** For lr ≤ 3e-4 ρ is still rising at the last probe. Only 5e-4 and
+7e-4 turn over (at 135 / 115) and both to a lower maximum.
+
+### Retracted: "the physics objective trades amplitude for phase"
+
+False. γ(k8) went 0.663 → **0.540** at s30 → **0.629** at s200 while ρ climbed
+throughout. **The blur is a transient, not the price.** γ rises at every shell by
+s200 (k2 0.830→0.914, k5 0.749→0.823, k8 0.626→0.638).
+
+### Retracted: the k2 horizon cost
+
+−0.93 at s30 became **+3.30 [+1.80, +4.80]** at s200. Same transient.
+
+### Downgraded: the composite
+
+`physics + gain` vs `physics` is now −0.0039 [−0.0050, −0.0028] — a minor add-on,
+not the method. At s30 the gain was collecting amplitude physics had spent; by s200
+physics has collected it itself. **The method is physics-TTT run long.**
+
+## Result — lr 2e-4, step 195/200, val heldout
+
+ρ<0.9 horizon, paired 30-chain CIs:
+
+| k | s0 | adapted | **gain** | native | Δ | 95 % CI | recovered |
+|---|---|---|---|---|---|---|---|
+| 2 | 41.27 | 44.57 | 41.27 | 60.93 | +3.30 | [+1.80, +4.80] | 16.8 % |
+| 3 | 32.00 | 35.67 | 32.00 | 51.23 | +3.67 | [+2.37, +5.20] | 19.1 % |
+| 4 | 26.83 | 30.40 | 26.83 | 39.93 | +3.57 | [+1.87, +5.93] | 27.2 % |
+| 5 | 20.50 | 23.27 | 20.50 | 29.00 | +2.77 | [+2.10, +3.40] | 32.5 % |
+| 6 | 16.47 | 19.87 | 16.47 | 22.10 | +3.40 | [+2.77, +4.07] | 60.4 % |
+| 7 | 13.87 | 17.07 | 13.87 | 17.20 | +3.20 | [+2.50, +3.90] | **96.0 %** |
+| 8 | 11.77 | 14.47 | 11.77 | 14.23 | +2.70 | [+2.17, +3.23] | **109.5 %** |
+
+**+2.7 to +3.7 frames at every shell, all CIs excluding zero.** The gain column is
+identical to s0 at every shell — the competitor moves the horizon by exactly zero.
+At k7-k8 the adapted horizon **matches the native reference** (nominally exceeds it
+at k8, 14.47 vs 14.23; one checkpoint, do not build on the exceedance — γ there also
+sits marginally above native, 0.629 vs 0.608).
+
+Pooled identity, k2-8 / t15-25:
+
+| arm | rel_l2 | ρ | γ | phase (1−ρ²) | amp (γ−ρ)² |
+|---|---|---|---|---|---|
+| s0 | 0.3841 | 0.9294 | 0.8231 | 0.13625 | 0.01130 |
+| gain only | 0.3715 | 0.9294 | 0.8875 | 0.13625 | 0.00175 |
+| **physics s200** | **0.3215** | **0.9487** | 0.8905 | **0.09995** | 0.00339 |
+
+**Phase term −27 %.** Gap to the native reference closed **44 %**, against the
+gain's 8.9 %.
+
+| comparison | Δ | 95 % CI | verdict |
+|---|---|---|---|
+| physics vs s0 | −0.0663 | [−0.0729, −0.0600] | BETTER |
+| **physics vs gain** | **−0.0535** | **[−0.0616, −0.0455]** | **BETTER** |
+| physics+gain vs physics | −0.0039 | [−0.0050, −0.0028] | BETTER |
+
+The s30 tie against the gain is superseded: at 200 steps physics beats it outright.
+
+## Band × window at the ρ peak (lr 2e-4, step 195)
+
+dρ is positive at **every** shell and **every** window:
+
+| window | k2 | k4 | k6 | k7 | k8 |
+|---|---|---|---|---|---|
+| t1-10 | +0.0008 | +0.0028 | +0.0079 | +0.0101 | +0.0142 |
+| t11-20 | +0.0056 | +0.0166 | +0.0369 | +0.0475 | +0.0591 |
+| **t15-25** | +0.0082 | +0.0224 | +0.0450 | **+0.0597** | **+0.0715** |
+| t21-40 | +0.0135 | +0.0249 | +0.0480 | +0.0662 | +0.0721 |
+| t41-64 | +0.0207 | +0.0032 | +0.0212 | +0.0346 | +0.0340 |
+
+rel_l2 improves everywhere except **t41-64 at mid-k** (k5 **+0.0331**, k4 +0.0149)
+— the one slice where the two disagree: phase improved there while the amplitude
+term degraded. Late-frame γ drift, the same signature the FNO arm showed. It bounds
+the claim window.
+
+## Caveats attached to every number above
+
+One pool (train [0:5]), one checkpoint, one seed. At 200 steps the pool is cycled
+40×, so pool-overfitting is *more* plausible than at s30, not less. The `p10`
+pool-shift replication is s30 — it tests the mechanism (monotone ρ rise, sign), not
+these magnitudes.
+
+## Pool-shift replication — `465im803`, train [10:15)
+
+Identical to `vwuc4m8c` in every respect except the five adapt chains. Heldout is the
+same val split, so s0 is bit-identical and the comparison is controlled.
+
+| | pool [0:5) `vwuc4m8c` | pool [10:15) `465im803` |
+|---|---|---|
+| ρ(k8) t15-25 | 0.7060 → 0.7571 (**+0.0511**) | 0.7060 → 0.7713 (**+0.0654**) |
+| ρ monotone | 24/30 up | 28/30 up |
+| primary rel_l2 | 0.3841 → 0.3678 | 0.3841 → **0.3646** |
+| γ(k8) | 0.663 → 0.562 | 0.663 → 0.537 |
+
+**The effect is not pool-specific.** On different chains it is *larger*, more
+monotone, and lands lower on the primary readout. The 30-step blur transient
+reproduces too (γ 0.537), as expected at this budget.
+
+Horizon at s30, paired 30-chain CIs:
+
+| k | s0 | adapted | gain | native | Δ | 95 % CI | recovered |
+|---|---|---|---|---|---|---|---|
+| 2 | 41.27 | 41.10 | 41.27 | 60.93 | −0.17 | ns | — |
+| 3 | 32.00 | 32.10 | 32.00 | 51.23 | +0.10 | ns | — |
+| 4 | 26.83 | 27.30 | 26.83 | 39.93 | +0.47 | ns | — |
+| 5 | 20.50 | 21.80 | 20.50 | 29.00 | +1.30 | [+0.43, +2.10] | 15.3 % |
+| 6 | 16.47 | 18.67 | 16.47 | 22.10 | +2.20 | [+1.60, +2.83] | 39.1 % |
+| 7 | 13.87 | 16.37 | 13.87 | 17.20 | +2.50 | [+1.97, +3.03] | 75.0 % |
+| 8 | 11.77 | 14.17 | 11.77 | 14.23 | +2.40 | [+2.03, +2.77] | **97.3 %** |
+
+Every k5-k8 CI excludes zero, same shells and same ordering as `vwuc4m8c` — and each
+delta is *larger* (+1.30/+2.20/+2.50/+2.40 vs +1.03/+1.77/+2.03/+2.10). k2-k4 are ns
+at 30 steps on both pools; they only become significant at 200 steps.
+
+**Two independent pools, same sign, same shells, larger effect.** The remaining
+single points of failure are the checkpoint and the seed, not the pool.
+
+---
+
+# Bracket 4 — 800 steps at 2e-4 (`pm1135ol`). The plateau, and a third regime.
+
+`probe_every=20`, n=5, pool [0:5), `locus=full`, physics.
+
+## Plateau
+
+| step | primary k2-8/t15-25 | ρ(k8) | γ(k8) | γ(k2) | hz k7 | hz k2 | pde |
+|---|---|---|---|---|---|---|---|
+| 0 | 0.3841 | 0.7060 | 0.626 | 0.830 | 13.87 | 41.27 | 1.183 |
+| 20 | 0.3807 | 0.7555 | **0.520** | 0.807 | 15.53 | 40.80 | 0.912 |
+| 100 | 0.3351 | 0.7668 | 0.605 | 0.889 | 16.47 | 43.13 | 0.721 |
+| 200 | 0.3215 | 0.7770 | 0.629 | 0.908 | 17.07 | 44.57 | 0.630 |
+| 340 | 0.3113 | 0.7807 | 0.668 | 0.927 | 17.30 | 45.80 | 0.579 |
+| **500** | 0.3080 | **0.7818** | 0.695 | 0.933 | 17.40 | 46.50 | 0.525 |
+| **620** | **0.3063** | 0.7806 | 0.713 | 0.939 | 17.43 | 46.70 | 0.512 |
+| 800 | 0.3095 | 0.7783 | **0.728** | 0.941 | 17.37 | 46.70 | 0.500 |
+
+**Plateau band ≈ steps 500-620.** ρ(k8) peaks 0.7818 at 500; the primary readout
+bottoms 0.3063 at 620. Last five probe-to-probe dρ are mixed-sign noise
+(+0.0004, −0.0002, −0.0005, −0.0005, −0.0003). Resolution limited by
+`probe_every=20`.
+
+**Over-running is nearly free**: 620 → 800 costs +0.0032 on the primary. The method
+needs a budget *floor*, not a precise stop — anywhere in 400-800 is within ~1 % of
+optimal.
+
+## A third regime: transit → sweet spot → overfill
+
+γ does not stop when ρ does. After the ρ plateau it keeps climbing and **crosses
+above the native reference at k6-k8**, while ρ(k8) drifts slightly down from its
+step-500 peak:
+
+| shell | γ s0 | γ s800 | γ native |
+|---|---|---|---|
+| k5 | 0.749 | 0.852 | 0.862 |
+| k6 | 0.714 | **0.812** | 0.769 |
+| k7 | 0.682 | **0.778** | 0.686 |
+| k8 | 0.626 | **0.727** | 0.608 |
+
+So the full trajectory is **blur transit (0-100) → sweet spot (500-620) → overfill
+(700+)**. Per-shell ρ is rescaling-invariant, so the horizon gains are not an
+artifact of the γ inflation — but the co-occurrence is banked, and the ≥100 %
+recovery figures below carry it.
+
+## State at step 800 (end of run), val heldout
+
+Horizon, paired 30-chain CIs:
+
+| k | s0 | s800 | gain | native | Δ | 95 % CI | recovered |
+|---|---|---|---|---|---|---|---|
+| 2 | 41.27 | 46.70 | 41.27 | 60.93 | **+5.43** | [+3.27, +7.60] | 27.6 % |
+| 3 | 32.00 | 36.90 | 32.00 | 51.23 | +4.90 | [+3.30, +6.90] | 25.5 % |
+| 4 | 26.83 | 30.77 | 26.83 | 39.93 | +3.93 | [+2.37, +5.83] | 30.0 % |
+| 5 | 20.50 | 23.80 | 20.50 | 29.00 | +3.30 | [+2.53, +4.07] | 38.8 % |
+| 6 | 16.47 | 20.27 | 16.47 | 22.10 | +3.80 | [+3.00, +4.60] | 67.5 % |
+| 7 | 13.87 | 17.37 | 13.87 | 17.20 | +3.50 | [+2.67, +4.37] | 105.0 % |
+| 8 | 11.77 | 14.30 | 11.77 | 14.23 | +2.53 | [+1.90, +3.17] | 102.7 % |
+
+k7/k8 nominally exceed the native reference — one checkpoint, and γ there now sits
+above native too; do not build on the exceedance. **Different shells plateau at
+different times**: k2 was ns at s30, +3.30 at s200, +5.43 at s800 and still the
+strongest mover.
+
+Pooled identity, k2-8 / t15-25:
+
+| arm | rel_l2 | ρ | γ | phase (1−ρ²) | amp (γ−ρ)² |
+|---|---|---|---|---|---|
+| s0 | 0.3841 | 0.9294 | 0.8231 | 0.13625 | 0.01130 |
+| gain only | 0.3715 | 0.9294 | 0.8875 | 0.13625 | 0.00175 |
+| **physics s800** | **0.3095** | **0.9511** | 0.9324 | **0.09545** | **0.00035** |
+
+**Phase term −30 %.** Gap to the native reference closed **55.0 % at step 620**
+(0.3063), **52.8 % at step 800** — against the gain's 8.9 %.
+
+| comparison | Δ | 95 % CI | verdict |
+|---|---|---|---|
+| physics vs s0 | −0.0798 | [−0.0874, −0.0726] | BETTER |
+| **physics vs gain** | **−0.0670** | **[−0.0759, −0.0585]** | **BETTER** |
+| physics + gain vs physics | +0.0002 | [−0.0010, +0.0013] | **tie** |
+
+**The composite is now exactly a tie.** The amplitude term is 0.00035 — physics has
+collected it all; the gain has nothing left. "The method is physics-TTT run long"
+is complete.
+
+## Remaining bound
+
+dρ is positive at every shell and every window including t41-64 (k2 +0.0302,
+k7 +0.0547). But rel_l2 still degrades late at mid-k (**t41-64 k5 +0.0282**,
+k6 +0.0241) — phase improves there while the amplitude term worsens. The claim
+window stays bounded; this persists at every budget tested.
+
+The pde loss falls monotonically all 800 steps (1.183 → 0.500) while the primary
+readout turns at 620 — **still no label-free stopping signal**. The flat plateau is
+what makes that survivable.
+
+---
+
+# Second checkpoint — `wobwri1s` (Re100 UNet, 150ep), 200 steps at 2e-4
+
+`pylk2jkn`, `exp=unet150`, out_dir `adapt/unet150/`. Identical protocol to the
+`3z5bxjzp` 200-step cell; only the base weights differ. The two checkpoints are
+genuinely different models — `wobwri1s` starts **better** OOD (s0 primary 0.3522 vs
+0.3841) despite being worse in-distribution (val_l2 0.1507, not converged).
+
+## The method reproduces on different weights
+
+Horizon at step 200, paired 30-chain CIs, val heldout:
+
+| k | s0 | s200 | gain | native | Δ | 95 % CI | recovered | (3z5bxjzp Δ @200) |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 43.70 | 45.97 | 43.70 | 60.93 | +2.27 | [+0.93, +3.67] | 13.2 % | +3.30 |
+| 3 | 33.97 | 36.60 | 33.97 | 51.23 | +2.63 | [+1.47, +3.73] | 15.3 % | +3.67 |
+| 4 | 30.90 | 32.57 | 30.90 | 39.93 | +1.67 | [+0.13, +3.07] | 18.5 % | +3.57 |
+| 5 | 22.67 | 25.30 | 22.67 | 29.00 | +2.63 | [+1.77, +3.57] | 41.6 % | +2.77 |
+| 6 | 17.70 | 20.83 | 17.70 | 22.10 | +3.13 | [+2.43, +3.87] | 71.2 % | +3.40 |
+| 7 | 14.23 | 17.23 | 14.23 | 17.20 | +3.00 | [+2.40, +3.57] | 101.1 % | +3.20 |
+| 8 | 12.03 | 15.00 | 12.03 | 14.23 | +2.97 | [+2.57, +3.37] | **134.8 %** | +2.70 |
+
+**Every shell CI-positive, same ordering, comparable magnitudes.** The gain column is
+again identical to s0 everywhere. Deltas run slightly smaller at k2-k4 and slightly
+larger at k8 — consistent with the smaller headroom this checkpoint starts with.
+
+Pooled identity, k2-8 / t15-25:
+
+| arm | rel_l2 | ρ | γ | phase (1−ρ²) | amp (γ−ρ)² |
+|---|---|---|---|---|---|
+| s0 | 0.3522 | 0.9401 | 0.8521 | 0.11630 | 0.00773 |
+| gain only | 0.3444 | 0.9401 | 0.8920 | 0.11629 | 0.00231 |
+| **physics s200** | **0.2956** | **0.9577** | 0.8907 | **0.08289** | 0.00449 |
+
+Phase term **−28.7 %** (vs −27 % on `3z5bxjzp` at the same budget). physics vs gain
+**−0.0494 [−0.0574, −0.0414] BETTER**.
+
+## Two differences worth recording
+
+**1. It is not converged at 200 and does not plateau there.** primary rel_l2 is still
+falling at the last probe (0.2956 at step 200, its minimum); the last five
+probe-to-probe dρ are mixed-sign but the trend is up. The ρ(k8) "peak" at step 85 is
+probe noise on a rising curve — `probe_every=5` resolves fluctuations the s800 run's
+`probe_every=20` averaged out. This checkpoint needs the same long budget.
+
+**2. Less overfill, more blur, at matched budget.** γ at s200 sits *below* native at
+k5-k7 (0.796/0.735/0.680 vs 0.862/0.769/0.686) where `3z5bxjzp` had already crossed
+above at k6-k8. The composite still helps here (physics+gain vs physics
+−0.0034 [−0.0039, −0.0029]) where on `3z5bxjzp` at s800 it had become a tie. Both
+are consistent with this run sitting earlier on the same transit → sweet spot →
+overfill arc.
+
+## What this closes
+
+Two checkpoints, two pools, same objective, same lr: **same sign, same shells, same
+ordering, comparable magnitude.** The effect is not a property of one set of weights.
+The remaining unvaried factor is the pretraining seed, which would cost a 300-epoch
+retrain — stated as a limitation, not spent.
+
+Bound unchanged: at the ρ peak the late window degrades at low-k
+(t41-64 dρ k3 **−0.0253**, rel_l2 k3 +0.0287) — same claim-window bound as every
+other cell, here at low rather than mid k.
+
+---
+
+# Pool shift at 200 steps — `x55ga61f`, train [10:15)
+
+Identical to the `3z5bxjzp` 200-step cell except the five adapt chains. Heldout is
+the same val split, so s0 is bit-identical.
+
+## The headline magnitudes replicate — and exceed
+
+Horizon at step 200, paired 30-chain CIs, val heldout:
+
+| k | s0 | p10 s200 | gain | native | Δ | 95 % CI | recovered | *(p0 Δ)* |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 41.27 | 45.87 | 41.27 | 60.93 | **+4.60** | [+3.47, +5.70] | 23.4 % | *+3.30* |
+| 3 | 32.00 | 36.20 | 32.00 | 51.23 | +4.20 | [+3.03, +5.43] | 21.8 % | *+3.67* |
+| 4 | 26.83 | 30.00 | 26.83 | 39.93 | +3.17 | [+1.87, +4.53] | 24.2 % | *+3.57* |
+| 5 | 20.50 | 23.70 | 20.50 | 29.00 | +3.20 | [+2.30, +4.10] | 37.6 % | *+2.77* |
+| 6 | 16.47 | 20.80 | 16.47 | 22.10 | **+4.33** | [+3.50, +5.17] | 76.9 % | *+3.40* |
+| 7 | 13.87 | 17.97 | 13.87 | 17.20 | **+4.10** | [+3.30, +4.93] | 123.0 % | *+3.20* |
+| 8 | 11.77 | 15.10 | 11.77 | 14.23 | +3.33 | [+2.70, +3.97] | 135.1 % | *+2.70* |
+
+Six of seven shells are **larger** than on pool [0:5). Same sign, same ordering,
+every CI excluding zero, gain column exactly s0 throughout.
+
+Pooled identity, k2-8 / t15-25:
+
+| arm | rel_l2 | ρ | γ | phase (1−ρ²) | amp (γ−ρ)² |
+|---|---|---|---|---|---|
+| s0 | 0.3841 | 0.9294 | 0.8231 | 0.13625 | 0.01130 |
+| gain only | 0.3715 | 0.9294 | 0.8875 | 0.13625 | 0.00175 |
+| **p10 s200** | **0.3069** | **0.9536** | 0.8934 | **0.09057** | 0.00363 |
+| *p0 s200* | *0.3215* | *0.9487* | *0.8905* | *0.09995* | *0.00339* |
+
+Phase term **−33.5 %** (p0: −27 %). physics vs gain **−0.0628 [−0.0738, −0.0521]**.
+
+## Two things this settles
+
+**1. dρ is positive at every shell AND every window, including t41-64** (k2 +0.0267,
+k7 +0.0549) — and here **rel_l2 also improves in t41-64 at every shell**
+(k5 −0.0028, k6 −0.0119, k7 −0.0223). On pool [0:5) that window degraded at mid-k
+(k5 +0.0331 at s200, +0.0282 at s800). **The late-window bound is pool-dependent,
+not a property of the method.** Correct statement: the late window is where the
+method is weakest and can go either way, not where it reliably fails.
+
+**2. This run is still in the sweet spot, not overfill.** γ at s200 sits below
+native at k5-k8 (0.787/0.716/0.663/0.600 vs 0.862/0.769/0.686/0.608) and the
+composite still pays (+physics+gain vs physics −0.0043 [−0.0057, −0.0030]). Yet its
+horizons already exceed p0's at s200 and rival p0's at s800. Different pools traverse
+the arc at different rates; the shells and signs do not care.
+
+## Replication status after this run
+
+| axis | varied | result |
+|---|---|---|
+| pool chains | [0:5) vs [10:15), at s30 and s200 | same sign, same shells, larger on the shift |
+| checkpoint | 3z5bxjzp (300ep) vs wobwri1s (150ep) | same sign, same shells, comparable |
+| lr | basin 1e-4…3e-4 at s200 | all work; 5e-4/7e-4 peak early and lower |
+| budget | 30 / 200 / 800 | monotone in ρ to a 500-620 plateau |
+| pretraining seed | **not varied** | stated limitation (300-epoch retrain) |
+
+---
+
+# Ablation — `pde` alone, 200 steps at 2e-4 (`776pzxvr`)
+
+`pde_weight=1, ic_weight=0`. Everything else matches the `physics` 200-step cell.
+
+## The objective succeeds; the model is destroyed
+
+| step | primary k2-8/t15-25 | ρ(k8) | γ(k8) | γ(k2) | hz k7 | hz k2 | **pde loss** |
+|---|---|---|---|---|---|---|---|
+| 0 | **0.3841** | 0.7060 | 0.626 | 0.830 | 13.87 | 41.27 | 1.183 |
+| 10 | 0.4865 | 0.7142 | 0.408 | 0.653 | 13.73 | 38.47 | 0.675 |
+| 100 | — | — | — | — | — | — | ~0.16 |
+| 200 | **0.7038** | **0.4289** | **0.231** | **0.424** | **7.60** | **27.47** | **0.093** |
+
+**The pde loss fell 92 % (1.183 → 0.093) while every quality metric collapsed.**
+Best primary is step 0 — it never improves, not once.
+
+Horizon, paired 30-chain CIs — every shell catastrophically worse:
+
+| k | s0 | s200 | Δ | 95 % CI |
+|---|---|---|---|---|
+| 2 | 41.27 | 27.47 | **−13.80** | [−15.27, −12.37] |
+| 3 | 32.00 | 21.00 | −11.00 | [−12.40, −9.73] |
+| 4 | 26.83 | 10.67 | **−16.17** | [−18.73, −13.83] |
+| 5 | 20.50 | 12.13 | −8.37 | [−9.40, −7.40] |
+| 6 | 16.47 | 8.93 | −7.53 | [−8.37, −6.70] |
+| 7 | 13.87 | 7.60 | −6.27 | [−7.07, −5.50] |
+| 8 | 11.77 | 6.70 | −5.07 | [−5.63, −4.53] |
+
+Pooled identity: phase term 0.13625 → **0.36165**, amplitude 0.01130 → **0.13370**.
+physics-vs-s0 **+0.3304 [+0.3179, +0.3421] WORSE**. γ(k8) 0.626 → **0.231**: the
+prediction retains ~5 % of GT energy at k8. This is the null-space collapse,
+realised — blur the field toward nothing and the residual goes to zero.
+
+## The `ic` term is load-bearing
+
+Not a weighting detail. `ic` is the only thing standing between the residual and its
+null space: blurring lowers the residual but raises `‖pred(t=0) − IC‖`, so the ic
+term is an *anchor against blur*, not merely a trajectory selector. Remove it and the
+optimiser walks straight down the null space.
+
+This also settles the earlier claim that the banked "pde refuted, 25 cells" was read
+inside the U-shaped valley. **It was not a valley.** For `pde` alone there is no
+recovery at any budget — monotone collapse to step 200. The valley-and-recovery is a
+property of `pde + ic`, not of the residual.
+
+## Retraction — the recurrent plan needs rethinking
+
+Earlier in this file: *"on the recurrent model `physics` reduces to `pde` alone, and
+that is a feature — the ic term was scaffolding the architecture provides for free."*
+**Wrong, and this run shows why.**
+
+`ic` penalises `‖pred(t=0) − IC‖`. On a recurrent rollout frame 0 *is* the seed,
+copied verbatim, so that penalty is identically zero — **satisfied, and therefore
+exerting no gradient at all**. The recurrent architecture does not supply the anchor;
+it removes it. Recurrent + `pde` is structurally the condition that just collapsed
+here, with the residual parametrisation `u_next = u_prev + 0.104·net_out` making
+"shrink the increment" the cheapest descent direction — collapse toward persistence
+rather than toward zero, same category.
+
+**The recurrent arm needs a substitute anchor before it is worth running.** Candidates:
+an ic-analogue applied at a later frame, an increment-norm penalty, or the observed
+early frames as genuine one-step supervision. Not a config flip.

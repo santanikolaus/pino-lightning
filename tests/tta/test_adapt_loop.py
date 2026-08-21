@@ -321,3 +321,22 @@ def test_adapt_runs_end_to_end_on_a_unet(real_unet):
     assert len(losses) == 2
     after = torch.cat([p.flatten() for p in adapted.parameters()])
     assert not torch.equal(before, after)
+
+
+def test_bottleneck_locus_moves_only_the_unet_mixer_end_to_end(real_unet, locus_config_dir):
+    """S=16 keeps the depth-3 bottleneck at 2x2; at S=8 it is 1x1 and the mixer is inert."""
+    before = {}
+    for name, param in real_unet.named_parameters():
+        before[name] = param.detach().clone()
+    pool, heldout = _FakeDataset(1, 16, 5), _FakeDataset(1, 16, 5, seed=7)
+    cfg = _adapt_cfg(steps=3, probe_every=3)
+    cfg.locus = OmegaConf.load(locus_config_dir / "bottleneck.yaml")
+
+    adapted, _, _ = loop.adapt(real_unet, pool, heldout, _target_cfg(),
+                               Regime(op_re=100, test_re=500), cfg, torch.device("cpu"))
+
+    moved = set()
+    for name, param in adapted.named_parameters():
+        if not torch.equal(param.detach(), before[name]):
+            moved.add(name)
+    assert moved == {name for name in before if name.startswith("temporal_mixer")}

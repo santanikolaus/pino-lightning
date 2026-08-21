@@ -194,3 +194,12 @@ def test_a_shell_override_on_an_unmasked_arm_fails_instead_of_mislabelling(real_
         locus.restrict_updates(real_fno, arm)
     assert _trainable_names(real_fno) == _all_names(real_fno)
     assert _hooked_count(real_fno) == 0
+
+
+def test_bottleneck_locus_censuses_the_whole_unet_mixer(real_unet, shipped_locus):
+    counts = locus.census(real_unet, shipped_locus("bottleneck"))
+    mixer = 0
+    for name, param in real_unet.named_parameters():
+        if name.startswith("temporal_mixer"):
+            mixer += param.numel()
+    assert counts == {"trainable": mixer, "effective": mixer}
