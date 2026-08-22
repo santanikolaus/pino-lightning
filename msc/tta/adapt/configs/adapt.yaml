@@ -18,5 +18,8 @@ lr_milestones: []  # optimizer steps at which lr halves; [] = constant lr
 lr_gamma: 0.5
 probe_every: 1
 pool_offset: 0  # first train chain in the adapt pool; shift it to re-run a cell on different chains
+heldout_split: val  # chains the probe scores. val [240:270] while the ladder is being
+                    # selected; test for the one locked read on a frozen config. Never
+                    # reaches the gradient path — both splits score the same trajectory.
 wandb_project: tta-lr-sweep  # ladder phase, not infrastructure; paths.yaml holds the entity
 out_dir: msc/tta/outputs/adapt/${exp}  # relative to setup.ROOT, not the CWD
