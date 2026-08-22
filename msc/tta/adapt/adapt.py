@@ -15,6 +15,7 @@ from ..eval.report import _git_sha
 from . import locus, loop
 
 CONFIG_DIR = Path(__file__).parent / "configs"
+HELDOUT_SPLITS = ("val", "test")  # the train split is the adapt pool, never the probe set
 
 
 def load_config(overrides: list) -> DictConfig:
@@ -53,11 +54,13 @@ def build(cfg: DictConfig, device: torch.device):
 def build_splits(cfg: DictConfig, train_cfg: DictConfig) -> tuple:
     """Builds the adapt pool and the held-out probe set on the target-Re data.
 
-    heldout reads the val split ([240:270]), not test: probe fires every
-    probe_every steps across a whole ladder of objective/locus/lr cells, and a
-    human watches those curves to pick a config — that is model selection, the
-    job §3 assigns to val. test ([270:300]) is reserved for the one locked read
-    at the end of the ladder, on the config picked from val.
+    heldout defaults to val ([240:270]): the probe fires every probe_every steps
+    across a whole ladder of objective/locus/lr cells, and a human watches those
+    curves to pick a config — that is model selection, the job §3 assigns to val.
+    test ([270:300]) is reserved for the one locked read at the end of the ladder,
+    on the config picked from val, and is reached with cfg.heldout_split=test. The
+    probe set never enters the gradient path, so both splits score the same
+    adaptation trajectory.
 
     Args:
       cfg: resolved client config, as returned by load_config().
@@ -67,10 +70,13 @@ def build_splits(cfg: DictConfig, train_cfg: DictConfig) -> tuple:
       A tuple (pool, heldout, target_cfg): the adapt pool Subset, the held-out
       dataset, and the training config retargeted to the target-Re data.
     """
+    if cfg.heldout_split not in HELDOUT_SPLITS:
+        raise ValueError(f"heldout_split must be one of {HELDOUT_SPLITS}, got "
+                         f"{cfg.heldout_split!r} — the train split is the adapt pool")
     target_cfg = copy.deepcopy(train_cfg)
     target_cfg.data.data_path = setup.data_path_for_re(cfg.target_re)
 
-    heldout = setup.build_dataset(target_cfg, "val")
+    heldout = setup.build_dataset(target_cfg, cfg.heldout_split)
     train = setup.build_dataset(target_cfg, "train")
     pool_n = cfg.objective.get("pool_n", 1)
     pool_offset = cfg.get("pool_offset", 0)
@@ -107,7 +113,8 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> 
             f"({100 * counts['effective'] / n_params:.2f}%), {counts['trainable']:,} selected",
             f"pool        : {cfg.objective.get('pool_n', 1)} samples "
             f"(train [{cfg.get('pool_offset', 0)}:{cfg.get('pool_offset', 0) + cfg.objective.get('pool_n', 1)}))",
-            f"heldout     : {setup.SPLIT['val']['n']} samples (val split)",
+            f"heldout     : {setup.SPLIT[cfg.heldout_split]['n']} samples "
+            f"({cfg.heldout_split} split, offset {setup.SPLIT[cfg.heldout_split]['offset']})",
             f"budget      : {cfg.steps} steps @ lr={cfg.lr}",
         ]
     )
@@ -127,14 +134,15 @@ def run_name(cfg: DictConfig) -> str:
 
     Returns:
       A name like "fno-physics-modes-k012-n1-lr3e-04-s10", plus "-d150-250" when
-      lr decays; the locus fragment comes from locus.label, so two shell sets of
-      one arm never share a name.
+      lr decays and "-test" on the locked read; the locus fragment comes from
+      locus.label, so two shell sets of one arm never share a name.
     """
     shift = f"-p{cfg.get('pool_offset', 0)}" if cfg.get("pool_offset", 0) else ""
     nu = "" if cfg.get("pde_re", None) is None else f"-nu{loop.loss_re(cfg):g}"
     decay = "-d" + "-".join(str(m) for m in cfg.lr_milestones) if cfg.lr_milestones else ""
+    held = "" if cfg.heldout_split == "val" else f"-{cfg.heldout_split}"
     return (f"{cfg.exp}-{cfg.objective.name}-{locus.label(cfg.locus)}"
-            f"-n{cfg.objective.get('pool_n', 1)}{shift}{nu}-lr{cfg.lr:.0e}-s{cfg.steps}{decay}")
+            f"-n{cfg.objective.get('pool_n', 1)}{shift}{nu}-lr{cfg.lr:.0e}-s{cfg.steps}{decay}{held}")
 
 
 def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
@@ -184,7 +192,8 @@ def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
         "probe_every": cfg.probe_every,
         "pool_n": pool_n,
         "pool_split": f"train offset={cfg.get('pool_offset', 0)} n={pool_n}",
-        "heldout_split": f"val offset={setup.SPLIT['val']['offset']} n={setup.SPLIT['val']['n']}",
+        "heldout_split": (f"{cfg.heldout_split} offset={setup.SPLIT[cfg.heldout_split]['offset']}"
+                          f" n={setup.SPLIT[cfg.heldout_split]['n']}"),
         "target_path": target_cfg.data.data_path,
         "commit": _git_sha(),
     }

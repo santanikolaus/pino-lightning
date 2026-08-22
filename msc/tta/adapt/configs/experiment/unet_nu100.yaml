@@ -1,0 +1,12 @@
+# @package _global_
+exp: unet_nu100
+ckpt: 3z5bxjzp
+target_re: 500
+pde_re: 100  # adaptation loss keeps the operator's training viscosity — no target-regime
+             # knowledge. Data selection and every reported metric stay on target_re.
+steps: 500
+probe_every: 5  # 5/30/100/300/500 are all multiples, so the paper's budget rows are probes
+lr: 2.0e-4
+objective:
+  pool_n: 5
+wandb_project: tta-re100-sweep

@@ -90,7 +90,8 @@ def test_load_config_cli_override_of_undeclared_key_raises():
 
 
 def _cfg(overrides):
-    return OmegaConf.create(overrides)
+    """Hand-made client cfg carrying adapt.yaml's own heldout_split default."""
+    return OmegaConf.create({"heldout_split": "val", **overrides})
 
 
 def test_describe_formats_without_model_load():
@@ -210,8 +211,8 @@ def test_build_splits_does_not_mutate_original_train_cfg(monkeypatch, train_cfg)
     assert target_cfg["data"]["data_path"] == "/data/Re500_res128_part0.npy"
 
 
-def test_build_splits_heldout_reads_val_not_test(monkeypatch, train_cfg):
-    """heldout must read val [240:270] — test is the single locked read, not probe fodder."""
+def test_build_splits_heldout_defaults_to_val_not_test(monkeypatch, train_cfg):
+    """heldout defaults to val [240:270] — test is the single locked read, not probe fodder."""
     _stub_setup(monkeypatch, train_len=100, val_len=7)
     cfg = _cfg({"target_re": 500, "objective": {"name": "physics", "ic_weight": 5.0}})
     _, heldout, _ = adapt.build_splits(cfg, train_cfg)
@@ -337,7 +338,7 @@ def test_pool_offset_shifts_the_adapt_pool_window(monkeypatch):
                         lambda cfg, split: list(range(240)))
     train_cfg = OmegaConf.create({"data": {"data_path": "y.npy"}})
     cfg = OmegaConf.create({"target_re": 500, "pool_offset": 10,
-                            "objective": {"pool_n": 5}})
+                            "heldout_split": "val", "objective": {"pool_n": 5}})
 
     pool, _, _ = adapt_module.build_splits(cfg, train_cfg)
 
@@ -351,7 +352,7 @@ def test_pool_offset_past_the_split_end_is_rejected(monkeypatch):
     monkeypatch.setattr(adapt_module.setup, "build_dataset",
                         lambda cfg, split: list(range(240)))
     cfg = OmegaConf.create({"target_re": 500, "pool_offset": 238,
-                            "objective": {"pool_n": 5}})
+                            "heldout_split": "val", "objective": {"pool_n": 5}})
 
     with pytest.raises(ValueError, match="exceeds the train split"):
         adapt_module.build_splits(cfg, OmegaConf.create({"data": {"data_path": "y.npy"}}))
