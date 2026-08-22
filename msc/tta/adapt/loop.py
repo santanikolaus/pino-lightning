@@ -19,6 +19,21 @@ W1_FRAMES = (4, 63)
 WEIGHTED_OBJECTIVES = ("physics", "pde", "ic")
 
 
+def loss_re(cfg) -> int:
+    """Returns the Reynolds number the adaptation loss assumes, resolving the oracle default.
+
+    Args:
+      cfg: resolved client config; cfg.pde_re overrides, cfg.target_re is the fallback.
+
+    Returns:
+      cfg.pde_re when set, else cfg.target_re. Only the loss reads this — the data
+      file and every reported metric stay on target_re, so an ablation under a wrong
+      viscosity is still scored against the equation the data actually obeys.
+    """
+    override = cfg.get("pde_re", None)
+    return cfg.target_re if override is None else override
+
+
 def _loss_fn(cfg) -> KFLoss:
     """Builds the label-free adaptation loss from the objective's pde/ic weights.
 
@@ -27,7 +42,7 @@ def _loss_fn(cfg) -> KFLoss:
     """
     if cfg.objective.name not in WEIGHTED_OBJECTIVES:
         raise NotImplementedError(f"objective {cfg.objective.name!r} not wired yet")
-    return KFLoss(re=cfg.target_re, data_weight=0.0,
+    return KFLoss(re=loss_re(cfg), data_weight=0.0,
                   pde_weight=cfg.objective.pde_weight,
                   ic_weight=cfg.objective.ic_weight)
 

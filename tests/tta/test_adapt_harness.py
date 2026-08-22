@@ -108,6 +108,7 @@ def test_describe_formats_without_model_load():
     assert "objective   : physics" in out
     assert "n_context   : 1" in out  # absent in train_cfg -> defaults to 1
     assert "source_re   : 100" in out
+    assert "pde_re      : 500" in out  # key absent -> resolves to target_re
 
 
 def test_describe_reports_pool_for_spectral_objective():
@@ -123,6 +124,23 @@ def test_describe_reports_pool_for_spectral_objective():
     assert "objective   : spectral" in out
     assert "pool        : 8 samples" in out
     assert "n_context   : 10" in out
+
+
+def test_describe_shows_the_wrong_nu_an_ablation_optimises_under():
+    """The launch log is the load guard a human reads before trusting a sweep."""
+    model = torch.nn.Linear(3, 1)
+    cfg = _cfg({"ckpt": "z", "target_re": 500, "pde_re": 450, "op_re": 100, "steps": 200,
+                "lr": 1e-4, "objective": {"name": "physics", "ic_weight": 5.0},
+                "locus": FULL_LOCUS})
+    train_cfg = _cfg({"model": {"model_arch": "unet"},
+                      "data": {"data_path": "/data/Re100_res128_part0.npy", "sub_t": 2},
+                      "loss": {"re": 100}})
+
+    out = adapt.describe(cfg, model, train_cfg)
+
+    assert "pde_re      : 450" in out
+    assert "data + eval stay at Re500" in out
+    assert "target_re   : 500" in out
 
 
 def test_data_path_for_re_resolves_known_reynolds():
@@ -337,3 +355,51 @@ def test_pool_offset_past_the_split_end_is_rejected(monkeypatch):
 
     with pytest.raises(ValueError, match="exceeds the train split"):
         adapt_module.build_splits(cfg, OmegaConf.create({"data": {"data_path": "y.npy"}}))
+
+
+def test_pde_re_composes_from_yaml_and_defaults_to_null():
+    """adapt.yaml must declare pde_re: load_config rejects overrides of undeclared keys."""
+    from msc.tta.adapt import adapt as adapt_module
+
+    assert adapt_module.load_config(["ckpt=x"]).pde_re is None
+    assert adapt_module.load_config(["ckpt=x", "pde_re=450"]).pde_re == 450
+
+
+def test_run_name_carries_a_nu_fragment_only_when_pde_re_is_set():
+    """Banked run names must be byte-identical when pde_re is unset."""
+    from msc.tta.adapt import adapt as adapt_module
+
+    base = ["experiment=unet", "objective=physics", "locus=full", "lr=2e-4",
+            "steps=200", "probe_every=5", "objective.pool_n=5"]
+    assert adapt_module.run_name(adapt_module.load_config(base)) == \
+        "unet-physics-full-n5-lr2e-04-s200"
+    assert adapt_module.run_name(adapt_module.load_config(base + ["pde_re=450"])) == \
+        "unet-physics-full-n5-nu450-lr2e-04-s200"
+
+
+@pytest.mark.parametrize("pde_re,expected", [(450, 450), (None, 500)],
+                         ids=["set", "resolved_from_target_re"])
+def test_save_arrays_records_the_resolved_pde_re(tmp_path, monkeypatch, pde_re, expected):
+    """The npz must say which nu was optimised under, resolved so it is never None.
+
+    np.array(None) would make an object array and _save_arrays is deliberately
+    allow_pickle-free, so storing the unresolved value would break the round trip.
+    """
+    from msc.tta.adapt import adapt as adapt_module
+
+    monkeypatch.setattr(adapt_module, "_git_sha", lambda: "deadbeef")
+    snapshots = [{"step": 0, "pool": {"n_bands": 5, "err_pt": np.ones((1, 5, 3))},
+                  "heldout": {"n_bands": 5, "err_pt": np.zeros((2, 5, 3))}}]
+    losses = [{"loss": 0.5, "data": 0.1, "pde": 0.3, "ic": 0.2}]
+    cfg = _cfg({"exp": "unet", "ckpt": "abc", "op_re": 100, "target_re": 500, "pde_re": pde_re,
+                "steps": 1, "lr": 1e-4, "probe_every": 1, "wandb_project": "unet-sweep",
+                "objective": {"name": "physics", "pde_weight": 1.0, "ic_weight": 5.0},
+                "locus": FULL_LOCUS})
+    target_cfg = _cfg({"data": {"data_path": "/data/Re500_res128_part0.npy"}})
+    path = str(tmp_path / "run.npz")
+
+    adapt_module._save_arrays(path, snapshots, losses, cfg, "wandbrun", target_cfg,
+                              pool_n=1, locus_counts={"trainable": 1, "effective": 1})
+
+    with np.load(path) as npz:                      # no allow_pickle: object arrays fail here
+        assert npz["meta_pde_re"].item() == expected

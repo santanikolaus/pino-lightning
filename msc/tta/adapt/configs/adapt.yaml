@@ -8,6 +8,9 @@ defaults:
 exp: base  # ladder rung, set by the experiment yaml; groups runs in wandb
 ckpt: ???
 target_re: 500
+pde_re: null  # Re the adaptation loss assumes; null = target_re (oracle nu).
+              # Set a number to adapt under a wrong or inferred viscosity; data
+              # selection and every reported metric stay on target_re.
 op_re: 100  # operator's training Re, fixed here so the probe's regime is legible from checked-in config, not a live wandb fetch
 steps: 10
 lr: 3.0e-4
