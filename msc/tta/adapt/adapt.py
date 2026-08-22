@@ -99,6 +99,7 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> 
             f"run_id      : {cfg.ckpt}", f"model       : {type(model).__name__} ({train_cfg.model.model_arch})",
             f"n_params    : {n_params:,}", f"device      : {next(model.parameters()).device}",
             f"source_re   : {cfg.op_re}", f"target_re   : {cfg.target_re}",
+            f"pde_re      : {loop.loss_re(cfg)} (loss only; data + eval stay at Re{cfg.target_re})",
             f"target_path : {setup.data_path_for_re(cfg.target_re)}", f"sub_t       : {data.sub_t}",
             f"n_context   : {data.get('n_context', 1)}", f"objective   : {cfg.objective.name}",
             f"locus       : {locus.label(cfg.locus)}",
@@ -130,9 +131,10 @@ def run_name(cfg: DictConfig) -> str:
       one arm never share a name.
     """
     shift = f"-p{cfg.get('pool_offset', 0)}" if cfg.get("pool_offset", 0) else ""
+    nu = "" if cfg.get("pde_re", None) is None else f"-nu{loop.loss_re(cfg):g}"
     decay = "-d" + "-".join(str(m) for m in cfg.lr_milestones) if cfg.lr_milestones else ""
     return (f"{cfg.exp}-{cfg.objective.name}-{locus.label(cfg.locus)}"
-            f"-n{cfg.objective.get('pool_n', 1)}{shift}-lr{cfg.lr:.0e}-s{cfg.steps}{decay}")
+            f"-n{cfg.objective.get('pool_n', 1)}{shift}{nu}-lr{cfg.lr:.0e}-s{cfg.steps}{decay}")
 
 
 def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
@@ -165,6 +167,7 @@ def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
         "ckpt": cfg.ckpt,
         "op_re": cfg.op_re,
         "target_re": cfg.target_re,
+        "pde_re": loop.loss_re(cfg),
         "objective": cfg.objective.name,
         "pde_weight": cfg.objective.pde_weight,
         "ic_weight": cfg.objective.ic_weight,

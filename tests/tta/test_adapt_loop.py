@@ -340,3 +340,63 @@ def test_bottleneck_locus_moves_only_the_unet_mixer_end_to_end(real_unet, locus_
         if not torch.equal(param.detach(), before[name]):
             moved.add(name)
     assert moved == {name for name in before if name.startswith("temporal_mixer")}
+
+
+def test_loss_re_uses_pde_re_when_set_and_target_re_otherwise():
+    """pde_re decouples the viscosity the loss assumes from the target regime."""
+    assert loop.loss_re(_cfg({"target_re": 500, "pde_re": 450})) == 450
+    assert loop.loss_re(_cfg({"target_re": 500, "pde_re": None})) == 500  # explicit null
+    assert loop.loss_re(_cfg({"target_re": 500})) == 500                  # key absent
+
+
+def test_loss_fn_adopts_pde_re_without_touching_target_re():
+    cfg = _cfg({"target_re": 500, "pde_re": 450,
+                "objective": {"name": "physics", "pde_weight": 1.0, "ic_weight": 5.0}})
+
+    loss_fn = loop._loss_fn(cfg)
+
+    assert loss_fn.ns.v == pytest.approx(1.0 / 450)
+    assert cfg.target_re == 500
+
+
+@pytest.mark.parametrize("overrides", [{}, {"pde_re": None}],
+                         ids=["key_absent", "explicit_null"])
+def test_loss_fn_falls_back_to_target_re(overrides):
+    """Absent key and explicit null take different paths through .get — cover both."""
+    cfg = _cfg({"target_re": 500, **overrides,
+                "objective": {"name": "physics", "pde_weight": 1.0, "ic_weight": 5.0}})
+
+    assert loop._loss_fn(cfg).ns.v == pytest.approx(1.0 / 500)
+
+
+def test_a_wrong_pde_re_never_reaches_the_eval_regime(monkeypatch):
+    """The ablation is only meaningful if scoring stays on the equation the data obeys.
+
+    Spies on both consumers in one adapt() call: the loss must be built at the wrong
+    nu while probe.measure's regime keeps nu_test at the true target Re.
+    """
+    seen = {"loss_nu": [], "regime_nu_test": []}
+    real_loss_fn = loop._loss_fn
+
+    def spy_loss_fn(cfg):
+        built = real_loss_fn(cfg)
+        seen["loss_nu"].append(built.ns.v)
+        return built
+
+    real_measure = loop.probe.measure
+
+    def spy_measure(model, dataset, target_cfg, regime, device):
+        seen["regime_nu_test"].append(regime.nu_test)
+        return real_measure(model, dataset, target_cfg, regime, device)
+
+    monkeypatch.setattr(loop, "_loss_fn", spy_loss_fn)
+    monkeypatch.setattr(loop.probe, "measure", spy_measure)
+
+    cfg = _adapt_cfg(steps=2, probe_every=2)
+    cfg.target_re, cfg.pde_re = 500, 450
+    loop.adapt(_tiny_model(), _FakeDataset(1, 8, 5), _FakeDataset(1, 8, 5, seed=1),
+               _target_cfg(), Regime(op_re=100, test_re=500), cfg, torch.device("cpu"))
+
+    assert seen["loss_nu"] == [pytest.approx(1.0 / 450)]
+    assert seen["regime_nu_test"]
+    assert all(nu == pytest.approx(1.0 / 500) for nu in seen["regime_nu_test"])
