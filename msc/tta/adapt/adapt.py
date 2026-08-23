@@ -86,6 +86,22 @@ def build_splits(cfg: DictConfig, train_cfg: DictConfig) -> tuple:
     return Subset(train, range(pool_offset, pool_offset + pool_n)), heldout, target_cfg
 
 
+def weights_plan(cfg: DictConfig) -> str:
+    """Renders which steps' weights this run will write, for the run log.
+
+    Args:
+      cfg: resolved client config, as returned by load_config().
+
+    Returns:
+      A one-line statement of the save policy.
+    """
+    if not cfg.save_weights:
+        return "not saved (save_weights=false)"
+    if cfg.save_every is None:
+        return f"final step ({cfg.steps}) only"
+    return f"final step ({cfg.steps}) + every {cfg.save_every} steps"
+
+
 def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> str:
     """Renders the resolved run plan as text, without adapting anything.
 
@@ -116,6 +132,7 @@ def describe(cfg: DictConfig, model: torch.nn.Module, train_cfg: DictConfig) -> 
             f"heldout     : {setup.SPLIT[cfg.heldout_split]['n']} samples "
             f"({cfg.heldout_split} split, offset {setup.SPLIT[cfg.heldout_split]['offset']})",
             f"budget      : {cfg.steps} steps @ lr={cfg.lr}",
+            f"weights     : {weights_plan(cfg)}",
         ]
     )
 
@@ -202,8 +219,75 @@ def _save_arrays(path: str, snapshots: list, losses: list, cfg: DictConfig,
     print(f"saved arrays + metadata -> {path}")
 
 
+def weights_dir(cfg: DictConfig, run_name: str, run_id: str) -> Path:
+    """Returns the directory this run's weight snapshots go to.
+
+    A subdirectory of out_dir, so report_tta's .npz keeps sitting where it is.
+
+    Args:
+      cfg: resolved client config, as returned by load_config().
+      run_name: wandb run name, as returned by run_name().
+      run_id: wandb run id this adaptation run logged under.
+
+    Returns:
+      Path to the run's weights directory; not created here.
+    """
+    return setup.ROOT / cfg.out_dir / "weights" / f"{run_name}_{run_id}"
+
+
+def _save_weights(path: Path, model: torch.nn.Module, step: int, cfg: DictConfig,
+                  run_id: str) -> None:
+    """Writes one step's adapted state_dict plus the metadata a replay needs.
+
+    The full state_dict, not the locus slice: neither checkpointing path touches
+    it (the FNO rebinds forward, the UNet flips an attribute), so the file
+    strict-loads into a fresh build from base_ckpt's own config, and base_ckpt
+    makes it self-describing.
+
+    Args:
+      path: destination .pt path; its parent must exist.
+      model: the live adaptation clone, as handed to loop.adapt's save_fn.
+      step: optimizer step the weights are from.
+      cfg: resolved client config, as returned by load_config().
+      run_id: wandb run id this adaptation run logged under.
+    """
+    torch.save({"state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+                "step": step,
+                "base_ckpt": cfg.ckpt,
+                "run_id": run_id,
+                "cfg": OmegaConf.to_container(cfg, resolve=True),
+                "commit": _git_sha()}, path)
+    print(f"saved weights -> {path}", flush=True)
+
+
+def make_save_fn(cfg: DictConfig, run_name: str, run_id: str):
+    """Builds loop.adapt's save_fn: the final step, plus every save_every-th one.
+
+    Args:
+      cfg: resolved client config, as returned by load_config().
+      run_name: wandb run name, as returned by run_name().
+      run_id: wandb run id this adaptation run logged under.
+
+    Returns:
+      A save_fn(model, step) callable; a no-op that touches no disk when
+      cfg.save_weights is false.
+    """
+    if not cfg.save_weights:
+        return lambda model, step: None
+
+    out_dir = weights_dir(cfg, run_name, run_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_fn(model: torch.nn.Module, step: int) -> None:
+        scheduled = cfg.save_every is not None and step % cfg.save_every == 0
+        if step == cfg.steps or scheduled:
+            _save_weights(out_dir / f"step{step:05d}.pt", model, step, cfg, run_id)
+
+    return save_fn
+
+
 def main(overrides: list) -> None:
-    """Runs the harness: compose config, open a wandb run, adapt, log to wandb, save arrays.
+    """Runs the harness: compose config, open a wandb run, adapt, log, save arrays and weights.
 
     Args:
       overrides: hydra override tokens, e.g. ["experiment=fno"].
@@ -221,6 +305,7 @@ def main(overrides: list) -> None:
     _, snapshots, losses = loop.adapt(
         model, pool, heldout, target_cfg, regime, cfg, device,
         log_fn=lambda metrics, step: run.log(metrics, step=step),
+        save_fn=make_save_fn(cfg, run.name, run.id),
     )
     out_dir = setup.ROOT / cfg.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
