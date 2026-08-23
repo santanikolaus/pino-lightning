@@ -90,8 +90,9 @@ def test_load_config_cli_override_of_undeclared_key_raises():
 
 
 def _cfg(overrides):
-    """Hand-made client cfg carrying adapt.yaml's own heldout_split default."""
-    return OmegaConf.create({"heldout_split": "val", **overrides})
+    """Hand-made client cfg carrying adapt.yaml's own heldout_split / save defaults."""
+    return OmegaConf.create({"heldout_split": "val", "save_weights": False,
+                             "save_every": None, **overrides})
 
 
 def test_describe_formats_without_model_load():

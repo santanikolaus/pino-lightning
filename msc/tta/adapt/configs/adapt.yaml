@@ -23,3 +23,8 @@ heldout_split: val  # chains the probe scores. val [240:270] while the ladder is
                     # reaches the gradient path — both splits score the same trajectory.
 wandb_project: tta-lr-sweep  # ladder phase, not infrastructure; paths.yaml holds the entity
 out_dir: msc/tta/outputs/adapt/${exp}  # relative to setup.ROOT, not the CWD
+save_weights: false  # write the adapted state_dict so a later test read needs no re-run.
+                     # ~85 MB per file (FNO 21.1M fp32); off by default. On: the final step
+                     # is always written.
+save_every: null  # only read when save_weights; additionally write every N-th step.
+                  # null = final step only. Set it to probe_every to keep every probed step.

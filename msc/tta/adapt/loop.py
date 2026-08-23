@@ -168,7 +168,7 @@ def _snapshot_metrics(snapshot: dict) -> dict:
 
 
 def adapt(model, pool, heldout, target_cfg: DictConfig, regime, cfg, device,
-          log_fn=lambda metrics, step: None):
+          log_fn=lambda metrics, step: None, save_fn=lambda model, step: None):
     """Adapts a cloned operator on pool via fixed-step Adam, snapshotting on a schedule.
 
     Args:
@@ -187,6 +187,11 @@ def adapt(model, pool, heldout, target_cfg: DictConfig, regime, cfg, device,
         same step number on a snapshot step, which a wandb-backed log_fn
         merges into one row. Defaults to a no-op so loop.py stays
         wandb-agnostic; the caller supplies the real one.
+      save_fn: called as save_fn(model, step) after every training step, with
+        the live clone — which steps actually reach disk, and where, is the
+        caller's policy. Defaults to a no-op so loop.py stays path-agnostic.
+        Called on every step, not only snapshot steps, so a save schedule
+        need not be a multiple of probe_every.
 
     Returns:
       A tuple (model, snapshots, losses): the adapted operator (clone, eval
@@ -232,6 +237,8 @@ def adapt(model, pool, heldout, target_cfg: DictConfig, regime, cfg, device,
             snapshots.append(snapshot)
             _print_progress(snapshot)
             log_fn(_snapshot_metrics(snapshot), step=step)
+
+        save_fn(model, step)
     return model.eval(), snapshots, losses
 
 

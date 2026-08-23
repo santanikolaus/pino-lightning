@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import pytest
 import torch
@@ -267,6 +269,47 @@ def test_log_fn_called_every_step_and_extra_at_snapshots():
         (0, "snap"), (1, "train"), (2, "train"), (2, "snap"),
         (3, "train"), (4, "train"), (4, "snap"),
     ]
+
+
+def test_save_fn_called_every_step_not_only_at_snapshots():
+    """A save grid must not have to be a multiple of probe_every to fire."""
+    model = _tiny_model()
+    pool, heldout = _FakeDataset(1, 8, 5), _FakeDataset(1, 8, 5, seed=1)
+    cfg = _adapt_cfg(steps=4, probe_every=3)
+    regime = Regime(op_re=100, test_re=100)
+    seen = []
+
+    loop.adapt(model, pool, heldout, _target_cfg(), regime, cfg, torch.device("cpu"),
+              save_fn=lambda model, step: seen.append(step))
+
+    assert seen == [1, 2, 3, 4]
+
+
+def test_save_fn_sees_the_clone_carrying_that_step_weights():
+    """The handed-over model must be the live clone, not the caller's untouched model."""
+    model = _tiny_model()
+    pool, heldout = _FakeDataset(1, 8, 5), _FakeDataset(1, 8, 5, seed=1)
+    cfg = _adapt_cfg(steps=2, probe_every=2)
+    regime = Regime(op_re=100, test_re=100)
+    flattened = []
+
+    loop.adapt(model, pool, heldout, _target_cfg(), regime, cfg, torch.device("cpu"),
+              save_fn=lambda clone, step: flattened.append(
+                  torch.cat([p.detach().flatten() for p in clone.parameters()]).clone()))
+
+    original = torch.cat([p.detach().flatten() for p in model.parameters()])
+    assert not torch.equal(flattened[0], original)
+    assert not torch.equal(flattened[0], flattened[1])
+
+
+def test_checkpointed_clone_state_dict_strict_loads_into_a_fresh_build():
+    """The saved weights' one hard requirement: checkpointing must not touch state_dict."""
+    clone = copy.deepcopy(_tiny_model())
+    loop._enable_checkpointing(clone)
+
+    fresh = build_fno_kf(MODEL_CFG)
+    assert clone.state_dict().keys() == fresh.state_dict().keys()
+    fresh.load_state_dict(clone.state_dict(), strict=True)
 
 
 def test_collate_stacks_per_side_and_keeps_scalars_unstacked():
