@@ -9,6 +9,7 @@ selected report needs them.
 """
 import argparse
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -56,6 +57,23 @@ def _parse_groups(s: str) -> list[tuple[int, int]]:
 def _parse_floats(s: str) -> tuple:
     """Parses "0.9,0.8" into a tuple of floats."""
     return tuple(float(x) for x in s.split(","))
+
+
+def _adapted_weights(spec: "str | None") -> "Path | None":
+    """Resolves --adapted into the step file to load.
+
+    Args:
+      spec: an adaptation run's wandb id, "id:step", a path to a step*.pt, or None.
+
+    Returns:
+      Path to the weights file, or None to keep the pretrained checkpoint.
+    """
+    if spec is None:
+        return None
+    if Path(spec).suffix == ".pt":
+        return Path(spec)
+    run_id, _, step = spec.partition(":")
+    return setup.adapted_weights_path(run_id, int(step) if step else None)
 
 
 def _resolve_bands(default, override: "str | None", n_bands: int):
@@ -330,7 +348,7 @@ def print_cov(cache, *, time_bins, **_):
                       "read it only where the floor moved less than the value")
 
 
-def print_horizon(cache, *, bands, thresholds, T_eff, **_):
+def print_horizon(cache, *, bands, thresholds, T_eff, n_ctx, **_):
     """Prints the per-band correlation-horizon table (frames until decorrelation).
 
     Args:
@@ -338,21 +356,25 @@ def print_horizon(cache, *, bands, thresholds, T_eff, **_):
       bands: (lo, hi) band groups (rows); defaults per-shell. USED.
       thresholds: correlation thresholds, one column pair each. USED.
       T_eff: window length; censoring value for never-decorrelated samples. USED.
+      n_ctx: warmup frames the model was seeded with, dropped before the horizon
+        so no frame the model was handed can be counted as survived. USED.
       time_bins: not consumed by this report.
     """
     g = cache["bands"]
     pred_pt, gt_pt, err_pt = g["pred_pt"], g["gt_pt"], g["err_pt"]
-    print(f"\ncorr-horizon: first frame band corr < thresh (of {T_eff}); "
-          f"mean [2.5,97.5] bootstrap CI over samples; cens = never-decorrelated")
+    T_pred = T_eff - n_ctx
+    print(f"\ncorr-horizon: first frame band corr < thresh (of {T_pred} predicted, "
+          f"{n_ctx} warmup dropped); mean [2.5,97.5] bootstrap CI over samples; "
+          f"cens = never-decorrelated")
     ch_header = f"{'k-band':<12}" + "".join(f"{f'corr<{th}':>28}" for th in thresholds)
     print(ch_header)
     print("-" * len(ch_header))
-    curve = lambda b: ev.corr_curve(pred_pt, gt_pt, err_pt, bands=b)
-    for row in horizon_rows(curve, bands, T_eff, thresholds):
+    curve = lambda b: ev.corr_curve(pred_pt, gt_pt, err_pt, bands=b)[:, n_ctx:]
+    for row in horizon_rows(curve, bands, T_pred, thresholds):
         print(row)
 
 
-def print_blur(cache, *, bands, thresholds, T_eff, **_):
+def print_blur(cache, *, bands, thresholds, T_eff, n_ctx, **_):
     """Prints the per-band amplitude-horizon table (frames until energy collapse).
 
     The amplitude counterpart to print_horizon, read at the same thresholds so
@@ -367,17 +389,21 @@ def print_blur(cache, *, bands, thresholds, T_eff, **_):
         USED.
       thresholds: amplitude-ratio thresholds, one column pair each. USED.
       T_eff: window length; censoring value for samples that never drop. USED.
+      n_ctx: warmup frames the model was seeded with, dropped before the horizon
+        so no frame the model was handed can be counted as survived. USED.
       time_bins: not consumed by this report.
     """
     g = cache["bands"]
     pred_pt, gt_pt = g["pred_pt"], g["gt_pt"]
-    print(f"\nblur-horizon: first frame band gamma < thresh (of {T_eff}); "
-          f"mean [2.5,97.5] bootstrap CI over samples; cens = never-collapsed")
+    T_pred = T_eff - n_ctx
+    print(f"\nblur-horizon: first frame band gamma < thresh (of {T_pred} predicted, "
+          f"{n_ctx} warmup dropped); mean [2.5,97.5] bootstrap CI over samples; "
+          f"cens = never-collapsed")
     bh_header = f"{'k-band':<12}" + "".join(f"{f'gamma<{th}':>28}" for th in thresholds)
     print(bh_header)
     print("-" * len(bh_header))
-    curve = lambda b: ev.amp_curve(pred_pt, gt_pt, bands=b)
-    for row in horizon_rows(curve, bands, T_eff, thresholds):
+    curve = lambda b: ev.amp_curve(pred_pt, gt_pt, bands=b)[:, n_ctx:]
+    for row in horizon_rows(curve, bands, T_pred, thresholds):
         print(row)
 
 
@@ -391,7 +417,7 @@ def _git_sha() -> str:
 
 
 def _save_arrays(path: str, bands_cache: dict, cfg: DictConfig, run_id: str, regime,
-                 T_eff: int, split_name: str) -> None:
+                 T_eff: int, split_name: str, adapted: "Path | None" = None) -> None:
     """Writes the band/residual arrays plus run metadata to a compressed .npz.
 
     Stores what forward_bands returned verbatim, so every later band grouping, frame
@@ -412,10 +438,13 @@ def _save_arrays(path: str, bands_cache: dict, cfg: DictConfig, run_id: str, reg
       split_name: the split the arrays were measured on, as passed to --split —
         stored because a reader comparing two npz files must know they cover the
         same chains before subtracting them.
+      adapted: the step file whose weights were scored, or None for the pretrained
+        checkpoint — without it the npz would claim run_id's own weights.
     """
     split = setup.SPLIT[split_name]
     meta = {
         "run_id": run_id,
+        "adapted_weights": "" if adapted is None else str(adapted),
         "data_path": cfg.data.data_path,
         "coarse_path": str(cfg.data.get("coarse_path")),
         "op_re": regime.op_re,
@@ -527,6 +556,11 @@ def main():
     ap.add_argument("--thresholds", default=None,
                     help="override horizon/blur thresholds, e.g. '0.9,0.8'; shared by "
                          "both so the corr and gamma horizons stay comparable.")
+    ap.add_argument("--adapted", default=None,
+                    help="score adapted weights instead of the pretrained checkpoint: an "
+                         "adaptation run's wandb id (latest saved step), 'id:step' for one "
+                         "step, or a path to a step*.pt. --run-id stays the PRETRAINING run, "
+                         "whose config the read is scored under.")
     ap.add_argument("--op-re", type=int, default=None,
                     help="Re for the operator's own residual; defaults to the run's training Re.")
     ap.add_argument("--test-re", type=int, default=None,
@@ -552,7 +586,8 @@ def main():
         ap.error(f"unknown reports {bad}; valid: {ORDER}")
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model, cfg = setup.load_model(args.run_id, device)
+    adapted = _adapted_weights(args.adapted)
+    model, cfg = setup.load_model(args.run_id, device, weights=adapted)
     if args.data_path:
         cfg.data.data_path = args.data_path
     if args.coarse_path:
@@ -560,6 +595,7 @@ def main():
     dataset = setup.build_dataset(cfg, args.split)
 
     T_eff = dataset[0]["y"].shape[-1]
+    n_ctx = dataset[0]["ctx"].shape[-1] if "ctx" in dataset[0] else 1
     regime = setup.resolve_regime(cfg, args.op_re, args.test_re)
 
     needed = {REPORTS[r]["fwd"] for r in selected}
@@ -587,7 +623,7 @@ def main():
 
     if args.save_npz and "bands" in cache:
         _save_arrays(args.save_npz, cache["bands"], cfg, args.run_id, regime, T_eff,
-                     args.split)
+                     args.split, adapted)
 
     for r in ORDER:
         if r not in selected:
@@ -596,7 +632,7 @@ def main():
         bands = _resolve_bands(spec.get("bands"), args.bands, n_bands)
         tbins = _resolve_tbins(args.time_bins or spec.get("tbins") or "0-64", T_eff)
         thr = _parse_floats(args.thresholds) if args.thresholds else spec.get("thresholds")
-        spec["fn"](cache, T_eff=T_eff, bands=bands, time_bins=tbins,
+        spec["fn"](cache, T_eff=T_eff, n_ctx=n_ctx, bands=bands, time_bins=tbins,
                    thresholds=thr, regime=regime)
 
 
