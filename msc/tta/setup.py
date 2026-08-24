@@ -168,25 +168,73 @@ def ckpt_path(run_id: str, cfg: DictConfig) -> Path:
                 ) / project / run_id / "checkpoints" / f"{filename}.ckpt"
 
 
-def load_model(run_id: str, device: torch.device):
+def adapted_weights_path(run_id: str, step: "int | None" = None) -> Path:
+    """Finds an adaptation run's saved weights by its wandb run id.
+
+    The adapt client writes to <out_dir>/weights/<run_name>_<run_id>/step<NNNNN>.pt,
+    and out_dir varies per experiment, so the id is matched against the directory
+    suffix rather than reconstructed from config.
+
+    Args:
+      run_id: wandb run id of an adaptation run, not of a pretraining run.
+      step: optimizer step to load, or None for the highest step present.
+
+    Returns:
+      Path to that run's step file.
+    """
+    search_root = ROOT / "msc" / "tta" / "outputs" / "adapt"
+    hits = sorted(d for d in search_root.glob(f"*/weights/*_{run_id}") if d.is_dir())
+    if not hits:
+        raise FileNotFoundError(
+            f"no adapted weights for run {run_id!r}; looked for */weights/*_{run_id} "
+            f"under {search_root}. Adaptation runs need save_weights=true")
+    steps = sorted(hits[0].glob("step*.pt"))
+    if not steps:
+        raise FileNotFoundError(f"{hits[0]} holds no step*.pt files")
+    if step is None:
+        return steps[-1]
+    wanted = hits[0] / f"step{step:05d}.pt"
+    if not wanted.exists():
+        raise FileNotFoundError(
+            f"{wanted.name} not saved for run {run_id!r}; present: "
+            f"{', '.join(path.stem for path in steps)}")
+    return wanted
+
+
+def load_model(run_id: str, device: torch.device, weights: "Path | str | None" = None):
     """Builds the KF FNO for a run and strict-loads its checkpoint weights.
 
     Args:
-      run_id: wandb run id.
+      run_id: wandb run id of the PRETRAINING run, which supplies the architecture
+        and the config every downstream read is scored under.
       device: torch device to load the model onto.
+      weights: adapted state_dict written by the adapt client, replacing the
+        pretrained weights while keeping run_id's config. None loads the
+        pretrained checkpoint.
 
     Returns:
       A tuple (model, cfg): the loaded model in eval mode, and its resolved config.
     """
     cfg = resolve(run_id)
     model = build_fno_kf(cfg.model)
-    state_dict = torch.load(ckpt_path(run_id, cfg),
-                            weights_only=False,
-                            map_location=device)["state_dict"]
-    state = {
-        k[len("model."):]: v
-        for k, v in state_dict.items() if k.startswith("model.")
-    }
+    if weights is None:
+        state_dict = torch.load(ckpt_path(run_id, cfg),
+                                weights_only=False,
+                                map_location=device)["state_dict"]
+        state = {
+            k[len("model."):]: v
+            for k, v in state_dict.items() if k.startswith("model.")
+        }
+    else:
+        saved = torch.load(weights, weights_only=False, map_location=device)
+        base = saved.get("base_ckpt")
+        if base is not None and base != run_id:
+            raise ValueError(
+                f"{Path(weights).name} was adapted from base_ckpt {base!r}, not {run_id!r}; "
+                f"scoring it under another run's config would misreport the architecture")
+        print(f"  adapted weights: {Path(weights).name} @ step {saved.get('step')} "
+              f"from adaptation run {saved.get('run_id')}")
+        state = saved["state_dict"]
     model.load_state_dict(state, strict=True)
     return model.to(device).eval(), cfg
 

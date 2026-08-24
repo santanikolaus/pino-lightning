@@ -47,7 +47,7 @@ def recorder(monkeypatch):
     for name in report.REPORTS:
         monkeypatch.setitem(report.REPORTS[name], "fn", lambda cache, **kw: None)
     monkeypatch.setattr(report.setup, "load_model",
-                        lambda run_id, device: (None, _fake_cfg()))
+                        lambda run_id, device, weights=None: (None, _fake_cfg()))
     monkeypatch.setattr(report.setup, "build_dataset",
                         lambda cfg, split: _FakeDataset())
     return calls
@@ -124,7 +124,7 @@ def test_thresholds_override_reaches_both_horizon_and_blur_reports(monkeypatch):
     monkeypatch.setitem(report.REPORTS["horizon"], "fn", make_fn("horizon"))
     monkeypatch.setitem(report.REPORTS["blur"], "fn", make_fn("blur"))
     monkeypatch.setattr(report.setup, "load_model",
-                        lambda run_id, device: (None, _fake_cfg()))
+                        lambda run_id, device, weights=None: (None, _fake_cfg()))
     monkeypatch.setattr(report.setup, "build_dataset",
                         lambda cfg, split: _FakeDataset())
     monkeypatch.setattr("sys.argv", ["report.py", "--run-id", "fake",
@@ -234,10 +234,10 @@ def test_print_horizon_and_print_blur_read_distinct_curves(capsys):
     cache = {"bands": {"pred_pt": pred_pt, "gt_pt": gt_pt, "err_pt": err_pt}}
     bands = [(0, 0)]
 
-    report.print_horizon(cache, bands=bands, thresholds=(0.9,), T_eff=3)
+    report.print_horizon(cache, bands=bands, thresholds=(0.9,), T_eff=3, n_ctx=0)
     corr_row = next(l for l in capsys.readouterr().out.splitlines()
                     if l.startswith("k0-0"))
-    report.print_blur(cache, bands=bands, thresholds=(0.9,), T_eff=3)
+    report.print_blur(cache, bands=bands, thresholds=(0.9,), T_eff=3, n_ctx=0)
     blur_row = next(l for l in capsys.readouterr().out.splitlines()
                     if l.startswith("k0-0"))
 
@@ -255,7 +255,7 @@ def test_decomp_default_stays_time_pooled(monkeypatch, capsys):
     monkeypatch.setattr(report.ev, "forward_bands",
                         lambda model, dataset, device, **kw: g)
     monkeypatch.setattr(report.setup, "load_model",
-                        lambda run_id, device: (None, _fake_cfg()))
+                        lambda run_id, device, weights=None: (None, _fake_cfg()))
     monkeypatch.setattr(report.setup, "build_dataset",
                         lambda cfg, split: _FakeDataset())
     monkeypatch.setattr("sys.argv", ["report.py", "--run-id", "fake", "--reports", "decomp"])
@@ -302,8 +302,8 @@ def test_printers_run_without_crashing(capsys):
     bands = [(0, 0), (1, 2)]
     tbins = [(0, 1), (3, 4)]
     report.print_decomp(bc, bands=bands, time_bins=tbins)
-    report.print_horizon(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
-    report.print_blur(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5)
+    report.print_horizon(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5, n_ctx=1)
+    report.print_blur(bc, bands=bands, thresholds=(0.9, 0.8), T_eff=5, n_ctx=1)
     report.print_physics(bc, bands=bands, time_bins=tbins, regime=Regime(100, 100))
     report.print_w1(fc, time_bins=tbins)
     report.print_cov(fc, time_bins=tbins)
@@ -347,7 +347,7 @@ def test_split_flag_selects_the_dataset_window(monkeypatch, argv, expected):
     for name in report.REPORTS:
         monkeypatch.setitem(report.REPORTS[name], "fn", lambda cache, **kw: None)
     monkeypatch.setattr(report.setup, "load_model",
-                        lambda run_id, device: (None, _fake_cfg()))
+                        lambda run_id, device, weights=None: (None, _fake_cfg()))
     monkeypatch.setattr(report.setup, "build_dataset", fake_build_dataset)
     monkeypatch.setattr("sys.argv",
                         ["report.py", "--run-id", "fake", "--reports", "decomp", *argv])
