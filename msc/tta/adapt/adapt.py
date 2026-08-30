@@ -242,7 +242,8 @@ def _save_weights(path: Path, model: torch.nn.Module, step: int, cfg: DictConfig
     The full state_dict, not the locus slice: neither checkpointing path touches
     it (the FNO rebinds forward, the UNet flips an attribute), so the file
     strict-loads into a fresh build from base_ckpt's own config, and base_ckpt
-    makes it self-describing.
+    makes it self-describing. Non-tensor entries pass through untouched — the
+    FNO's state_dict carries a `_metadata` dict the UNet's does not.
 
     Args:
       path: destination .pt path; its parent must exist.
@@ -251,7 +252,8 @@ def _save_weights(path: Path, model: torch.nn.Module, step: int, cfg: DictConfig
       cfg: resolved client config, as returned by load_config().
       run_id: wandb run id this adaptation run logged under.
     """
-    torch.save({"state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+    torch.save({"state_dict": {k: v.detach().cpu() if torch.is_tensor(v) else v
+                               for k, v in model.state_dict().items()},
                 "step": step,
                 "base_ckpt": cfg.ckpt,
                 "run_id": run_id,
